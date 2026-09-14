@@ -49,3 +49,13 @@ def test_detect_charuco_respects_min_corners_threshold():
     frontal = make_charuco_frontal_image(SPEC)
     total = board.getChessboardCorners().shape[0]
     assert detect_charuco(frontal, board, min_corners=total + 1) is None
+
+
+def test_legacy_pattern_board_still_builds_and_detects():
+    legacy_spec = CharucoBoardSpec(
+        squares_x=6, squares_y=4, square_size_mm=25.0, marker_size_mm=18.0, legacy_pattern=True
+    )
+    board = legacy_spec.build_board()
+    frontal = make_charuco_frontal_image(legacy_spec)
+    detected = detect_charuco(frontal, board, min_corners=1)
+    assert detected is not None

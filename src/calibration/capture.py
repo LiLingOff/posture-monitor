@@ -434,6 +434,9 @@ def main() -> None:
     mono_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")
     mono_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
     mono_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    mono_p.add_argument(
+        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+    )
     mono_p.add_argument("--min-corners", type=int, default=_MIN_SHARED_CHARUCO_CORNERS)
 
     stereo_p = sub.add_parser("stereo", help="擷取雙目標定影像")
@@ -472,6 +475,9 @@ def main() -> None:
     stereo_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
     stereo_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
     stereo_p.add_argument(
+        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+    )
+    stereo_p.add_argument(
         "--min-shared-corners",
         type=int,
         default=_MIN_SHARED_CHARUCO_CORNERS,
@@ -485,6 +491,9 @@ def main() -> None:
     board_p.add_argument("--square-size-mm", type=float, default=25.0)
     board_p.add_argument("--marker-size-mm", type=float, default=18.0)
     board_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    board_p.add_argument(
+        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+    )
     board_p.add_argument("--pixels-per-square", type=int, default=80)
 
     args = parser.parse_args()
@@ -498,6 +507,7 @@ def main() -> None:
             square_size_mm=args.square_size_mm,
             marker_size_mm=args.marker_size_mm,
             dictionary_name=args.dictionary,
+            legacy_pattern=args.legacy_pattern,
         )
         save_board_image(spec, args.out, pixels_per_square=args.pixels_per_square)
         print(f"已輸出board圖檔至 {args.out}，請按實際尺寸列印（不要自動縮放/符合頁面）")
@@ -511,6 +521,7 @@ def main() -> None:
                 square_size_mm=args.square_size_mm,
                 marker_size_mm=args.marker_size_mm,
                 dictionary_name=args.dictionary,
+                legacy_pattern=args.legacy_pattern,
             )
             capture_mono_charuco(
                 args.camera, args.out, board_spec, args.target_count, min_corners=args.min_corners
@@ -528,6 +539,7 @@ def main() -> None:
                 square_size_mm=args.square_size_mm,
                 marker_size_mm=args.marker_size_mm,
                 dictionary_name=args.dictionary,
+                legacy_pattern=args.legacy_pattern,
             )
             if args.single_device:
                 capture_stereo_charuco_single_device(

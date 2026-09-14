@@ -21,6 +21,11 @@ def _add_charuco_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--squares-y", type=int, default=8)
     p.add_argument("--marker-size-mm", type=float, default=18.0)
     p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    p.add_argument(
+        "--legacy-pattern",
+        action="store_true",
+        help="現成板子（如AndyMark）常用OpenCV 4.6以前的舊版標記排列，偵測不到就加這個",
+    )
 
 
 def main() -> None:
@@ -64,6 +69,7 @@ def main() -> None:
                 square_size_mm=args.square_size_mm,
                 marker_size_mm=args.marker_size_mm,
                 dictionary_name=args.dictionary,
+                legacy_pattern=args.legacy_pattern,
             )
             result = calibrate_mono_charuco(args.images, board_spec, args.target_error_px)
         else:
@@ -82,6 +88,7 @@ def main() -> None:
                 square_size_mm=args.square_size_mm,
                 marker_size_mm=args.marker_size_mm,
                 dictionary_name=args.dictionary,
+                legacy_pattern=args.legacy_pattern,
             )
             result = calibrate_stereo_charuco(
                 args.left_images, args.right_images, board_spec, args.target_error_px
