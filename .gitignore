@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+data/calibration_images/*/*.png
+data/calibration_images/*/*.jpg
+data/calibration_output/*.npz
