@@ -40,11 +40,36 @@ python -m src.calibration.capture stereo --single-device --left-camera 1 --targe
 
 棋盤格預設 9×6 內角點、25mm 方格，用 `--cols --rows --square-size-mm` 調整。
 
+### 雙目視野重疊區域太小、拍不到完整棋盤格
+
+如果雙目模組兩顆鏡頭本身視野重疊就很小（基線寬/鏡頭內聚），不管怎麼調距離都沒辦法讓兩邊同時拍到完整棋盤格，改用 ChArUco 板——每個角點有獨立 ID，兩邊畫面只要有**足夠共同角點**就能用，不需要整塊板子入鏡。
+
+先產生板子圖檔（照實際尺寸列印，不要「符合頁面」自動縮放）：
+
+```
+python -m src.calibration.capture board --out data/charuco_board.png --squares-x 10 --squares-y 8 --square-size-mm 25 --marker-size-mm 18
+```
+
+拍攝時加 `--charuco`（其餘參數如 `--single-device` 照舊）：
+
+```
+python -m src.calibration.capture mono --camera 0 --charuco --squares-x 10 --squares-y 8 --square-size-mm 25 --marker-size-mm 18
+python -m src.calibration.capture stereo --single-device --left-camera 1 --charuco --squares-x 10 --squares-y 8 --square-size-mm 25 --marker-size-mm 18
+```
+
+畫面會顯示目前偵測到幾個角點、左右共同角點數，共同角點數 >= 門檻（預設6，用 `--min-shared-corners` 調）才能按空白鍵存檔。`--squares-x/--squares-y/--square-size-mm/--marker-size-mm` 要跟印出來的板子一致。
+
 ## 算標定參數
 
 ```
 python -m src.calibration.cli mono --images data/calibration_images/front
 python -m src.calibration.cli stereo --left-images data/calibration_images/stereo_left --right-images data/calibration_images/stereo_right
+```
+
+用 ChArUco 拍的影像要加 `--charuco`（跟拍攝時同一組 `--squares-x/--squares-y/--square-size-mm/--marker-size-mm`）：
+
+```
+python -m src.calibration.cli stereo --charuco --squares-x 10 --squares-y 8 --square-size-mm 25 --marker-size-mm 18 --left-images data/calibration_images/stereo_left --right-images data/calibration_images/stereo_right
 ```
 
 結果存成 `.npz`，之後三角測量模組直接讀。單眼目標重投影誤差 <0.3px，雙目 <0.5px，超過會印警告。
@@ -88,7 +113,8 @@ python -m src.pose.cli compare-precision --camera 1 --samples 30 --rmse-threshol
 
 ```
 src/calibration/
-  chessboard.py         角點偵測
+  chessboard.py         棋盤格角點偵測
+  charuco.py            ChArUco板角點偵測（容許部分入鏡）
   mono_calibration.py   正面相機張氏標定
   stereo_calibration.py stereoCalibrate + stereoRectify
   capture.py            接相機拍照
@@ -101,6 +127,7 @@ src/pose/
   benchmark.py            延遲量測、FP32/FP16比對
   cli.py                跑基準測試/精度比對
 tests/
-  synthetic.py           合成測試影像用（標定）
+  synthetic.py           合成測試影像用（棋盤格標定）
+  charuco_synthetic.py    合成測試影像用（ChArUco標定）
   pose_fakes.py           假引擎，測pose模組不需要GPU
 ```

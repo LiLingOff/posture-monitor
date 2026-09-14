@@ -7,7 +7,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .charuco import CharucoBoardSpec, detect_charuco
 from .chessboard import ChessboardSpec, find_corners
+
+_MIN_SHARED_CHARUCO_CORNERS = 6
 
 
 def _open_camera(index: int) -> cv2.VideoCapture:
@@ -200,6 +203,217 @@ def capture_stereo_single_device(
         cv2.destroyAllWindows()
 
 
+def _draw_charuco_feedback(
+    frame: np.ndarray,
+    detected: tuple[np.ndarray, np.ndarray] | None,
+    saved_count: int,
+    target_count: int,
+) -> None:
+    if detected is not None:
+        corners, ids = detected
+        cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids)
+        count_text = f"偵測到{len(ids)}點"
+    else:
+        count_text = "未偵測到角點"
+    status = f"{count_text}  已存{saved_count}/{target_count}  [SPACE]拍攝  [ESC]結束"
+    cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+
+def capture_mono_charuco(
+    camera_index: int,
+    out_dir: Path,
+    board_spec: CharucoBoardSpec,
+    target_count: int,
+    min_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    board = board_spec.build_board()
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+
+    saved = len(list(out_dir.glob("*.png")))
+    cancelled = False
+    try:
+        while saved < target_count:
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError("讀取相機影格失敗")
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detected = detect_charuco(gray, board, min_corners=1)
+            display = frame.copy()
+            _draw_charuco_feedback(display, detected, saved, target_count)
+            cv2.imshow("mono capture (charuco)", display)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:
+                cancelled = True
+                break
+            if key == 32 and detected is not None and len(detected[1]) >= min_corners:
+                saved += 1
+                cv2.imwrite(str(out_dir / f"frame_{saved:04d}.png"), frame)
+                print(f"已存 {saved}/{target_count}（{len(detected[1])}個角點）")
+
+        print(f"拍攝結束，共存 {saved} 張於 {out_dir}")
+        if not cancelled:
+            _hold_until_keypress(("mono capture (charuco)", display))
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+def _shared_corner_count(
+    det_l: tuple[np.ndarray, np.ndarray] | None, det_r: tuple[np.ndarray, np.ndarray] | None
+) -> int:
+    if det_l is None or det_r is None:
+        return 0
+    ids_l = set(det_l[1].flatten().tolist())
+    ids_r = set(det_r[1].flatten().tolist())
+    return len(ids_l & ids_r)
+
+
+def _draw_stereo_charuco_feedback(
+    disp_l: np.ndarray,
+    disp_r: np.ndarray,
+    det_l: tuple[np.ndarray, np.ndarray] | None,
+    det_r: tuple[np.ndarray, np.ndarray] | None,
+    shared: int,
+    min_shared_corners: int,
+    saved: int,
+    target_count: int,
+) -> None:
+    _draw_charuco_feedback(disp_l, det_l, saved, target_count)
+    _draw_charuco_feedback(disp_r, det_r, saved, target_count)
+    shared_text = f"共同角點：{shared}（需>={min_shared_corners}）"
+    color = (0, 200, 0) if shared >= min_shared_corners else (0, 140, 255)
+    cv2.putText(disp_l, shared_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+
+def capture_stereo_charuco(
+    left_index: int,
+    right_index: int,
+    left_out: Path,
+    right_out: Path,
+    board_spec: CharucoBoardSpec,
+    target_count: int,
+    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+) -> None:
+    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時用這個——
+    不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存。
+    """
+    left_out.mkdir(parents=True, exist_ok=True)
+    right_out.mkdir(parents=True, exist_ok=True)
+    board = board_spec.build_board()
+    cap_l = _open_camera(left_index)
+    cap_r = _open_camera(right_index)
+    if not cap_l.isOpened() or not cap_r.isOpened():
+        raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
+
+    saved = len(list(left_out.glob("*.png")))
+    cancelled = False
+    try:
+        while saved < target_count:
+            ok_l, frame_l = cap_l.read()
+            ok_r, frame_r = cap_r.read()
+            if not (ok_l and ok_r):
+                raise RuntimeError("讀取雙目相機影格失敗")
+
+            gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY)
+            gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY)
+            det_l = detect_charuco(gray_l, board, min_corners=1)
+            det_r = detect_charuco(gray_r, board, min_corners=1)
+            shared = _shared_corner_count(det_l, det_r)
+
+            disp_l, disp_r = frame_l.copy(), frame_r.copy()
+            _draw_stereo_charuco_feedback(disp_l, disp_r, det_l, det_r, shared, min_shared_corners, saved, target_count)
+            cv2.imshow("stereo left", disp_l)
+            cv2.imshow("stereo right", disp_r)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:
+                cancelled = True
+                break
+            if key == 32 and shared >= min_shared_corners:
+                saved += 1
+                name = f"frame_{saved:04d}.png"
+                cv2.imwrite(str(left_out / name), frame_l)
+                cv2.imwrite(str(right_out / name), frame_r)
+                print(f"已存 {saved}/{target_count}（共同角點{shared}個）")
+
+        print(f"拍攝結束，共存 {saved} 組於 {left_out} / {right_out}")
+        if not cancelled:
+            _hold_until_keypress(("stereo left", disp_l), ("stereo right", disp_r))
+    finally:
+        cap_l.release()
+        cap_r.release()
+        cv2.destroyAllWindows()
+
+
+def capture_stereo_charuco_single_device(
+    camera_index: int,
+    left_out: Path,
+    right_out: Path,
+    board_spec: CharucoBoardSpec,
+    target_count: int,
+    vertical_split: bool = False,
+    swap_lr: bool = False,
+    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+) -> None:
+    left_out.mkdir(parents=True, exist_ok=True)
+    right_out.mkdir(parents=True, exist_ok=True)
+    board = board_spec.build_board()
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+
+    def split(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if vertical_split:
+            h = frame.shape[0]
+            a, b = frame[: h // 2], frame[h // 2 :]
+        else:
+            w = frame.shape[1]
+            a, b = frame[:, : w // 2], frame[:, w // 2 :]
+        return (b, a) if swap_lr else (a, b)
+
+    saved = len(list(left_out.glob("*.png")))
+    cancelled = False
+    try:
+        while saved < target_count:
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError("讀取相機影格失敗")
+            frame_l, frame_r = split(frame)
+
+            gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY)
+            gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY)
+            det_l = detect_charuco(gray_l, board, min_corners=1)
+            det_r = detect_charuco(gray_r, board, min_corners=1)
+            shared = _shared_corner_count(det_l, det_r)
+
+            disp_l, disp_r = frame_l.copy(), frame_r.copy()
+            _draw_stereo_charuco_feedback(disp_l, disp_r, det_l, det_r, shared, min_shared_corners, saved, target_count)
+            cv2.imshow("stereo left", disp_l)
+            cv2.imshow("stereo right", disp_r)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:
+                cancelled = True
+                break
+            if key == 32 and shared >= min_shared_corners:
+                saved += 1
+                name = f"frame_{saved:04d}.png"
+                cv2.imwrite(str(left_out / name), frame_l)
+                cv2.imwrite(str(right_out / name), frame_r)
+                print(f"已存 {saved}/{target_count}（共同角點{shared}個）")
+
+        print(f"拍攝結束，共存 {saved} 組於 {left_out} / {right_out}")
+        if not cancelled:
+            _hold_until_keypress(("stereo left", disp_l), ("stereo right", disp_r))
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="標定影像互動式擷取")
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -213,6 +427,14 @@ def main() -> None:
     mono_p.add_argument("--rows", type=int, default=6)
     mono_p.add_argument("--square-size-mm", type=float, default=25.0)
     mono_p.add_argument("--target-count", type=int, default=40)
+    mono_p.add_argument(
+        "--charuco", action="store_true", help="用ChArUco板取代一般棋盤格（容許畫面只看到板子一部分）"
+    )
+    mono_p.add_argument("--squares-x", type=int, default=10, help="ChArUco板橫向方格數")
+    mono_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")
+    mono_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
+    mono_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    mono_p.add_argument("--min-corners", type=int, default=_MIN_SHARED_CHARUCO_CORNERS)
 
     stereo_p = sub.add_parser("stereo", help="擷取雙目標定影像")
     stereo_p.add_argument(
@@ -240,37 +462,117 @@ def main() -> None:
     stereo_p.add_argument("--rows", type=int, default=6)
     stereo_p.add_argument("--square-size-mm", type=float, default=25.0)
     stereo_p.add_argument("--target-count", type=int, default=20)
+    stereo_p.add_argument(
+        "--charuco",
+        action="store_true",
+        help="用ChArUco板取代一般棋盤格——雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時用這個",
+    )
+    stereo_p.add_argument("--squares-x", type=int, default=10, help="ChArUco板橫向方格數")
+    stereo_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")
+    stereo_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
+    stereo_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    stereo_p.add_argument(
+        "--min-shared-corners",
+        type=int,
+        default=_MIN_SHARED_CHARUCO_CORNERS,
+        help="左右畫面至少要有幾個共同角點才允許存檔",
+    )
+
+    board_p = sub.add_parser("board", help="產生ChArUco板圖檔供列印")
+    board_p.add_argument("--out", type=Path, default=Path("data/charuco_board.png"))
+    board_p.add_argument("--squares-x", type=int, default=10)
+    board_p.add_argument("--squares-y", type=int, default=8)
+    board_p.add_argument("--square-size-mm", type=float, default=25.0)
+    board_p.add_argument("--marker-size-mm", type=float, default=18.0)
+    board_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+    board_p.add_argument("--pixels-per-square", type=int, default=80)
 
     args = parser.parse_args()
 
+    if args.mode == "board":
+        from .charuco import save_board_image
+
+        spec = CharucoBoardSpec(
+            squares_x=args.squares_x,
+            squares_y=args.squares_y,
+            square_size_mm=args.square_size_mm,
+            marker_size_mm=args.marker_size_mm,
+            dictionary_name=args.dictionary,
+        )
+        save_board_image(spec, args.out, pixels_per_square=args.pixels_per_square)
+        print(f"已輸出board圖檔至 {args.out}，請按實際尺寸列印（不要自動縮放/符合頁面）")
+        return
+
     if args.mode == "mono":
-        spec = ChessboardSpec(
-            cols=args.cols, rows=args.rows, square_size_mm=args.square_size_mm
-        )
-        capture_mono(args.camera, args.out, spec, args.target_count)
-    else:
-        spec = ChessboardSpec(
-            cols=args.cols, rows=args.rows, square_size_mm=args.square_size_mm
-        )
-        if args.single_device:
-            capture_stereo_single_device(
-                args.left_camera,
-                args.left_out,
-                args.right_out,
-                spec,
-                args.target_count,
-                vertical_split=args.vertical_split,
-                swap_lr=args.swap_lr,
+        if args.charuco:
+            board_spec = CharucoBoardSpec(
+                squares_x=args.squares_x,
+                squares_y=args.squares_y,
+                square_size_mm=args.square_size_mm,
+                marker_size_mm=args.marker_size_mm,
+                dictionary_name=args.dictionary,
+            )
+            capture_mono_charuco(
+                args.camera, args.out, board_spec, args.target_count, min_corners=args.min_corners
             )
         else:
-            capture_stereo(
-                args.left_camera,
-                args.right_camera,
-                args.left_out,
-                args.right_out,
-                spec,
-                args.target_count,
+            spec = ChessboardSpec(
+                cols=args.cols, rows=args.rows, square_size_mm=args.square_size_mm
             )
+            capture_mono(args.camera, args.out, spec, args.target_count)
+    else:
+        if args.charuco:
+            board_spec = CharucoBoardSpec(
+                squares_x=args.squares_x,
+                squares_y=args.squares_y,
+                square_size_mm=args.square_size_mm,
+                marker_size_mm=args.marker_size_mm,
+                dictionary_name=args.dictionary,
+            )
+            if args.single_device:
+                capture_stereo_charuco_single_device(
+                    args.left_camera,
+                    args.left_out,
+                    args.right_out,
+                    board_spec,
+                    args.target_count,
+                    vertical_split=args.vertical_split,
+                    swap_lr=args.swap_lr,
+                    min_shared_corners=args.min_shared_corners,
+                )
+            else:
+                capture_stereo_charuco(
+                    args.left_camera,
+                    args.right_camera,
+                    args.left_out,
+                    args.right_out,
+                    board_spec,
+                    args.target_count,
+                    min_shared_corners=args.min_shared_corners,
+                )
+        else:
+            spec = ChessboardSpec(
+                cols=args.cols, rows=args.rows, square_size_mm=args.square_size_mm
+            )
+            if args.single_device:
+                capture_stereo_single_device(
+                    args.left_camera,
+                    args.left_out,
+                    args.right_out,
+                    spec,
+                    args.target_count,
+                    vertical_split=args.vertical_split,
+                    swap_lr=args.swap_lr,
+                )
+            else:
+                capture_stereo(
+                    args.left_camera,
+                    args.right_camera,
+                    args.left_out,
+                    args.right_out,
+                    spec,
+                    args.target_count,
+                )
 
 
 if __name__ == "__main__":

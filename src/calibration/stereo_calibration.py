@@ -6,9 +6,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .charuco import CharucoBoardSpec, detect_charuco
 from .chessboard import ChessboardSpec, find_corners, load_gray_images
 
 _MIN_PAIRS = 10
+_MIN_SHARED_CHARUCO_CORNERS = 6
 
 
 @dataclass
@@ -109,21 +111,13 @@ def _find_matched_corners(
     return obj_points, left_points, right_points, image_size
 
 
-def calibrate_stereo(
-    left_dir: Path,
-    right_dir: Path,
-    spec: ChessboardSpec,
-    target_error_px: float = 0.5,
+def _run_stereo_calibration(
+    obj_points: list[np.ndarray],
+    left_points: list[np.ndarray],
+    right_points: list[np.ndarray],
+    image_size: tuple[int, int],
+    target_error_px: float,
 ) -> StereoCalibrationResult:
-    obj_points, left_points, right_points, image_size = _find_matched_corners(
-        left_dir, right_dir, spec
-    )
-
-    if len(obj_points) < _MIN_PAIRS:
-        raise ValueError(
-            f"同步偵測到棋盤格的組數僅{len(obj_points)}組 需至少{_MIN_PAIRS}組"
-        )
-
     _, cm_l0, dc_l0, _, _ = cv2.calibrateCamera(
         obj_points, left_points, image_size, None, None
     )
@@ -181,3 +175,99 @@ def calibrate_stereo(
     print(f"雙目基線長度：{result.baseline_mm:.2f} mm")
 
     return result
+
+
+def calibrate_stereo(
+    left_dir: Path,
+    right_dir: Path,
+    spec: ChessboardSpec,
+    target_error_px: float = 0.5,
+) -> StereoCalibrationResult:
+    obj_points, left_points, right_points, image_size = _find_matched_corners(
+        left_dir, right_dir, spec
+    )
+
+    if len(obj_points) < _MIN_PAIRS:
+        raise ValueError(
+            f"同步偵測到棋盤格的組數僅{len(obj_points)}組 需至少{_MIN_PAIRS}組"
+        )
+
+    return _run_stereo_calibration(obj_points, left_points, right_points, image_size, target_error_px)
+
+
+def _charuco_frame_correspondence(
+    gray_l: np.ndarray,
+    gray_r: np.ndarray,
+    board: cv2.aruco.CharucoBoard,
+    board_obj_points: np.ndarray,
+    min_shared: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """算左右影像在同一幀共同偵測到的角點，回傳(objp, imgp_l, imgp_r)。
+
+    左右鏡頭各自可能只看到board的一部分，只要共同角點數>=min_shared就能用，
+    不需要整塊board同時入鏡——解決視野重疊區域小的問題。
+    """
+    det_l = detect_charuco(gray_l, board, min_corners=1)
+    det_r = detect_charuco(gray_r, board, min_corners=1)
+    if det_l is None or det_r is None:
+        return None
+
+    corners_l, ids_l = det_l
+    corners_r, ids_r = det_r
+    by_id_l = dict(zip(ids_l.flatten().tolist(), corners_l.reshape(-1, 2)))
+    by_id_r = dict(zip(ids_r.flatten().tolist(), corners_r.reshape(-1, 2)))
+    shared_ids = sorted(set(by_id_l) & set(by_id_r))
+
+    if len(shared_ids) < min_shared:
+        return None
+
+    objp = board_obj_points[shared_ids].astype(np.float32)
+    imgp_l = np.array([by_id_l[i] for i in shared_ids], dtype=np.float32).reshape(-1, 1, 2)
+    imgp_r = np.array([by_id_r[i] for i in shared_ids], dtype=np.float32).reshape(-1, 1, 2)
+    return objp, imgp_l, imgp_r
+
+
+def calibrate_stereo_charuco(
+    left_dir: Path,
+    right_dir: Path,
+    board_spec: CharucoBoardSpec,
+    target_error_px: float = 0.5,
+    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+) -> StereoCalibrationResult:
+    """ChArUco版雙目標定。每一幀左右影像只要有足夠共同角點就能用，
+    不需要兩顆鏡頭同時拍到完整棋盤格。
+    """
+    board = board_spec.build_board()
+    board_obj_points = board.getChessboardCorners()
+
+    left_images = {p.name: gray for p, gray in load_gray_images(left_dir)}
+    right_images = {p.name: gray for p, gray in load_gray_images(right_dir)}
+    common_names = sorted(set(left_images) & set(right_images))
+
+    if not common_names:
+        raise ValueError(f"左右資料夾無同名檔案可配對（left={left_dir}, right={right_dir}）")
+
+    obj_points: list[np.ndarray] = []
+    left_points: list[np.ndarray] = []
+    right_points: list[np.ndarray] = []
+    image_size: tuple[int, int] | None = None
+
+    for name in common_names:
+        gray_l, gray_r = left_images[name], right_images[name]
+        if image_size is None:
+            image_size = (gray_l.shape[1], gray_l.shape[0])
+        corr = _charuco_frame_correspondence(gray_l, gray_r, board, board_obj_points, min_shared_corners)
+        if corr is None:
+            continue
+        objp, imgp_l, imgp_r = corr
+        obj_points.append(objp)
+        left_points.append(imgp_l)
+        right_points.append(imgp_r)
+
+    if len(obj_points) < _MIN_PAIRS:
+        raise ValueError(
+            f"有效共同角點組數僅{len(obj_points)}組 需至少{_MIN_PAIRS}組"
+        )
+
+    assert image_size is not None
+    return _run_stereo_calibration(obj_points, left_points, right_points, image_size, target_error_px)

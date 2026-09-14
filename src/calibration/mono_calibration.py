@@ -6,9 +6,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .charuco import CharucoBoardSpec, detect_charuco
 from .chessboard import ChessboardSpec, find_corners, load_gray_images
 
 _MIN_IMAGES = 10
+_MIN_CHARUCO_CORNERS_PER_VIEW = 6
 
 
 @dataclass
@@ -63,6 +65,37 @@ def _per_view_reprojection_errors(
     return errors
 
 
+def _run_mono_calibration(
+    obj_points: list[np.ndarray],
+    img_points: list[np.ndarray],
+    image_size: tuple[int, int],
+    used_paths: list[Path],
+    target_error_px: float,
+) -> MonoCalibrationResult:
+    _, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+        obj_points, img_points, image_size, None, None
+    )
+
+    per_view_errors = _per_view_reprojection_errors(
+        obj_points, img_points, rvecs, tvecs, camera_matrix, dist_coeffs
+    )
+
+    result = MonoCalibrationResult(
+        camera_matrix=camera_matrix,
+        dist_coeffs=dist_coeffs,
+        image_size=image_size,
+        per_view_errors=per_view_errors,
+        used_images=used_paths,
+    )
+
+    if result.rms_reprojection_error > target_error_px:
+        print(
+            f"RMS重投影誤差{result.rms_reprojection_error:.4f}px 超出目標{target_error_px}px"
+        )
+
+    return result
+
+
 def calibrate_mono(
     image_dir: Path,
     spec: ChessboardSpec,
@@ -94,25 +127,42 @@ def calibrate_mono(
         )
 
     assert image_size is not None
-    _, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-        obj_points, img_points, image_size, None, None
-    )
+    return _run_mono_calibration(obj_points, img_points, image_size, used_paths, target_error_px)
 
-    per_view_errors = _per_view_reprojection_errors(
-        obj_points, img_points, rvecs, tvecs, camera_matrix, dist_coeffs
-    )
 
-    result = MonoCalibrationResult(
-        camera_matrix=camera_matrix,
-        dist_coeffs=dist_coeffs,
-        image_size=image_size,
-        per_view_errors=per_view_errors,
-        used_images=used_paths,
-    )
+def calibrate_mono_charuco(
+    image_dir: Path,
+    board_spec: CharucoBoardSpec,
+    target_error_px: float = 0.3,
+    min_corners_per_view: int = _MIN_CHARUCO_CORNERS_PER_VIEW,
+) -> MonoCalibrationResult:
+    """ChArUco版單眼標定。每張影像只要偵測到夠多角點就能用，不需要整塊board入鏡。"""
+    board = board_spec.build_board()
+    board_obj_points = board.getChessboardCorners()
+    images = load_gray_images(image_dir)
+    if len(images) < _MIN_IMAGES:
+        raise ValueError(f"標定影像過少({len(images)}張) 目前資料夾：{image_dir}")
 
-    if result.rms_reprojection_error > target_error_px:
-        print(
-            f"RMS重投影誤差{result.rms_reprojection_error:.4f}px 超出目標{target_error_px}px"
+    obj_points: list[np.ndarray] = []
+    img_points: list[np.ndarray] = []
+    used_paths: list[Path] = []
+    image_size: tuple[int, int] | None = None
+
+    for path, gray in images:
+        if image_size is None:
+            image_size = (gray.shape[1], gray.shape[0])
+        detected = detect_charuco(gray, board, min_corners=min_corners_per_view)
+        if detected is None:
+            continue
+        corners, ids = detected
+        obj_points.append(board_obj_points[ids.flatten()].astype(np.float32))
+        img_points.append(corners.reshape(-1, 1, 2).astype(np.float32))
+        used_paths.append(path)
+
+    if len(obj_points) < _MIN_IMAGES:
+        raise ValueError(
+            f"有效偵測到足夠角點的影像僅{len(obj_points)}張 需至少{_MIN_IMAGES}張"
         )
 
-    return result
+    assert image_size is not None
+    return _run_mono_calibration(obj_points, img_points, image_size, used_paths, target_error_px)

@@ -39,11 +39,17 @@ def test_stereo_calibration_recovers_known_baseline(tmp_path: Path):
         z = rng.uniform(650.0, 850.0)
         jitter_x = rng.uniform(-20.0, 20.0)
         jitter_y = rng.uniform(-15.0, 15.0)
-        tvec_left = np.array([-pattern_w_mm / 2 + jitter_x, -pattern_h_mm / 2 + jitter_y, z])
+        tvec_left = np.array(
+            [-pattern_w_mm / 2 + jitter_x, -pattern_h_mm / 2 + jitter_y, z]
+        )
         tvec_right = tvec_left + np.array([TRUE_BASELINE_MM, 0.0, 0.0])
 
-        view_l = synthesize_view(frontal, spec, margin_squares, TRUE_K, rvec, tvec_left, DEST_SIZE)
-        view_r = synthesize_view(frontal, spec, margin_squares, TRUE_K, rvec, tvec_right, DEST_SIZE)
+        view_l = synthesize_view(
+            frontal, spec, margin_squares, TRUE_K, rvec, tvec_left, DEST_SIZE
+        )
+        view_r = synthesize_view(
+            frontal, spec, margin_squares, TRUE_K, rvec, tvec_right, DEST_SIZE
+        )
 
         name = f"frame_{i:04d}.png"
         cv2.imwrite(str(left_dir / name), view_l)
@@ -75,6 +81,6 @@ def test_stereo_calibration_raises_when_filenames_mismatch(tmp_path: Path):
 
     try:
         calibrate_stereo(left_dir, right_dir, spec)
-        assert False, "應該要拋出 ValueError"
+        assert False, "應拋出 ValueError"
     except ValueError as e:
         assert str(left_dir) in str(e) and str(right_dir) in str(e)
