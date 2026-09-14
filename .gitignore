@@ -6,3 +6,6 @@ __pycache__/
 data/calibration_images/*/*.png
 data/calibration_images/*/*.jpg
 data/calibration_output/*.npz
+
+data/pose_models/*.pth
+data/pose_models/*.json

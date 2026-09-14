@@ -17,7 +17,9 @@ TRUE_K = np.array(
 )
 
 
-def _generate_poses(n: int, rng: np.random.Generator, pattern_w_mm: float, pattern_h_mm: float):
+def _generate_poses(
+    n: int, rng: np.random.Generator, pattern_w_mm: float, pattern_h_mm: float
+):
     poses = []
     for _ in range(n):
         rvec = rng.uniform(-0.2, 0.2, size=3)
@@ -43,7 +45,9 @@ def test_mono_calibration_recovers_known_intrinsics(tmp_path: Path):
     image_dir = tmp_path / "front"
     image_dir.mkdir()
     for i, (rvec, tvec) in enumerate(poses):
-        view = synthesize_view(frontal, spec, margin_squares, TRUE_K, rvec, tvec, DEST_SIZE)
+        view = synthesize_view(
+            frontal, spec, margin_squares, TRUE_K, rvec, tvec, DEST_SIZE
+        )
         cv2.imwrite(str(image_dir / f"frame_{i:04d}.png"), view)
 
     result = calibrate_mono(image_dir, spec, target_error_px=1.0)
@@ -84,7 +88,9 @@ def test_mono_calibration_save_and_load_roundtrip(tmp_path: Path):
     image_dir = tmp_path / "front"
     image_dir.mkdir()
     for i, (rvec, tvec) in enumerate(poses):
-        view = synthesize_view(frontal, spec, margin_squares, TRUE_K, rvec, tvec, DEST_SIZE)
+        view = synthesize_view(
+            frontal, spec, margin_squares, TRUE_K, rvec, tvec, DEST_SIZE
+        )
         cv2.imwrite(str(image_dir / f"frame_{i:04d}.png"), view)
 
     result = calibrate_mono(image_dir, spec, target_error_px=1.0)

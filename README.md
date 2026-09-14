@@ -49,6 +49,41 @@ python -m src.calibration.cli stereo --left-images data/calibration_images/stere
 
 結果存成 `.npz`，之後三角測量模組直接讀。單眼目標重投影誤差 <0.3px，雙目 <0.5px，超過會印警告。
 
+## 人體關鍵點偵測 + TensorRT優化
+
+用 [trt_pose](https://github.com/NVIDIA-AI-IOT/trt_pose)（NVIDIA為Jetson做的TensorRT pose函式庫），不是原版OpenPose——OpenPose在JetPack 6/CUDA 12上已經不維護，裝不太起來。
+
+這裡（Windows開發機）沒有GPU，只能寫、測純邏輯的部分（`python -m pytest`不需要裝torch）。實際推論、TensorRT engine轉換要在Jetson上做。
+
+Jetson上手動安裝：
+
+```
+git clone https://github.com/NVIDIA-AI-IOT/torch2trt
+cd torch2trt && python3 setup.py install --user
+
+git clone https://github.com/NVIDIA-AI-IOT/trt_pose
+cd trt_pose && python3 setup.py install --user
+
+cp trt_pose/tasks/human_pose/human_pose.json <repo>/data/pose_models/
+```
+
+PyTorch要裝NVIDIA官方Jetson wheel，不是`pip install torch`（查 https://forums.developer.nvidia.com/t/pytorch-for-jetson ）。checkpoint（`.pth`）從trt_pose的model zoo手動下載，放到`data/pose_models/`。
+
+跑基準測試（第一次跑fp16會花幾分鐘建TensorRT engine，之後讀快取）：
+
+```
+python -m src.pose.cli benchmark --precision fp32 --front-camera 1 --stereo-camera 3 --single-device
+python -m src.pose.cli benchmark --precision fp16 --front-camera 1 --stereo-camera 3 --single-device
+```
+
+比對FP32/FP16關鍵點精度（RMSE超過門檻只印警告，不會擋著不給跑，代表建議退回FP32）：
+
+```
+python -m src.pose.cli compare-precision --camera 1 --samples 30 --rmse-threshold-px 3.0
+```
+
+有個地方要注意：`topology.py`裡假設trt_pose的`human_pose.json`有第18個`neck`關鍵點，這是抓trt_pose官方預設拓樸的印象，實際裝起來後要核對一下`json.load(open("human_pose.json"))["keypoints"]`，不一樣的話改那個tuple就好，其他地方不用動。
+
 ## 目錄
 
 ```
@@ -58,6 +93,14 @@ src/calibration/
   stereo_calibration.py stereoCalibrate + stereoRectify
   capture.py            接相機拍照
   cli.py                跑標定計算
+src/pose/
+  topology.py           關鍵點命名
+  keypoints.py           PersonKeypoints + RMSE計算
+  preprocess.py           畫面前處理（不碰torch）
+  engine.py              PoseEngine介面 + trt_pose實作（torch延遲import）
+  benchmark.py            延遲量測、FP32/FP16比對
+  cli.py                跑基準測試/精度比對
 tests/
-  synthetic.py           合成測試影像用
+  synthetic.py           合成測試影像用（標定）
+  pose_fakes.py           假引擎，測pose模組不需要GPU
 ```
