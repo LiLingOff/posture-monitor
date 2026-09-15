@@ -2,7 +2,7 @@
 
 高中科展「基於雙目對極幾何之即時三維坐姿監測系統」的程式部分。用一顆正面相機加一組雙目模組拍攝坐姿，標定相機後做3D三角測量算出坐姿角度，即時給回饋。
 
-目前完成度：**相機標定**（含應付雙目視野重疊區域小的ChArUco方案）跟**人體關鍵點偵測骨架**（trt_pose + TensorRT，尚未在真實硬體上跑過）。3D三角測量、角度計算、即時回饋這幾塊還沒開始。
+目前完成度：**相機標定**（含應付雙目視野重疊區域小的ChArUco方案）、**人體關鍵點偵測骨架**（trt_pose + TensorRT，尚未在真實硬體上跑過）、**3D三角測量與坐姿角度計算**（θ_CA、θ_sym已實作並用合成資料驗證，θ_KA公式未定）。個人校正基準、閾值判定、LED/蜂鳴器即時回饋這幾塊還沒開始。
 
 ## 兩台機器、兩種角色
 
@@ -137,6 +137,25 @@ python -m src.pose.cli compare-precision --camera 1 --samples 30 --rmse-threshol
 
 RMSE超過門檻只印警告、不會擋著不給用，代表這種情況下建議退回FP32——`--rmse-threshold-px`現在的3.0px是憑經驗猜的，不是照實際影像解析度算出來的，跑完實測數字後應該要調整。
 
+## 3D三角測量與坐姿角度
+
+`src/geometry/`把雙目標定輸出（`R1/R2/P1/P2/Q`）跟pose模組輸出（`PersonKeypoints`）接起來，算出3D關鍵點跟坐姿角度。
+
+三角測量流程：`cv2.undistortPoints`用`R1/R2`+`P1/P2`把原始像素點去畸變並套用校正轉換，再丟進`cv2.triangulatePoints`。這一步很容易寫錯——直接把原始像素座標丟進`triangulatePoints`，因為`P1/P2`是定義在校正後的座標系裡，不是原始相機座標系，算出來的3D點會是錯的但通常不會報錯，錯誤不容易發現。`tests/test_triangulation.py`用已知3D點反推驗證這條路徑。
+
+角度公式來自前一屆科展的前作（《整合多視角姿態估測與幾何特徵量化之即時坐姿監測系統研究》）。前作只有兩顆獨立單眼相機（正面0°＋側面45°），沒有真正的立體視覺，靠信心度加權融合兩邊2D結果；θ_CA（頸椎前傾角）原本要用`/sin(45°)`補償單一45°相機缺乏深度資訊造成的透視壓縮。這次升級成真正的雙目對極幾何後，這個補償係數不需要了——直接算耳朵→肩膀的3D向量，投影到矢狀面，跟垂直軸算帶號夾角就是θ_CA；θ_sym（肩膀水平角）同理，左右肩連線投影到冠狀面跟水平軸算夾角。
+
+```python
+from geometry import triangulate_person_keypoints
+from geometry.posture_angles import theta_ca, theta_sym
+
+keypoints_3d = triangulate_person_keypoints(stereo_calib, left_keypoints, right_keypoints)
+theta_ca(keypoints_3d)   # 頸椎前傾角（度），side="right"/"left"
+theta_sym(keypoints_3d)  # 肩膀水平角（度）
+```
+
+θ_KA前作完全沒提到，公式還沒定案，`geometry.posture_angles.theta_ka()`目前是`NotImplementedError`。個人校正基準（θ_offset）跟10°/5°/20px這類判定門檻是前作拿來觸發警示用的執行期邏輯，不屬於幾何計算，這裡沒做，留給之後的監測/回饋模組。
+
 ## 目錄
 
 ```
@@ -154,9 +173,15 @@ src/pose/
   engine.py              PoseEngine介面 + trt_pose實作（torch延遲import）
   benchmark.py           延遲量測、FP32/FP16精度比對
   cli.py                跑基準測試/精度比對
+src/geometry/
+  triangulation.py       雙目3D三角測量核心
+  keypoints3d.py         PersonKeypoints3D + 單人關鍵點三角測量
+  angles.py              通用角度數學（跟研究無關的純幾何）
+  posture_angles.py     θ_CA/θ_sym實作，θ_KA是NotImplementedError stub
 tests/
   synthetic.py           合成測試影像（棋盤格標定用）
   charuco_synthetic.py   合成測試影像（ChArUco標定用）
+  geometry_synthetic.py 合成雙目標定+3D點投影（三角測量用）
   pose_fakes.py          假引擎，測pose模組不需要GPU
 ```
 
@@ -167,3 +192,4 @@ tests/
 - `pose/topology.py`假設trt_pose預設的`human_pose.json`有第18個`neck`關鍵點。裝好trt_pose後用`json.load(open("human_pose.json"))["keypoints"]`核對一下，順序或有無不同的話改那個tuple就好，其他模組不受影響。
 - `pose/engine.py`裡`torch2trt`/`trt_pose`的呼叫方式（`fp16_mode`參數、`TRTModule`存讀、`ParseObjects`用法）是照公開資料寫的，沒有實機驗證過，到Jetson上八成要對照實際clone下來的原始碼調整。
 - ChArUco的`--min-shared-corners`預設6、pose的`--rmse-threshold-px`預設3.0，都是憑經驗抓的起始值，不是算出來的，跑過實機數據後應該回頭調整。
+- `geometry/posture_angles.py`假設雙目校正後的座標系符合OpenCV慣例（X右、Y下、Z深度）且相機大致水平架設、沒有明顯翻滾角，沒有額外做座標系旋轉校正。如果實際架設角度偏差較大，θ_CA/θ_sym算出來的角度會系統性地偏移，需要額外處理（或比照最初實驗步驟文件的做法，把殘餘傾角記錄下來當統計分析的共變量）。
