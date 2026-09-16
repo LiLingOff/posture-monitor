@@ -63,8 +63,22 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
     fp16_engine = TrtPoseEngine(paths, precision="fp16")
 
     frames = _grab_frames(args.camera, args.samples)
-    fp32_results = [fp32_engine.infer(f)[0] for f in frames]
-    fp16_results = [fp16_engine.infer(f)[0] for f in frames]
+    fp32_results, fp16_results = [], []
+    skipped = 0
+    for frame in frames:
+        detected_fp32 = fp32_engine.infer(frame)
+        detected_fp16 = fp16_engine.infer(frame)
+        # 沒偵測到人時infer回傳空list，直接取[0]會IndexError
+        if not detected_fp32 or not detected_fp16:
+            skipped += 1
+            continue
+        fp32_results.append(detected_fp32[0])
+        fp16_results.append(detected_fp16[0])
+
+    if skipped:
+        print(f"有{skipped}/{len(frames)}張影格沒偵測到人，已略過")
+    if not fp32_results:
+        raise RuntimeError("所有取樣影格都沒偵測到人，無法比對——確認受試者有在畫面內、光線是否足夠")
 
     mean_rmse, passed = compare_precision_rmse(fp32_results, fp16_results, args.rmse_threshold_px)
     chosen = "fp16" if passed else "fp32"

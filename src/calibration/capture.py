@@ -19,6 +19,19 @@ def _open_camera(index: int) -> cv2.VideoCapture:
     return cv2.VideoCapture(index)
 
 
+def _already_complete(out_dir: Path, target_count: int) -> bool:
+    """資料夾已有足夠張數就回傳True，直接跳過不用開相機。
+
+    沒有這個檢查的話，拍攝迴圈一次都不會執行，後面要顯示最後一幀的變數
+    就沒被指派過，會以UnboundLocalError收場。
+    """
+    saved = len(list(out_dir.glob("*.png")))
+    if saved >= target_count:
+        print(f"{out_dir} 已有{saved}張（目標{target_count}），跳過拍攝；要重拍請先清空資料夾")
+        return True
+    return False
+
+
 def _hold_until_keypress(*frames_by_window: tuple[str, np.ndarray]) -> None:
     for window_name, frame in frames_by_window:
         done = frame.copy()
@@ -46,6 +59,9 @@ def capture_mono(
     camera_index: int, out_dir: Path, spec: ChessboardSpec, target_count: int
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if _already_complete(out_dir, target_count):
+        return
+
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
@@ -90,6 +106,9 @@ def capture_stereo(
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
+    if _already_complete(left_out, target_count):
+        return
+
     cap_l = _open_camera(left_index)
     cap_r = _open_camera(right_index)
     if not cap_l.isOpened() or not cap_r.isOpened():
@@ -151,6 +170,9 @@ def capture_stereo_single_device(
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
+    if _already_complete(left_out, target_count):
+        return
+
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
@@ -227,6 +249,9 @@ def capture_mono_charuco(
     min_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if _already_complete(out_dir, target_count):
+        return
+
     board = board_spec.build_board()
     cap = _open_camera(camera_index)
     if not cap.isOpened():
@@ -303,6 +328,9 @@ def capture_stereo_charuco(
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
+    if _already_complete(left_out, target_count):
+        return
+
     board = board_spec.build_board()
     cap_l = _open_camera(left_index)
     cap_r = _open_camera(right_index)
@@ -361,6 +389,9 @@ def capture_stereo_charuco_single_device(
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
+    if _already_complete(left_out, target_count):
+        return
+
     board = board_spec.build_board()
     cap = _open_camera(camera_index)
     if not cap.isOpened():

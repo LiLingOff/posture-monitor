@@ -45,6 +45,27 @@ def test_signed_angle_in_plane_negative_rotation():
     assert signed_angle_in_plane(vector, reference, plane_normal) == pytest.approx(-30.0, abs=1e-6)
 
 
+def test_angle_between_vectors_raises_on_zero_length():
+    """零長度向量算不出角度。回傳0度會被讀成「完全沒偏移」，是最理想的姿勢，
+    但實際上是兩個關鍵點疊在一起、資料壞掉。"""
+    with pytest.raises(ValueError):
+        angle_between_vectors(np.zeros(3), np.array([1.0, 0.0, 0.0]))
+
+
+def test_signed_angle_in_plane_raises_on_zero_length():
+    with pytest.raises(ValueError):
+        signed_angle_in_plane(np.zeros(3), np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]))
+
+
+def test_signed_angle_in_plane_raises_when_vector_perpendicular_to_plane():
+    """向量完全垂直於該平面時投影後長度為0，角度沒有意義。"""
+    plane_normal = np.array([0.0, 0.0, 1.0])
+    reference = np.array([1.0, 0.0, 0.0])
+    vector = np.array([0.0, 0.0, 100.0])  # 整個落在法線方向上
+    with pytest.raises(ValueError):
+        signed_angle_in_plane(vector, reference, plane_normal)
+
+
 def test_signed_angle_in_plane_ignores_out_of_plane_component():
     plane_normal = np.array([0.0, 0.0, 1.0])
     reference = np.array([1.0, 0.0, 0.0])

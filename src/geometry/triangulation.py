@@ -41,7 +41,13 @@ def triangulate_points(
     points_4d = cv2.triangulatePoints(
         calib.P1, calib.P2, rect_l.reshape(-1, 2).T, rect_r.reshape(-1, 2).T
     )
-    points_3d = (points_4d[:3] / points_4d[3]).T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        points_3d = (points_4d[:3] / points_4d[3]).T
+
+    # 齊次座標第4維趨近0代表兩條視線幾乎平行、交點在無窮遠（左右對應點幾乎重合時會這樣）。
+    # 這種結果是inf或極大值，放著會混進角度計算變成看似合理的數字，統一標成NaN。
+    points_3d[~np.isfinite(points_3d).all(axis=1)] = np.nan
+
     result[valid] = points_3d
     return result
 

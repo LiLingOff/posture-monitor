@@ -40,6 +40,8 @@ class TrtPoseEngine:
         self._input_size = input_size
         self._model = None
         self._topology = None
+        self._human_pose = None
+        self._parse_objects = None
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
@@ -47,10 +49,14 @@ class TrtPoseEngine:
         import json
 
         import trt_pose.coco
+        from trt_pose.parse_objects import ParseObjects
 
-        self._topology = trt_pose.coco.coco_category_to_topology(
-            json.loads(self._paths.topology_json.read_text(encoding="utf-8"))
-        )
+        # coco_category_to_topology回傳的是tensor不是dict，關節點/連結數量要從原始json拿
+        self._human_pose = json.loads(self._paths.topology_json.read_text(encoding="utf-8"))
+        self._topology = trt_pose.coco.coco_category_to_topology(self._human_pose)
+        # ParseObjects建構成本不低，建一次重複用，不要每幀重建
+        self._parse_objects = ParseObjects(self._topology)
+
         if self._precision == "fp16":
             self._model = self._build_or_load_trt()
         else:
@@ -60,8 +66,8 @@ class TrtPoseEngine:
         import torch
         import trt_pose.models
 
-        num_parts = self._topology["cmap"].shape[0]
-        num_links = self._topology["paf"].shape[0] // 2
+        num_parts = len(self._human_pose["keypoints"])
+        num_links = len(self._human_pose["skeleton"])
         model = trt_pose.models.resnet18_baseline_att(num_parts, 2 * num_links).cuda().eval()
         model.load_state_dict(torch.load(self._paths.checkpoint))
         return model
@@ -92,14 +98,14 @@ class TrtPoseEngine:
         tensor = torch.from_numpy(arr.transpose(2, 0, 1)).unsqueeze(0).cuda()
         with torch.no_grad():
             cmap, paf = self._model(tensor)
-        return self._parse(cmap, paf)
+        frame_h, frame_w = bgr_frame.shape[:2]
+        return self._parse(cmap, paf, frame_w, frame_h)
 
-    def _parse(self, cmap, paf) -> list[PersonKeypoints]:
+    def _parse(self, cmap, paf, frame_w: int, frame_h: int) -> list[PersonKeypoints]:
         from .topology import NUM_KEYPOINTS
-        from trt_pose.parse_objects import ParseObjects
 
-        parse_objects = ParseObjects(self._topology)
-        counts, objects, peaks = parse_objects(cmap, paf)
+        counts, objects, peaks = self._parse_objects(cmap, paf)
+        cmap_h, cmap_w = int(cmap.shape[2]), int(cmap.shape[3])
 
         results: list[PersonKeypoints] = []
         for i in range(int(counts[0])):
@@ -108,9 +114,16 @@ class TrtPoseEngine:
             confidences = np.zeros(NUM_KEYPOINTS, dtype=np.float32)
             for j in range(NUM_KEYPOINTS):
                 k = int(obj[j])
-                if k >= 0:
-                    peak = peaks[0][j][k]
-                    points[j] = [float(peak[1]), float(peak[0])]
-                    confidences[j] = 1.0
+                if k < 0:
+                    continue
+                # peaks是正規化座標(y, x, 值域0~1)，要乘回原始畫面尺寸才是像素座標。
+                # 前處理把整張畫面縮成正方形輸入，所以乘原始寬高剛好抵銷這個縮放。
+                peak_y, peak_x = float(peaks[0][j][k][0]), float(peaks[0][j][k][1])
+                points[j] = [peak_x * frame_w, peak_y * frame_h]
+                # 信心度取cmap在該峰值位置的數值，不能寫死1.0——
+                # 下游triangulate_person_keypoints要靠這個值做min_confidence過濾
+                row = min(max(int(peak_y * cmap_h), 0), cmap_h - 1)
+                col = min(max(int(peak_x * cmap_w), 0), cmap_w - 1)
+                confidences[j] = float(cmap[0][j][row][col])
             results.append(PersonKeypoints(points=points, confidences=confidences))
         return results

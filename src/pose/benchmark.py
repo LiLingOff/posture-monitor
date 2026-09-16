@@ -25,6 +25,9 @@ class LatencyStats:
 
 
 def measure_latency(engine: PoseEngine, frames: list[np.ndarray], warmup: int = 3) -> LatencyStats:
+    if len(frames) <= warmup:
+        raise ValueError(f"影格數({len(frames)})必須大於warmup({warmup})，否則沒有資料可以計時")
+
     for f in frames[:warmup]:
         engine.infer(f)
 
@@ -43,6 +46,9 @@ def measure_sequential_multi_camera(
 
     對應文件「三相機循序推論延遲基線」，這裡實際是正面+雙目切開後的2路feed。
     """
+    if len(frame_sets) <= warmup:
+        raise ValueError(f"影格組數({len(frame_sets)})必須大於warmup({warmup})，否則沒有資料可以計時")
+
     for frames in frame_sets[:warmup]:
         for f in frames:
             engine.infer(f)
@@ -65,7 +71,18 @@ def compare_precision_rmse(
     if len(fp32_results) != len(fp16_results):
         raise ValueError("FP32與FP16結果數量不一致，無法逐一比對")
 
-    rmses = [keypoints_rmse(a, b) for a, b in zip(fp32_results, fp16_results)]
+    # 某一幀兩邊沒有共同有效關鍵點時keypoints_rmse會拋例外，略過該幀就好，
+    # 不該讓整批比對失敗
+    rmses = []
+    for a, b in zip(fp32_results, fp16_results):
+        try:
+            rmses.append(keypoints_rmse(a, b))
+        except ValueError:
+            continue
+
+    if not rmses:
+        raise ValueError("所有影格的FP32/FP16結果都沒有共同有效的關鍵點，無法比對")
+
     mean_rmse = float(np.mean(rmses))
     passed = mean_rmse <= threshold_px
 

@@ -60,7 +60,10 @@ def _per_view_reprojection_errors(
         projected, _ = cv2.projectPoints(
             obj_points[i], rvecs[i], tvecs[i], camera_matrix, dist_coeffs
         )
-        error = cv2.norm(img_points[i], projected, cv2.NORM_L2) / len(projected)
+        # cv2.norm給的是sqrt(所有點誤差平方和)，要除以sqrt(N)才是該張影像的RMS。
+        # 除以N（OpenCV官方教學的寫法）會把誤差低估sqrt(N)倍，35個角點就差5.9倍，
+        # 會讓0.3px的品質門檻形同虛設。這樣算出來的總RMS會等於calibrateCamera的回傳值。
+        error = cv2.norm(img_points[i], projected, cv2.NORM_L2) / np.sqrt(len(projected))
         errors.append(float(error))
     return errors
 
@@ -103,7 +106,7 @@ def calibrate_mono(
 ) -> MonoCalibrationResult:
     images = load_gray_images(image_dir)
     if len(images) < _MIN_IMAGES:
-        raise ValueError(f"標定影像過少({len(images)}張) 目前資料夾：{image_dir}")
+        raise ValueError(f"標定影像過少（{len(images)}張），至少要{_MIN_IMAGES}張、建議30–40張。資料夾：{image_dir}")
 
     objp = spec.object_points()
     obj_points: list[np.ndarray] = []
@@ -123,7 +126,8 @@ def calibrate_mono(
 
     if len(obj_points) < _MIN_IMAGES:
         raise ValueError(
-            f"同步偵測到棋盤格的組數僅{len(obj_points)}張 需至少{_MIN_IMAGES}張"
+            f"成功偵測到棋盤格的影像只有{len(obj_points)}張，需至少{_MIN_IMAGES}張。"
+            f"棋盤格要完整入鏡且對焦清楚，或確認--cols/--rows跟實際板子相符"
         )
 
     assert image_size is not None
@@ -141,7 +145,7 @@ def calibrate_mono_charuco(
     board_obj_points = board.getChessboardCorners()
     images = load_gray_images(image_dir)
     if len(images) < _MIN_IMAGES:
-        raise ValueError(f"標定影像過少({len(images)}張) 目前資料夾：{image_dir}")
+        raise ValueError(f"標定影像過少（{len(images)}張），至少要{_MIN_IMAGES}張、建議30–40張。資料夾：{image_dir}")
 
     obj_points: list[np.ndarray] = []
     img_points: list[np.ndarray] = []
@@ -161,7 +165,8 @@ def calibrate_mono_charuco(
 
     if len(obj_points) < _MIN_IMAGES:
         raise ValueError(
-            f"有效偵測到足夠角點的影像僅{len(obj_points)}張 需至少{_MIN_IMAGES}張"
+            f"偵測到足夠角點的影像只有{len(obj_points)}張，需至少{_MIN_IMAGES}張。"
+            f"確認--squares-x/--squares-y/--dictionary跟實際板子相符，或試試--legacy-pattern"
         )
 
     assert image_size is not None

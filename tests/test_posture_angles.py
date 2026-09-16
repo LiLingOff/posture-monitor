@@ -65,6 +65,17 @@ def test_theta_sym_raises_when_shoulder_missing():
         theta_sym(kp)
 
 
+def test_theta_ca_raises_when_keypoints_coincide():
+    """耳朵跟肩膀被算到同一個3D點時要報錯。
+
+    這種情況原本會回傳0度，也就是「完美姿勢」，壞掉的資料反而永遠不會觸發警示。
+    """
+    same_point = np.array([0.0, 0.0, 500.0])
+    kp = _make_keypoints3d({"right_shoulder": same_point, "right_ear": same_point.copy()})
+    with pytest.raises(ValueError):
+        theta_ca(kp)
+
+
 def test_theta_ka_not_implemented():
     kp = _make_keypoints3d({})
     with pytest.raises(NotImplementedError):

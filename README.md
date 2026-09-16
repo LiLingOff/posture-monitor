@@ -102,6 +102,8 @@ python -m src.calibration.cli stereo --charuco --squares-x 15 --squares-y 11 --s
 
 結果存成`.npz`（相機內參、畸變係數，雙目的話還有`R/T/R1/R2/P1/P2/Q`），供之後三角測量模組直接讀。單眼目標重投影誤差<0.3px、雙目<0.5px，超過只會印警告、照樣把結果存下來——不是因為無所謂，是因為機械式擋著不給用反而會讓人略過警告字面、改用更寬鬆的門檻重跑，不如把選擇權留給人看數字判斷。
 
+印出來的RMS跟`cv2.calibrateCamera`自己回傳的數字一致，`tests/test_reprojection_error.py`鎖住這件事。會特別測是因為這裡踩過一次：原本沿用OpenCV官方教學的寫法除以N（應該除以sqrt(N)），把誤差低估了sqrt(N)倍——35個角點就是5.9倍，真實0.13px會顯示成0.02px。這種錯不會有任何外顯症狀，只是讓爛標定悄悄通過門檻。
+
 ## 人體關鍵點偵測 + TensorRT優化
 
 原研究文件寫的是OpenPose Body_25，但OpenPose（Caffe架構）大約2021年後就沒再更新，官方最高只支援到CUDA 10，在JetPack 6的CUDA 12環境下裝不太起來。改用[trt_pose](https://github.com/NVIDIA-AI-IOT/trt_pose)——NVIDIA自己為Jetson做的TensorRT pose函式庫，方法學上一樣（部署基準測試、FP16加速、精度比對、必要時退回FP32），只是換了實際的偵測模型。
@@ -156,6 +158,8 @@ theta_sym(keypoints_3d)  # 肩膀水平角（度）
 
 θ_KA前作完全沒提到，公式還沒定案，`geometry.posture_angles.theta_ka()`目前是`NotImplementedError`。個人校正基準（θ_offset）跟10°/5°/20px這類判定門檻是前作拿來觸發警示用的執行期邏輯，不屬於幾何計算，這裡沒做，留給之後的監測/回饋模組。
 
+資料退化時會直接報錯而不是回傳0度：兩個關鍵點被算到同一個3D點、或向量完全垂直於量測平面時，算出來的「0度」看起來是完美姿勢，但其實代表偵測或三角測量壞掉。這種會把故障偽裝成良好結果的路徑一律讓它拋例外。同理，三角測量遇到左右對應點幾乎重合（視線平行、交點在無窮遠）時會回傳NaN而不是極大值。
+
 ## 目錄
 
 ```
@@ -190,6 +194,6 @@ tests/
 寫這些的時候手上沒有真實硬體/裝好的trt_pose可以核對，先記在這裡：
 
 - `pose/topology.py`假設trt_pose預設的`human_pose.json`有第18個`neck`關鍵點。裝好trt_pose後用`json.load(open("human_pose.json"))["keypoints"]`核對一下，順序或有無不同的話改那個tuple就好，其他模組不受影響。
-- `pose/engine.py`裡`torch2trt`/`trt_pose`的呼叫方式（`fp16_mode`參數、`TRTModule`存讀、`ParseObjects`用法）是照公開資料寫的，沒有實機驗證過，到Jetson上八成要對照實際clone下來的原始碼調整。
+- `pose/engine.py`裡`torch2trt`/`trt_pose`的呼叫方式（`fp16_mode`參數、`TRTModule`存讀、`ParseObjects`用法、`peaks`是正規化座標要乘回畫面尺寸、信心度從`cmap`取值）是照公開資料寫的，沒有實機驗證過，到Jetson上要對照實際clone下來的原始碼確認。第一次在Jetson上跑起來後，最該先確認的是`infer()`回傳的關鍵點座標數量級對不對——如果是0~1而不是像素值，代表正規化座標沒被正確換算，後面的三角測量會整個歪掉但不會報錯。
 - ChArUco的`--min-shared-corners`預設6、pose的`--rmse-threshold-px`預設3.0，都是憑經驗抓的起始值，不是算出來的，跑過實機數據後應該回頭調整。
 - `geometry/posture_angles.py`假設雙目校正後的座標系符合OpenCV慣例（X右、Y下、Z深度）且相機大致水平架設、沒有明顯翻滾角，沒有額外做座標系旋轉校正。如果實際架設角度偏差較大，θ_CA/θ_sym算出來的角度會系統性地偏移，需要額外處理（或比照最初實驗步驟文件的做法，把殘餘傾角記錄下來當統計分析的共變量）。

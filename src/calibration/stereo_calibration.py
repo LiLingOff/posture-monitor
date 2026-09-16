@@ -87,7 +87,8 @@ def _find_matched_corners(
     common_names = sorted(set(left_images) & set(right_images))
 
     if not common_names:
-        raise ValueError(f"（left={left_dir}, right={right_dir}）")
+        raise ValueError(f"左右資料夾沒有同名檔案可配對，雙目標定需要同一時刻拍的成對影像。"
+            f"（left={left_dir}, right={right_dir}）")
 
     objp = spec.object_points()
     obj_points: list[np.ndarray] = []
@@ -189,7 +190,8 @@ def calibrate_stereo(
 
     if len(obj_points) < _MIN_PAIRS:
         raise ValueError(
-            f"同步偵測到棋盤格的組數僅{len(obj_points)}組 需至少{_MIN_PAIRS}組"
+            f"左右同時偵測到完整棋盤格的只有{len(obj_points)}組，需至少{_MIN_PAIRS}組。"
+            f"兩顆鏡頭視野重疊區太小時改用ChArUco板（--charuco），不需要整塊板子同時入鏡"
         )
 
     return _run_stereo_calibration(obj_points, left_points, right_points, image_size, target_error_px)
@@ -266,7 +268,8 @@ def calibrate_stereo_charuco(
 
     if len(obj_points) < _MIN_PAIRS:
         raise ValueError(
-            f"有效共同角點組數僅{len(obj_points)}組 需至少{_MIN_PAIRS}組"
+            f"左右有足夠共同角點的只有{len(obj_points)}組，需至少{_MIN_PAIRS}組。"
+            f"拍攝時讓板子多出現在兩邊視野的重疊區，或調低min_shared_corners"
         )
 
     assert image_size is not None
