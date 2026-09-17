@@ -10,8 +10,10 @@ from .benchmark import compare_precision_rmse, measure_latency, measure_sequenti
 from .engine import TrtPoseModelPaths
 
 
-def _grab_frames(camera_index: int, count: int) -> list[np.ndarray]:
-    cap = _open_camera(camera_index)
+def _grab_frames(
+    camera_index: int, count: int, width: int | None = None, height: int | None = None
+) -> list[np.ndarray]:
+    cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
     frames = []
@@ -37,11 +39,11 @@ def _run_benchmark(args: argparse.Namespace) -> None:
     paths = TrtPoseModelPaths(args.checkpoint, args.engine_cache, args.topology)
     engine = TrtPoseEngine(paths, precision=args.precision)
 
-    front_frames = _grab_frames(args.front_camera, args.warmup + args.frames)
+    front_frames = _grab_frames(args.front_camera, args.warmup + args.frames, args.width, args.height)
     single = measure_latency(engine, front_frames, warmup=args.warmup)
     print(f"單相機（正面）precision={args.precision}：平均{single.mean_ms:.2f}ms/frame，{single.fps:.1f}fps")
 
-    stereo_frames = _grab_frames(args.stereo_camera, args.warmup + args.frames)
+    stereo_frames = _grab_frames(args.stereo_camera, args.warmup + args.frames, args.width, args.height)
     frame_sets = []
     for front, stereo in zip(front_frames, stereo_frames):
         if args.single_device:
@@ -62,7 +64,7 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
     fp32_engine = TrtPoseEngine(paths, precision="fp32")
     fp16_engine = TrtPoseEngine(paths, precision="fp16")
 
-    frames = _grab_frames(args.camera, args.samples)
+    frames = _grab_frames(args.camera, args.samples, args.width, args.height)
     fp32_results, fp16_results = [], []
     skipped = 0
     for frame in frames:
@@ -103,6 +105,9 @@ def main() -> None:
     bench_p.add_argument("--single-device", action="store_true")
     bench_p.add_argument("--frames", type=int, default=60)
     bench_p.add_argument("--warmup", type=int, default=5)
+    bench_p.add_argument("--width", type=int, default=None,
+        help="相機解析度寬度；雙目並排模式通常只在特定寬解析度下才有")
+    bench_p.add_argument("--height", type=int, default=None, help="相機解析度高度")
 
     compare_p = sub.add_parser("compare-precision", help="比對FP32/FP16關鍵點RMSE")
     compare_p.add_argument(
@@ -115,6 +120,9 @@ def main() -> None:
     compare_p.add_argument("--camera", type=int, default=0)
     compare_p.add_argument("--samples", type=int, default=30)
     compare_p.add_argument("--rmse-threshold-px", type=float, default=3.0)
+    compare_p.add_argument("--width", type=int, default=None,
+        help="相機解析度寬度；雙目並排模式通常只在特定寬解析度下才有")
+    compare_p.add_argument("--height", type=int, default=None, help="相機解析度高度")
 
     args = parser.parse_args()
 

@@ -13,10 +13,63 @@ from .chessboard import ChessboardSpec, find_corners
 _MIN_SHARED_CHARUCO_CORNERS = 6
 
 
-def _open_camera(index: int) -> cv2.VideoCapture:
+def _open_camera(
+    index: int, width: int | None = None, height: int | None = None
+) -> cv2.VideoCapture:
+    """開相機。不指定width/height就用驅動的預設模式。
+
+    雙目模組要特別注意：左右眼並排的輸出通常只存在於某些寬解析度模式
+    （2560x720之類），驅動預設的640x480往往只給單眼或裁切畫面。
+    沒指定解析度而拿到單眼畫面時，切一半會得到兩塊不重疊的裁切，
+    看起來像兩個不同場景，標定永遠湊不到共同角點。
+    """
     if sys.platform.startswith("linux"):
-        return cv2.VideoCapture(index, cv2.CAP_V4L2)
-    return cv2.VideoCapture(index)
+        cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+    else:
+        cap = cv2.VideoCapture(index)
+
+    if not cap.isOpened() or width is None or height is None:
+        return cap
+
+    # FOURCC要先設：並排模式多半只在MJPG下提供，YUYV受USB頻寬限制開不到高解析度
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+    got = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    if got != (width, height):
+        print(
+            f"[警告] 要求{width}x{height}，相機實際給{got[0]}x{got[1]}。"
+            f"用 v4l2-ctl -d /dev/video{index} --list-formats-ext 查支援的模式"
+        )
+    else:
+        print(f"相機 index={index} 解析度 {got[0]}x{got[1]}")
+    return cap
+
+
+def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
+    """合併畫面的長寬比不像「兩眼並排」時提醒。
+
+    左右並排的畫面寬高比通常>=2（例如2560x720是3.6）；單眼是4:3或16:9，
+    比例落在1.3~1.8。拿單眼畫面去切一半不會報錯，只會安靜地產生
+    兩塊不重疊的裁切，直到標定湊不到共同角點才發現。
+    """
+    h, w = frame.shape[:2]
+    # 單眼畫面的寬高比通常是4:3(1.33)或16:9(1.78)，合併後其中一個方向變成兩倍：
+    #   左右並排 → 寬高比 2.67~3.56，門檻取2.0
+    #   上下堆疊 → 高寬比 1.13~1.50（單眼的高寬比只有0.56~0.75），門檻取1.0
+    if vertical_split:
+        ratio, threshold, axis, layout = h / w, 1.0, "高寬比", "上下堆疊"
+    else:
+        ratio, threshold, axis, layout = w / h, 2.0, "寬高比", "左右並排"
+
+    if ratio >= threshold:
+        return
+    print(
+        f"[警告] 畫面{w}x{h}，{axis}只有{ratio:.2f}，不像{layout}的雙目輸出（應該>={threshold}）。"
+        f"這張很可能是單眼視角——切一半會得到兩塊不重疊的畫面，標定湊不到共同角點。"
+        f"用 --width/--height 指定相機的並排模式解析度"
+    )
 
 
 def _already_complete(out_dir: Path, target_count: int) -> bool:
@@ -36,7 +89,7 @@ def _hold_until_keypress(*frames_by_window: tuple[str, np.ndarray]) -> None:
     for window_name, frame in frames_by_window:
         done = frame.copy()
         cv2.putText(
-            done, "拍攝完成", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+            done, "DONE - press any key", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
         )
         cv2.imshow(window_name, done)
     cv2.waitKey(0)
@@ -51,18 +104,24 @@ def _draw_feedback(
 ) -> None:
     if corners is not None:
         cv2.drawChessboardCorners(frame, (spec.cols, spec.rows), corners, True)
-    status = f"已存 {saved_count}/{target_count}  [SPACE]拍攝  [ESC]結束"
+    # cv2.putText的Hershey字型只有ASCII，中文會全部變成問號，所以畫面文字一律用英文
+    status = f"saved {saved_count}/{target_count}   [SPACE] capture   [ESC] quit"
     cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
 
 def capture_mono(
-    camera_index: int, out_dir: Path, spec: ChessboardSpec, target_count: int
+    camera_index: int,
+    out_dir: Path,
+    spec: ChessboardSpec,
+    target_count: int,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     if _already_complete(out_dir, target_count):
         return
 
-    cap = _open_camera(camera_index)
+    cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
@@ -103,14 +162,16 @@ def capture_stereo(
     right_out: Path,
     spec: ChessboardSpec,
     target_count: int,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
     if _already_complete(left_out, target_count):
         return
 
-    cap_l = _open_camera(left_index)
-    cap_r = _open_camera(right_index)
+    cap_l = _open_camera(left_index, width, height)
+    cap_r = _open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
         raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
 
@@ -162,6 +223,8 @@ def capture_stereo_single_device(
     target_count: int,
     vertical_split: bool = False,
     swap_lr: bool = False,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     """給左右眼合併輸出成同一張畫面的雙目相機用（單一USB裝置、單一video node）。
 
@@ -173,7 +236,7 @@ def capture_stereo_single_device(
     if _already_complete(left_out, target_count):
         return
 
-    cap = _open_camera(camera_index)
+    cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
@@ -185,6 +248,11 @@ def capture_stereo_single_device(
             w = frame.shape[1]
             a, b = frame[:, : w // 2], frame[:, w // 2 :]
         return (b, a) if swap_lr else (a, b)
+
+    ok, probe = cap.read()
+    if not ok:
+        raise RuntimeError("讀取相機影格失敗")
+    _warn_if_not_side_by_side(probe, vertical_split)
 
     saved = len(list(left_out.glob("*.png")))
     cancelled = False
@@ -234,10 +302,10 @@ def _draw_charuco_feedback(
     if detected is not None:
         corners, ids = detected
         cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids)
-        count_text = f"偵測到{len(ids)}點"
+        count_text = f"{len(ids)} corners"
     else:
-        count_text = "未偵測到角點"
-    status = f"{count_text}  已存{saved_count}/{target_count}  [SPACE]拍攝  [ESC]結束"
+        count_text = "no corners"
+    status = f"{count_text}   saved {saved_count}/{target_count}   [SPACE] capture   [ESC] quit"
     cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
 
@@ -247,13 +315,15 @@ def capture_mono_charuco(
     board_spec: CharucoBoardSpec,
     target_count: int,
     min_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     if _already_complete(out_dir, target_count):
         return
 
     board = board_spec.build_board()
-    cap = _open_camera(camera_index)
+    cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
@@ -309,7 +379,7 @@ def _draw_stereo_charuco_feedback(
 ) -> None:
     _draw_charuco_feedback(disp_l, det_l, saved, target_count)
     _draw_charuco_feedback(disp_r, det_r, saved, target_count)
-    shared_text = f"共同角點：{shared}（需>={min_shared_corners}）"
+    shared_text = f"shared corners: {shared} (need >={min_shared_corners})"
     color = (0, 200, 0) if shared >= min_shared_corners else (0, 140, 255)
     cv2.putText(disp_l, shared_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
@@ -322,6 +392,8 @@ def capture_stereo_charuco(
     board_spec: CharucoBoardSpec,
     target_count: int,
     min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時用這個——
     不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存。
@@ -332,8 +404,8 @@ def capture_stereo_charuco(
         return
 
     board = board_spec.build_board()
-    cap_l = _open_camera(left_index)
-    cap_r = _open_camera(right_index)
+    cap_l = _open_camera(left_index, width, height)
+    cap_r = _open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
         raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
 
@@ -386,6 +458,8 @@ def capture_stereo_charuco_single_device(
     vertical_split: bool = False,
     swap_lr: bool = False,
     min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
@@ -393,7 +467,7 @@ def capture_stereo_charuco_single_device(
         return
 
     board = board_spec.build_board()
-    cap = _open_camera(camera_index)
+    cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
@@ -405,6 +479,11 @@ def capture_stereo_charuco_single_device(
             w = frame.shape[1]
             a, b = frame[:, : w // 2], frame[:, w // 2 :]
         return (b, a) if swap_lr else (a, b)
+
+    ok, probe = cap.read()
+    if not ok:
+        raise RuntimeError("讀取相機影格失敗")
+    _warn_if_not_side_by_side(probe, vertical_split)
 
     saved = len(list(left_out.glob("*.png")))
     cancelled = False
@@ -458,6 +537,9 @@ def main() -> None:
     mono_p.add_argument("--rows", type=int, default=6)
     mono_p.add_argument("--square-size-mm", type=float, default=25.0)
     mono_p.add_argument("--target-count", type=int, default=40)
+    mono_p.add_argument("--width", type=int, default=None,
+        help="相機解析度寬度；雙目模組的左右並排模式通常只在特定寬解析度下才有")
+    mono_p.add_argument("--height", type=int, default=None, help="相機解析度高度")
     mono_p.add_argument(
         "--charuco", action="store_true", help="用ChArUco板取代一般棋盤格（容許畫面只看到板子一部分）"
     )
@@ -496,6 +578,9 @@ def main() -> None:
     stereo_p.add_argument("--rows", type=int, default=6)
     stereo_p.add_argument("--square-size-mm", type=float, default=25.0)
     stereo_p.add_argument("--target-count", type=int, default=20)
+    stereo_p.add_argument("--width", type=int, default=None,
+        help="相機解析度寬度；雙目模組的左右並排模式通常只在特定寬解析度下才有")
+    stereo_p.add_argument("--height", type=int, default=None, help="相機解析度高度")
     stereo_p.add_argument(
         "--charuco",
         action="store_true",
@@ -555,13 +640,14 @@ def main() -> None:
                 legacy_pattern=args.legacy_pattern,
             )
             capture_mono_charuco(
-                args.camera, args.out, board_spec, args.target_count, min_corners=args.min_corners
+                args.camera, args.out, board_spec, args.target_count,
+                min_corners=args.min_corners, width=args.width, height=args.height,
             )
         else:
             spec = ChessboardSpec(
                 cols=args.cols, rows=args.rows, square_size_mm=args.square_size_mm
             )
-            capture_mono(args.camera, args.out, spec, args.target_count)
+            capture_mono(args.camera, args.out, spec, args.target_count, args.width, args.height)
     else:
         if args.charuco:
             board_spec = CharucoBoardSpec(
@@ -582,6 +668,8 @@ def main() -> None:
                     vertical_split=args.vertical_split,
                     swap_lr=args.swap_lr,
                     min_shared_corners=args.min_shared_corners,
+                    width=args.width,
+                    height=args.height,
                 )
             else:
                 capture_stereo_charuco(
@@ -592,6 +680,8 @@ def main() -> None:
                     board_spec,
                     args.target_count,
                     min_shared_corners=args.min_shared_corners,
+                    width=args.width,
+                    height=args.height,
                 )
         else:
             spec = ChessboardSpec(
@@ -606,6 +696,8 @@ def main() -> None:
                     args.target_count,
                     vertical_split=args.vertical_split,
                     swap_lr=args.swap_lr,
+                    width=args.width,
+                    height=args.height,
                 )
             else:
                 capture_stereo(
@@ -615,6 +707,8 @@ def main() -> None:
                     args.right_out,
                     spec,
                     args.target_count,
+                    args.width,
+                    args.height,
                 )
 
 

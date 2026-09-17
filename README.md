@@ -80,8 +80,27 @@ python -m pytest tests/ -v
 | 症狀 | 處理 |
 |---|---|
 | 看得到板子但沒有標記疊上去 | 加 `--legacy-pattern` |
-| 共同角點數一直不夠 | 板子往兩鏡頭視野重疊區移，或調低 `--min-shared-corners` |
+| **`stereo left`／`stereo right` 顯示不同場景** | 拿到的不是左右並排的雙目畫面，而是單眼畫面被切一半。用 `--width/--height` 指定並排模式的解析度（見下方） |
+| 共同角點數一直不夠 | 先確認上一項；再把板子往兩鏡頭視野重疊區移，或調低 `--min-shared-corners` |
 | `can't open camera by index` | Linux上先 `v4l2-ctl --list-devices` 查index（沒裝先 `sudo apt install v4l-utils`）；並確認 `groups` 有 `video`，沒有的話 `sudo usermod -aG video $USER` 後重新登入 |
+
+### 雙目模組一定要指定解析度
+
+OpenCV 在 V4L2 下不指定就用驅動的預設模式，通常是 640×480。雙目模組的「左右眼並排」輸出往往只存在於特定的寬解析度模式（2560×720 之類），預設模式給的是單眼或裁切畫面——切一半會得到兩塊**不重疊**的裁切，看起來像兩個不同場景，標定永遠湊不到共同角點。
+
+先查相機支援哪些模式：
+
+```
+v4l2-ctl -d /dev/video1 --list-formats-ext
+```
+
+挑寬度是單眼兩倍的那個模式（例如單眼 1280×720 就找 2560×720），拍攝時帶上：
+
+```
+python -m src.calibration.capture stereo --single-device --left-camera 1 --width 2560 --height 720 --charuco ...
+```
+
+程式開相機後會印出實際拿到的解析度，要求不到時會明講。單一裝置模式下還會檢查第一幀的長寬比——不像並排輸出就出聲警告，不會讓它安靜地錯下去。
 
 ### 為什麼非用 ChArUco 不可
 
