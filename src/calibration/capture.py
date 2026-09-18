@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -88,18 +89,22 @@ _PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
 )
 
 
-def probe_resolutions(camera_index: int) -> None:
-    """逐一試各種解析度，印出相機實際給出來的畫面尺寸。
+def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
+    """逐一試各種解析度，印出相機實際給的畫面尺寸與張數。
 
-    用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，
-    直接問相機本人。判斷依據是cap.read()真正拿到的frame.shape，
-    不是cap.get()回報的值——驅動回報跟實際給的不一致是常態。
+    用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，直接問相機本人。
+    判斷依據是cap.read()真正拿到的frame.shape，不是cap.get()回報的值——
+    驅動回報跟實際給的不一致是常態。
+
+    也量張數，因為USB 2.0頻寬有限，高解析度的並排模式常常只剩個位數fps，
+    這件事光看解析度清單看不出來。
     """
-    print(f"逐一測試 index={camera_index} 支援的解析度（以實際讀到的畫面為準）\n")
-    print(f"{'要求':>12}  {'實際':>12}  {'寬高比':>6}  判讀")
-    print("-" * 52)
+    print(f"逐一測試 index={camera_index}（以實際讀到的畫面為準）")
+    print()
+    print(f"{'要求':>11}  {'實際拿到':>11}  {'寬高比':>6}  {'fps':>5}  判讀")
+    print("-" * 66)
 
-    seen: set[tuple[int, int]] = set()
+    results: list[tuple[int, int, float, bool]] = []
     for want_w, want_h in _PROBE_RESOLUTIONS:
         # 每次重開，避免某些驅動在模式間切換時卡住
         cap = _open_camera(camera_index)
@@ -110,36 +115,53 @@ def probe_resolutions(camera_index: int) -> None:
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, want_w)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, want_h)
+
             ok, frame = cap.read()
+            if not ok or frame is None:
+                print(f"{want_w:>5}x{want_h:<5}  {'讀取失敗':>11}")
+                continue
+
+            # 前幾張通常還在暖機，不列入計時
+            for _ in range(3):
+                cap.read()
+            start = time.perf_counter()
+            got_frames = sum(1 for _ in range(fps_frames) if cap.read()[0])
+            elapsed = time.perf_counter() - start
         finally:
             cap.release()
 
-        if not ok or frame is None:
-            print(f"{want_w:>5}x{want_h:<6}  {'讀取失敗':>12}")
-            continue
-
+        fps = got_frames / elapsed if elapsed > 0 else 0.0
         got_h, got_w = frame.shape[:2]
         ratio = got_w / got_h
+        exact = (got_w, got_h) == (want_w, want_h)
+
         if ratio >= 2.0:
-            verdict = "★ 像左右並排的雙目輸出"
-        elif (got_w, got_h) == (want_w, want_h):
+            verdict = "★ 左右並排" + ("" if exact else f"（退回自 {want_w}x{want_h}）")
+        elif exact:
             verdict = "單眼畫面"
         else:
-            verdict = "不支援，退回其他模式"
-        print(f"{want_w:>5}x{want_h:<6}  {got_w:>5}x{got_h:<6}  {ratio:>6.2f}  {verdict}")
-        seen.add((got_w, got_h))
+            verdict = f"不支援，退回 {got_w}x{got_h}"
+        print(f"{want_w:>5}x{want_h:<5}  {got_w:>5}x{got_h:<5}  {ratio:>6.2f}  {fps:>5.1f}  {verdict}")
+        results.append((got_w, got_h, fps, exact))
 
-    wide = sorted(r for r in seen if r[0] / r[1] >= 2.0)
+    stereo = {(w, h): (fps, exact) for w, h, fps, exact in results if w / h >= 2.0}
     print()
-    if wide:
-        w, h = wide[-1]
-        print(f"建議用最大的並排模式：--width {w} --height {h}")
-    else:
-        print(
-            "沒測到任何寬高比>=2的模式。這顆相機可能不是「左右眼合併輸出」的類型，\n"
-            "或並排模式不在上面的候選清單裡——把 v4l2-ctl -d /dev/videoN --list-formats-ext\n"
-            "的輸出貼出來對照。"
-        )
+    if not stereo:
+        print("沒測到任何寬高比>=2的模式。這顆相機可能不是「左右眼合併輸出」的類型，")
+        print("或並排模式不在候選清單裡。")
+        return
+
+    print("可用的並排模式：")
+    for (w, h), (fps, exact) in sorted(stereo.items()):
+        note = "" if exact else "（驅動退回的，不是直接支援）"
+        print(f"  --width {w} --height {h}    每眼 {w // 2}x{h}，約 {fps:.1f} fps {note}")
+
+    print()
+    print("挑選原則：")
+    print("  1. 優先選驅動直接支援的模式，不要選退回來的")
+    print("  2. fps 要夠即時監測用；解析度再高，關鍵點偵測也是縮到 224x224 才餵進網路")
+    print("  3. 標定跟執行時必須用同一個解析度——內參 fx/fy/cx/cy 是綁解析度的，")
+    print("     換了解析度舊的標定參數就失效，而且不會報錯")
 
 
 def _already_complete(out_dir: Path, target_count: int) -> bool:
@@ -672,6 +694,7 @@ def main() -> None:
 
     probe_p = sub.add_parser("probe", help="測試相機支援哪些解析度（找雙目並排模式用）")
     probe_p.add_argument("--camera", type=int, default=0)
+    probe_p.add_argument("--fps-frames", type=int, default=12, help="每個模式量幾張來估fps")
 
     board_p = sub.add_parser("board", help="產生ChArUco板圖檔供列印")
     board_p.add_argument("--out", type=Path, default=Path("data/charuco_board.png"))
@@ -688,7 +711,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.mode == "probe":
-        probe_resolutions(args.camera)
+        probe_resolutions(args.camera, args.fps_frames)
         return
 
     if args.mode == "board":
