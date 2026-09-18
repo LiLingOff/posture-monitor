@@ -72,6 +72,76 @@ def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
     )
 
 
+# 常見的單眼與雙目並排解析度。雙目模組的並排模式通常是單眼寬度的兩倍。
+_PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
+    (320, 240),
+    (640, 480),
+    (800, 600),
+    (1280, 720),
+    (1920, 1080),
+    (640, 240),
+    (1280, 480),
+    (2560, 720),
+    (2560, 960),
+    (3040, 1520),
+    (3840, 1080),
+)
+
+
+def probe_resolutions(camera_index: int) -> None:
+    """逐一試各種解析度，印出相機實際給出來的畫面尺寸。
+
+    用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，
+    直接問相機本人。判斷依據是cap.read()真正拿到的frame.shape，
+    不是cap.get()回報的值——驅動回報跟實際給的不一致是常態。
+    """
+    print(f"逐一測試 index={camera_index} 支援的解析度（以實際讀到的畫面為準）\n")
+    print(f"{'要求':>12}  {'實際':>12}  {'寬高比':>6}  判讀")
+    print("-" * 52)
+
+    seen: set[tuple[int, int]] = set()
+    for want_w, want_h in _PROBE_RESOLUTIONS:
+        # 每次重開，避免某些驅動在模式間切換時卡住
+        cap = _open_camera(camera_index)
+        if not cap.isOpened():
+            print(f"無法開啟相機 index={camera_index}")
+            return
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, want_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, want_h)
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+
+        if not ok or frame is None:
+            print(f"{want_w:>5}x{want_h:<6}  {'讀取失敗':>12}")
+            continue
+
+        got_h, got_w = frame.shape[:2]
+        ratio = got_w / got_h
+        if ratio >= 2.0:
+            verdict = "★ 像左右並排的雙目輸出"
+        elif (got_w, got_h) == (want_w, want_h):
+            verdict = "單眼畫面"
+        else:
+            verdict = "不支援，退回其他模式"
+        print(f"{want_w:>5}x{want_h:<6}  {got_w:>5}x{got_h:<6}  {ratio:>6.2f}  {verdict}")
+        seen.add((got_w, got_h))
+
+    wide = sorted(r for r in seen if r[0] / r[1] >= 2.0)
+    print()
+    if wide:
+        w, h = wide[-1]
+        print(f"建議用最大的並排模式：--width {w} --height {h}")
+    else:
+        print(
+            "沒測到任何寬高比>=2的模式。這顆相機可能不是「左右眼合併輸出」的類型，\n"
+            "或並排模式不在上面的候選清單裡——把 v4l2-ctl -d /dev/videoN --list-formats-ext\n"
+            "的輸出貼出來對照。"
+        )
+
+
 def _already_complete(out_dir: Path, target_count: int) -> bool:
     """資料夾已有足夠張數就回傳True，直接跳過不用開相機。
 
@@ -600,6 +670,9 @@ def main() -> None:
         help="左右畫面至少要有幾個共同角點才允許存檔",
     )
 
+    probe_p = sub.add_parser("probe", help="測試相機支援哪些解析度（找雙目並排模式用）")
+    probe_p.add_argument("--camera", type=int, default=0)
+
     board_p = sub.add_parser("board", help="產生ChArUco板圖檔供列印")
     board_p.add_argument("--out", type=Path, default=Path("data/charuco_board.png"))
     board_p.add_argument("--squares-x", type=int, default=10)
@@ -613,6 +686,10 @@ def main() -> None:
     board_p.add_argument("--pixels-per-square", type=int, default=80)
 
     args = parser.parse_args()
+
+    if args.mode == "probe":
+        probe_resolutions(args.camera)
+        return
 
     if args.mode == "board":
         from .charuco import save_board_image
