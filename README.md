@@ -5,7 +5,7 @@
 | 模組 | 狀態 | 內容 |
 |---|---|---|
 | `src/calibration` | 可用 | 棋盤格／ChArUco，單眼＋雙目，合成資料驗證過準確度 |
-| `src/pose` | **未實機驗證** | trt_pose + TensorRT，只有不碰GPU的邏輯測過 |
+| `src/pose` | **推論未實機驗證** | trt_pose + TensorRT。安裝與關鍵點拓樸已在Jetson確認，推論本身還沒跑過 |
 | `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym；θ_KA 公式未定 |
 | 判定與回饋 | 未開始 | 個人基準校正、閾值判定、LED／蜂鳴器 |
 
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-81個測試，全部用合成資料，不需要相機或GPU。
+85個測試，全部用合成資料，不需要相機或GPU。
 
 標定的準確度是這樣驗證的：已知一組相機內參與基線長度，用單應變換把正面棋盤格圖「合成」成該相機在特定姿態下拍到的樣子，餵進標定演算法，檢查還原出來的參數跟真值差多少。這在數學上是嚴格等價而非近似——標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試則改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -150,6 +150,8 @@ cd trt_pose && python3 setup.py install --user && cd ..
 cp trt_pose/tasks/human_pose/human_pose.json <repo>/data/pose_models/
 ```
 
+trt_pose 的 `setup.py` 沒把相依套件宣告完整，還要補 `pip3 install --user tqdm pillow`（`pycocotools` 只有訓練/評估才用得到，在 ARM 上要編譯很久，不用裝）。
+
 PyTorch 要裝 NVIDIA 官方的 Jetson 專用 wheel，不是 `pip install torch`（到 https://forums.developer.nvidia.com/t/pytorch-for-jetson 查 JetPack 6 對應版本）。模型權重 `.pth` 從 trt_pose 的 model zoo 手動下載，放進 `data/pose_models/`。
 
 | 用途 | 指令 |
@@ -228,9 +230,14 @@ tests/
 
 | 假設 | 錯了要改哪裡 |
 |---|---|
-| trt_pose 預設拓樸有第18個 `neck` 關鍵點 | `pose/topology.py` 的 `COCO18_KEYPOINT_NAMES`，其他模組不受影響 |
 | `torch2trt`/`trt_pose` 的 API 呼叫方式 | `pose/engine.py` 內部，對照實際clone下來的原始碼 |
 | 相機大致水平、無明顯翻滾角 | `geometry/posture_angles.py`；架設歪得明顯會讓角度系統性偏移 |
 | `--min-shared-corners` 6、`--rmse-threshold-px` 3.0、`_MIN_VECTOR_NORM` 1e-3 | 都是憑經驗抓的起始值，跑過實機數據後回頭調 |
+
+### 已在實機確認的
+
+- **關鍵點拓樸**（2026-09-18，Jetson）：trt_pose 的 `human_pose.json` 確實是 COCO 17 點加第 18 個 `neck`，名稱與順序跟 `pose/topology.py` 完全一致，不需要修改。`neck` 是模型真的偵測出來的點，不是左右肩推算的中點——這是當初選 trt_pose 的理由之一。`tests/test_pose_topology.py` 已把這份清單寫死鎖住。
+
+### 仍未驗證的
 
 `pose/engine.py` 的 API 假設包含：`fp16_mode` 參數、`TRTModule` 存讀方式、`ParseObjects` 用法、`peaks` 是正規化座標要乘回畫面尺寸、信心度從 `cmap` 取值。這些全部照公開資料寫的，沒有實機驗證過。
