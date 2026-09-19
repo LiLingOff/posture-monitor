@@ -26,6 +26,14 @@ def _open_camera(
     """
     if sys.platform.startswith("linux"):
         cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+    elif sys.platform.startswith("win"):
+        # Windows預設走MSMF，但它對UVC的寬解析度模式支援不完整，常常無視
+        # MJPG設定、只給得出640x480。DirectShow對雙目模組的並排模式相容性好得多，
+        # 所以先試DSHOW，開不起來才退回預設後端。
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(index)
     else:
         cap = cv2.VideoCapture(index)
 
@@ -39,10 +47,12 @@ def _open_camera(
 
     got = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     if got != (width, height):
-        print(
-            f"[警告] 要求{width}x{height}，相機實際提供{got[0]}x{got[1]}。"
+        hint = (
             f"用 v4l2-ctl -d /dev/video{index} --list-formats-ext 查詢支援的模式"
+            if sys.platform.startswith("linux")
+            else f"用 python -m src.calibration.capture probe --camera {index} 查詢支援的模式"
         )
+        print(f"[警告] 要求{width}x{height}，相機實際提供{got[0]}x{got[1]}。{hint}")
     else:
         print(f"相機 index={index} 解析度 {got[0]}x{got[1]}")
     return cap
