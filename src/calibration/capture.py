@@ -17,12 +17,12 @@ _MIN_SHARED_CHARUCO_CORNERS = 6
 def _open_camera(
     index: int, width: int | None = None, height: int | None = None
 ) -> cv2.VideoCapture:
-    """開相機。不指定width/height就用驅動的預設模式。
+    """開啟相機。未指定width/height時採用驅動的預設模式。
 
     雙目模組要特別注意：左右眼並排的輸出通常只存在於某些寬解析度模式
-    （2560x720之類），驅動預設的640x480往往只給單眼或裁切畫面。
-    沒指定解析度而拿到單眼畫面時，切一半會得到兩塊不重疊的裁切，
-    看起來像兩個不同場景，標定永遠湊不到共同角點。
+    （2560x720之類），驅動預設的640x480往往只提供單眼或裁切後的畫面。
+    未指定解析度而取得單眼畫面時，切成兩半會得到兩塊不重疊的裁切區域，
+    看起來像兩個不同場景，標定永遠無法取得足夠的共同角點。
     """
     if sys.platform.startswith("linux"):
         cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
@@ -32,7 +32,7 @@ def _open_camera(
     if not cap.isOpened() or width is None or height is None:
         return cap
 
-    # FOURCC要先設：並排模式多半只在MJPG下提供，YUYV受USB頻寬限制開不到高解析度
+    # FOURCC要先設定：並排模式多半只在MJPG下提供，YUYV受USB頻寬限制無法開啟高解析度
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -40,8 +40,8 @@ def _open_camera(
     got = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     if got != (width, height):
         print(
-            f"[警告] 要求{width}x{height}，相機實際給{got[0]}x{got[1]}。"
-            f"用 v4l2-ctl -d /dev/video{index} --list-formats-ext 查支援的模式"
+            f"[警告] 要求{width}x{height}，相機實際提供{got[0]}x{got[1]}。"
+            f"用 v4l2-ctl -d /dev/video{index} --list-formats-ext 查詢支援的模式"
         )
     else:
         print(f"相機 index={index} 解析度 {got[0]}x{got[1]}")
@@ -49,11 +49,11 @@ def _open_camera(
 
 
 def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
-    """合併畫面的長寬比不像「兩眼並排」時提醒。
+    """合併畫面的長寬比不符合左右並排特徵時發出提醒。
 
     左右並排的畫面寬高比通常>=2（例如2560x720是3.6）；單眼是4:3或16:9，
-    比例落在1.3~1.8。拿單眼畫面去切一半不會報錯，只會安靜地產生
-    兩塊不重疊的裁切，直到標定湊不到共同角點才發現。
+    比例落在1.3~1.8。把單眼畫面切成兩半不會出現錯誤訊息，只會無聲地產生
+    兩塊不重疊的裁切區域，直到標定取得不到足夠共同角點才會發現。
     """
     h, w = frame.shape[:2]
     # 單眼畫面的寬高比通常是4:3(1.33)或16:9(1.78)，合併後其中一個方向變成兩倍：
@@ -68,7 +68,7 @@ def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
         return
     print(
         f"[警告] 畫面{w}x{h}，{axis}只有{ratio:.2f}，不像{layout}的雙目輸出（應該>={threshold}）。"
-        f"這張很可能是單眼視角——切一半會得到兩塊不重疊的畫面，標定湊不到共同角點。"
+        f"這張很可能是單眼視角——切成兩半會得到兩塊不重疊的畫面，標定無法取得足夠的共同角點。"
         f"用 --width/--height 指定相機的並排模式解析度"
     )
 
@@ -90,23 +90,23 @@ _PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
 
 
 def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
-    """逐一試各種解析度，印出相機實際給的畫面尺寸與張數。
+    """逐一測試各種解析度，印出相機實際提供的畫面尺寸與張數率。
 
-    用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，直接問相機本人。
-    判斷依據是cap.read()真正拿到的frame.shape，不是cap.get()回報的值——
-    驅動回報跟實際給的不一致是常態。
+    用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，直接向相機查詢。
+    判斷依據是cap.read()實際取得的frame.shape，而非cap.get()回報的值——
+    驅動回報值與實際提供的畫面不一致是常態。
 
-    也量張數，因為USB 2.0頻寬有限，高解析度的並排模式常常只剩個位數fps，
-    這件事光看解析度清單看不出來。
+    同時量測張數率，因為USB 2.0頻寬有限，高解析度的並排模式常常只剩個位數fps，
+    這一點光看解析度清單看不出來。
     """
     print(f"逐一測試 index={camera_index}（以實際讀到的畫面為準）")
     print()
-    print(f"{'要求':>11}  {'實際拿到':>11}  {'寬高比':>6}  {'fps':>5}  判讀")
+    print(f"{'要求':>11}  {'實際取得':>11}  {'寬高比':>6}  {'fps':>5}  判讀")
     print("-" * 66)
 
     results: list[tuple[int, int, float, bool]] = []
     for want_w, want_h in _PROBE_RESOLUTIONS:
-        # 每次重開，避免某些驅動在模式間切換時卡住
+        # 每次重新開啟，避免某些驅動在模式間切換時停住
         cap = _open_camera(camera_index)
         if not cap.isOpened():
             print(f"無法開啟相機 index={camera_index}")
@@ -121,7 +121,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
                 print(f"{want_w:>5}x{want_h:<5}  {'讀取失敗':>11}")
                 continue
 
-            # 前幾張通常還在暖機，不列入計時
+            # 前幾張通常還在預熱，不列入計時
             for _ in range(3):
                 cap.read()
             start = time.perf_counter()
@@ -147,28 +147,28 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     stereo = {(w, h): (fps, exact) for w, h, fps, exact in results if w / h >= 2.0}
     print()
     if not stereo:
-        print("沒測到任何寬高比>=2的模式。這顆相機可能不是「左右眼合併輸出」的類型，")
-        print("或並排模式不在候選清單裡。")
+        print("沒有測到任何寬高比>=2的模式。這顆相機可能不屬於左右眼合併輸出的類型，")
+        print("或並排模式不在候選清單內。")
         return
 
     print("可用的並排模式：")
     for (w, h), (fps, exact) in sorted(stereo.items()):
-        note = "" if exact else "（驅動退回的，不是直接支援）"
+        note = "" if exact else "（驅動退回的模式，並非原生支援）"
         print(f"  --width {w} --height {h}    每眼 {w // 2}x{h}，約 {fps:.1f} fps {note}")
 
     print()
     print("挑選原則：")
-    print("  1. 優先選驅動直接支援的模式，不要選退回來的")
-    print("  2. fps 要夠即時監測用；解析度再高，關鍵點偵測也是縮到 224x224 才餵進網路")
-    print("  3. 標定跟執行時必須用同一個解析度——內參 fx/fy/cx/cy 是綁解析度的，")
-    print("     換了解析度舊的標定參數就失效，而且不會報錯")
+    print("  1. 優先選擇驅動原生支援的模式，不要選退回來的")
+    print("  2. fps 要足夠即時監測使用；解析度再高，關鍵點偵測也會先縮放到 224x224 才輸入網路")
+    print("  3. 標定與執行時必須使用同一個解析度——內參 fx/fy/cx/cy 的數值綁定於解析度，")
+    print("     更換解析度後舊的標定參數就失效，而且不會出現錯誤訊息")
 
 
 def _already_complete(out_dir: Path, target_count: int) -> bool:
-    """資料夾已有足夠張數就回傳True，直接跳過不用開相機。
+    """資料夾已有足夠張數時回傳True，直接跳過，不必開啟相機。
 
     沒有這個檢查的話，拍攝迴圈一次都不會執行，後面要顯示最後一幀的變數
-    就沒被指派過，會以UnboundLocalError收場。
+    就從未被指派，會以UnboundLocalError結束。
     """
     saved = len(list(out_dir.glob("*.png")))
     if saved >= target_count:
@@ -196,7 +196,7 @@ def _draw_feedback(
 ) -> None:
     if corners is not None:
         cv2.drawChessboardCorners(frame, (spec.cols, spec.rows), corners, True)
-    # cv2.putText的Hershey字型只有ASCII，中文會全部變成問號，所以畫面文字一律用英文
+    # cv2.putText的Hershey字型只有ASCII，中文會全部顯示成問號，所以畫面上的文字一律使用英文
     status = f"saved {saved_count}/{target_count}   [SPACE] capture   [ESC] quit"
     cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
@@ -487,8 +487,8 @@ def capture_stereo_charuco(
     width: int | None = None,
     height: int | None = None,
 ) -> None:
-    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時用這個——
-    不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存。
+    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時使用這個函式——
+    不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存檔。
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
@@ -640,7 +640,7 @@ def main() -> None:
     mono_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
     mono_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
     mono_p.add_argument(
-        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+        "--legacy-pattern", action="store_true", help="市售現成板子（如AndyMark）偵測不到時加上這個"
     )
     mono_p.add_argument("--min-corners", type=int, default=_MIN_SHARED_CHARUCO_CORNERS)
 
@@ -658,7 +658,7 @@ def main() -> None:
         help="合併畫面變上下切（預設左右切），僅搭配--single-device使用",
     )
     stereo_p.add_argument(
-        "--swap-lr", action="store_true", help="左右眼相反時加這個對調"
+        "--swap-lr", action="store_true", help="左右眼顛倒時加上這個對調"
     )
     stereo_p.add_argument(
         "--left-out", type=Path, default=Path("data/calibration_images/stereo_left")
@@ -676,14 +676,14 @@ def main() -> None:
     stereo_p.add_argument(
         "--charuco",
         action="store_true",
-        help="用ChArUco板取代一般棋盤格——雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時用這個",
+        help="用ChArUco板取代一般棋盤格——雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時使用",
     )
     stereo_p.add_argument("--squares-x", type=int, default=10, help="ChArUco板橫向方格數")
     stereo_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")
     stereo_p.add_argument("--marker-size-mm", type=float, default=18.0, help="ChArUco標記邊長")
     stereo_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
     stereo_p.add_argument(
-        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+        "--legacy-pattern", action="store_true", help="市售現成板子（如AndyMark）偵測不到時加上這個"
     )
     stereo_p.add_argument(
         "--min-shared-corners",
@@ -692,9 +692,9 @@ def main() -> None:
         help="左右畫面至少要有幾個共同角點才允許存檔",
     )
 
-    probe_p = sub.add_parser("probe", help="測試相機支援哪些解析度（找雙目並排模式用）")
+    probe_p = sub.add_parser("probe", help="查詢相機支援哪些解析度（用於尋找雙目並排模式）")
     probe_p.add_argument("--camera", type=int, default=0)
-    probe_p.add_argument("--fps-frames", type=int, default=12, help="每個模式量幾張來估fps")
+    probe_p.add_argument("--fps-frames", type=int, default=12, help="每個模式量測幾張影格來估算fps")
 
     board_p = sub.add_parser("board", help="產生ChArUco板圖檔供列印")
     board_p.add_argument("--out", type=Path, default=Path("data/charuco_board.png"))
@@ -704,7 +704,7 @@ def main() -> None:
     board_p.add_argument("--marker-size-mm", type=float, default=18.0)
     board_p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
     board_p.add_argument(
-        "--legacy-pattern", action="store_true", help="現成板子（如AndyMark）偵測不到就加這個"
+        "--legacy-pattern", action="store_true", help="市售現成板子（如AndyMark）偵測不到時加上這個"
     )
     board_p.add_argument("--pixels-per-square", type=int, default=80)
 

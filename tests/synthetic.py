@@ -1,12 +1,12 @@
 """測試用：以已知相機內參/外參合成棋盤格影像。
 
 原理：棋盤格是平面標的物，一個無畸變針孔相機對平面的成像
-等價於對「正面平視影像」做一次單應變換（homography）：
+等價於對正面平視影像做一次單應變換（homography）：
     H = K @ [r1 r2 t]
 其中 r1, r2 為旋轉矩陣前兩欄、t 為平移向量。
 因此對高解析度正面棋盤格圖套用不同姿態算出的 H 做 warpPerspective，
-即可產生幾何上等價於「真實相機在該姿態拍到的影像」，
-可用來驗證 calibrateCamera / stereoCalibrate 的正確性。
+即可產生幾何上等價於真實相機在該姿態拍到的影像，
+可用來驗證 calibrateCamera 與 stereoCalibrate 的正確性。
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ PX_PER_MM = 40.0 / 25.0  # 正面圖每mm對應的像素數（供frontal image�
 def make_frontal_chessboard_image(spec: ChessboardSpec, margin_squares: int = 2) -> np.ndarray:
     """產生一張正面平視的棋盤格灰階圖，方格邊長換算為 PX_PER_MM 像素/mm。
 
-    棋盤格本體外圍留白邊界（quiet zone），只在留白內畫棋盤格圖案，
+    棋盤格本體外圍留白邊界（quiet zone），只在留白內繪製棋盤格圖案，
     否則 findChessboardCorners 會因缺乏清楚邊界而偵測失敗。
     """
     square_px = int(round(spec.square_size_mm * PX_PER_MM))

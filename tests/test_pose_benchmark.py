@@ -66,7 +66,7 @@ def test_compare_precision_rmse_raises_on_length_mismatch():
 
 
 def test_measure_latency_raises_when_frames_not_more_than_warmup():
-    """影格數不夠會讓timings是空的，np.mean(空)回傳nan——寧可直接報錯也不要印nan。"""
+    """影格數不足會讓timings是空的，np.mean(空陣列)回傳nan——寧可直接拋出例外也不要印出nan。"""
     engine = FakeEngine(make_base_points())
     with pytest.raises(ValueError):
         measure_latency(engine, [_DUMMY_FRAME] * 3, warmup=3)
@@ -79,7 +79,7 @@ def test_measure_sequential_multi_camera_raises_when_sets_not_more_than_warmup()
 
 
 def test_compare_precision_rmse_skips_pairs_without_common_keypoints():
-    """某幀兩邊沒有共同有效關鍵點時略過該幀，不該讓整批比對爆掉。"""
+    """某一幀兩邊沒有共同有效關鍵點時略過該幀，不應讓整批比對中斷。"""
     base = make_base_points()
     nan_points = np.full((NUM_KEYPOINTS, 2), np.nan, dtype=np.float32)
     blind = PersonKeypoints(points=nan_points, confidences=np.zeros(NUM_KEYPOINTS, dtype=np.float32))

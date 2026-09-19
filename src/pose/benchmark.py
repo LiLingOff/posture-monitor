@@ -67,12 +67,12 @@ def compare_precision_rmse(
     fp16_results: list[PersonKeypoints],
     threshold_px: float = _DEFAULT_RMSE_THRESHOLD_PX,
 ) -> tuple[float, bool]:
-    """回傳(平均RMSE, 是否通過門檻)。不通過只印警告，不拋例外，比照標定模組風格。"""
+    """回傳(平均RMSE, 是否通過門檻)。未通過只印出警告，不拋出例外，與標定模組的處理方式一致。"""
     if len(fp32_results) != len(fp16_results):
         raise ValueError("FP32與FP16結果數量不一致，無法逐一比對")
 
-    # 某一幀兩邊沒有共同有效關鍵點時keypoints_rmse會拋例外，略過該幀就好，
-    # 不該讓整批比對失敗
+    # 某一幀兩邊沒有共同有效關鍵點時keypoints_rmse會拋出例外，略過該幀即可，
+    # 不應讓整批比對失敗
     rmses = []
     for a, b in zip(fp32_results, fp16_results):
         try:
@@ -87,7 +87,7 @@ def compare_precision_rmse(
     passed = mean_rmse <= threshold_px
 
     if not passed:
-        print(f"FP16關鍵點RMSE {mean_rmse:.4f}px 超出可接受門檻 {threshold_px}px，建議保留FP32為備案")
+        print(f"FP16關鍵點RMSE {mean_rmse:.4f}px 超出可接受門檻 {threshold_px}px，建議保留FP32作為備案")
 
     return mean_rmse, passed
 

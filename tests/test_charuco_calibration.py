@@ -1,7 +1,7 @@
 """ChArUco版標定測試。
 
-重點驗證：即使沒有任何一幀能拍到完整board（視野重疊區域小的情境），
-只要每幀有足夠共同角點，標定依然能成功並還原正確的內參/基線長度。
+重點驗證：即使沒有任何一幀能拍到完整board（視野重疊區域過小的情境），
+只要每幀有足夠共同角點，標定依然能成功並還原正確的內參與基線長度。
 """
 from pathlib import Path
 
@@ -41,7 +41,7 @@ def _random_pose(rng: np.random.Generator, pattern_w_mm: float, pattern_h_mm: fl
 
 
 def test_detect_charuco_partial_view_no_full_board():
-    """驗證近距離下確實沒有單一視角能看到完整board（測試前提成立）。"""
+    """驗證近距離下確實沒有任何單一視角能看到完整board（確認測試前提成立）。"""
     frontal, H = _frontal_and_homography()
     board = BOARD_SPEC.build_board()
     total_corners = board.getChessboardCorners().shape[0]

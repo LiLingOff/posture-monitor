@@ -1,4 +1,4 @@
-"""擷取流程的邊界情況測試，不需要真的接相機。"""
+"""擷取流程的邊界情況測試，不需要實際連接相機。"""
 from pathlib import Path
 
 import cv2
@@ -22,19 +22,19 @@ def _fill_with_images(directory: Path, count: int) -> None:
 
 @pytest.fixture
 def forbid_camera(monkeypatch):
-    """任何開相機的嘗試都直接讓測試失敗——用來證明提前返回時根本沒碰硬體。"""
+    """任何開啟相機的嘗試都直接讓測試失敗——用來證明提前返回時完全沒有存取硬體。"""
 
     def _boom(index, width=None, height=None):
-        raise AssertionError(f"不該開相機（index={index}）")
+        raise AssertionError(f"不應開啟相機（index={index}）")
 
     monkeypatch.setattr(capture, "_open_camera", _boom)
 
 
 def test_capture_mono_returns_early_when_already_enough(tmp_path, forbid_camera, capsys):
-    """張數已達標時要乾淨返回。
+    """張數已達標時要正常返回。
 
-    沒有這個保護的話拍攝迴圈一次都不跑，顯示最後一幀的變數沒被指派，
-    會以UnboundLocalError結束——重跑同一條指令就會踩到。
+    沒有這個保護的話拍攝迴圈一次都不會執行，顯示最後一幀的變數從未被指派，
+    會以UnboundLocalError結束——重新執行同一條指令就會遇到。
     """
     out_dir = tmp_path / "front"
     _fill_with_images(out_dir, 40)
@@ -79,10 +79,10 @@ def test_capture_stereo_charuco_single_device_returns_early_when_already_enough(
 
 
 def test_warns_when_frame_is_not_side_by_side(capsys):
-    """單眼畫面（4:3）被當成左右並排來切時要出聲。
+    """單眼畫面（4:3）被當成左右並排切開時要發出警告。
 
-    這是實際踩到的狀況：Jetson上沒指定解析度，驅動給了單眼的640x480，
-    切一半變成兩塊不重疊的裁切，看起來像兩個不同場景，標定永遠湊不到共同角點。
+    這是實際遇到的狀況：Jetson上沒有指定解析度，驅動提供了單眼的640x480，
+    切成兩半變成兩塊不重疊的裁切區域，看起來像兩個不同場景，標定永遠取得不到足夠的共同角點。
     """
     single_view = np.zeros((480, 640, 3), dtype=np.uint8)
     capture._warn_if_not_side_by_side(single_view, vertical_split=False)
@@ -100,13 +100,13 @@ def test_vertical_split_checks_the_other_axis(capsys):
     capture._warn_if_not_side_by_side(stacked, vertical_split=True)
     assert capsys.readouterr().out == ""
 
-    wide = np.zeros((720, 2560, 3), dtype=np.uint8)  # 左右並排的畫面拿來當上下切就該警告
+    wide = np.zeros((720, 2560, 3), dtype=np.uint8)  # 左右並排的畫面拿來當成上下切開就該發出警告
     capture._warn_if_not_side_by_side(wide, vertical_split=True)
     assert "很可能是單眼視角" in capsys.readouterr().out
 
 
 def test_capture_still_opens_camera_when_images_missing(tmp_path, monkeypatch):
-    """張數不足時該照常開相機（確認提前返回沒有寫成永遠跳過）。"""
+    """張數不足時應照常開啟相機（確認提前返回沒有寫成永遠跳過）。"""
     out_dir = tmp_path / "front"
     _fill_with_images(out_dir, 3)
 
@@ -114,7 +114,7 @@ def test_capture_still_opens_camera_when_images_missing(tmp_path, monkeypatch):
 
     def _fake_open(index, width=None, height=None):
         opened.append(index)
-        raise RuntimeError("stop here")  # 開了相機就夠了，不必真的進迴圈
+        raise RuntimeError("stop here")  # 確認有開啟相機即可，不必真的進入迴圈
 
     monkeypatch.setattr(capture, "_open_camera", _fake_open)
 

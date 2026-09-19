@@ -191,7 +191,7 @@ def calibrate_stereo(
     if len(obj_points) < _MIN_PAIRS:
         raise ValueError(
             f"左右同時偵測到完整棋盤格的只有{len(obj_points)}組，需至少{_MIN_PAIRS}組。"
-            f"兩顆鏡頭視野重疊區太小時改用ChArUco板（--charuco），不需要整塊板子同時入鏡"
+            f"兩顆鏡頭視野重疊區過小時改用ChArUco板（--charuco），不需要整塊板子同時入鏡"
         )
 
     return _run_stereo_calibration(obj_points, left_points, right_points, image_size, target_error_px)
@@ -206,8 +206,8 @@ def _charuco_frame_correspondence(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """算左右影像在同一幀共同偵測到的角點，回傳(objp, imgp_l, imgp_r)。
 
-    左右鏡頭各自可能只看到board的一部分，只要共同角點數>=min_shared就能用，
-    不需要整塊board同時入鏡——解決視野重疊區域小的問題。
+    左右鏡頭各自可能只看到board的一部分，只要共同角點數>=min_shared就能使用，
+    不需要整塊board同時入鏡，藉此解決視野重疊區域過小的問題。
     """
     det_l = detect_charuco(gray_l, board, min_corners=1)
     det_r = detect_charuco(gray_r, board, min_corners=1)
@@ -236,7 +236,7 @@ def calibrate_stereo_charuco(
     target_error_px: float = 0.5,
     min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
 ) -> StereoCalibrationResult:
-    """ChArUco版雙目標定。每一幀左右影像只要有足夠共同角點就能用，
+    """ChArUco版雙目標定。每一幀左右影像只要有足夠共同角點就能使用，
     不需要兩顆鏡頭同時拍到完整棋盤格。
     """
     board = board_spec.build_board()

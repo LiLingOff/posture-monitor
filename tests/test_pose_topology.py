@@ -2,11 +2,11 @@ from pose.topology import COCO18_KEYPOINT_NAMES, NECK_INDEX, NUM_KEYPOINTS, keyp
 
 
 def test_matches_trt_pose_human_pose_json():
-    """鎖住實機核對過的拓樸。
+    """鎖定實機核對過的拓樸。
 
     2026-09-18在Jetson上從trt_pose的human_pose.json讀出來的清單，
-    名稱與順序都跟這裡一致。改動這個tuple等於改動所有關鍵點的索引，
-    三角測量與角度計算全部會跟著錯位，所以直接把實機值寫死當基準。
+    名稱與順序都與這裡一致。改動這個tuple等於改動所有關鍵點的索引，
+    三角測量與角度計算全部會跟著錯位，所以直接把實機核對的結果固定寫入作為基準。
     """
     verified_on_jetson = (
         "nose", "left_eye", "right_eye", "left_ear", "right_ear",

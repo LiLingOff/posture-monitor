@@ -1,7 +1,7 @@
 """測試用：合成雙目標定結果與3D點投影，供三角測量驗證用。
 
-跟tests/synthetic.py不同——那個是homography-based，假設標的物是平面(Z=0)，
-三角測量要驗證的是任意非共平面3D點，這裡直接用cv2.projectPoints合成。
+與tests/synthetic.py不同——那份是homography-based，假設標的物是平面(Z=0)，
+三角測量要驗證的是任意非共平面的3D點，因此這裡直接用cv2.projectPoints合成。
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def make_synthetic_stereo_calibration(
 
 
 def project_point(K: np.ndarray, R: np.ndarray, T: np.ndarray, point_3d: np.ndarray) -> np.ndarray:
-    """把世界座標點投影到某相機的像素座標(零畸變)，回傳shape(2,)。"""
+    """將世界座標點投影到指定相機的像素座標(零畸變)，回傳shape(2,)。"""
     rvec, _ = cv2.Rodrigues(R)
     img_pts, _ = cv2.projectPoints(
         np.asarray(point_3d, dtype=np.float64).reshape(1, 1, 3), rvec, T, K, np.zeros(5)

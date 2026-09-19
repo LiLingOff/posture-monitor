@@ -63,7 +63,7 @@ def test_triangulate_person_keypoints_missing_in_one_side_becomes_nan():
     left_points = np.array([project_point(K, R_IDENTITY, T_LEFT, p) for p in known_3d])
     right_points = np.array([project_point(K, R_IDENTITY, T_RIGHT, p) for p in known_3d])
 
-    # 索引3只在左側缺偵測，索引7只在右側缺偵測
+    # 索引3只在左側未偵測到，索引7只在右側未偵測到
     left_points[3] = np.nan
     right_points[7] = np.nan
 
@@ -86,7 +86,7 @@ def test_triangulate_person_keypoints_respects_min_confidence():
     right_points = np.array([project_point(K, R_IDENTITY, T_RIGHT, p) for p in known_3d])
 
     confidences_left = np.ones(NUM_KEYPOINTS, dtype=np.float32)
-    confidences_left[5] = 0.1  # 信心太低，應被門檻排除
+    confidences_left[5] = 0.1  # 信心度過低，應被門檻排除
 
     left = PersonKeypoints(points=left_points.astype(np.float32), confidences=confidences_left)
     right = PersonKeypoints(points=right_points.astype(np.float32), confidences=np.ones(NUM_KEYPOINTS, dtype=np.float32))

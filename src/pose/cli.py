@@ -70,7 +70,7 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
     for frame in frames:
         detected_fp32 = fp32_engine.infer(frame)
         detected_fp16 = fp16_engine.infer(frame)
-        # 沒偵測到人時infer回傳空list，直接取[0]會IndexError
+        # 沒有偵測到人時infer回傳空list，直接取[0]會產生IndexError
         if not detected_fp32 or not detected_fp16:
             skipped += 1
             continue
@@ -78,9 +78,9 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
         fp16_results.append(detected_fp16[0])
 
     if skipped:
-        print(f"有{skipped}/{len(frames)}張影格沒偵測到人，已略過")
+        print(f"有{skipped}/{len(frames)}張影格沒有偵測到人，已略過")
     if not fp32_results:
-        raise RuntimeError("所有取樣影格都沒偵測到人，無法比對——確認受試者有在畫面內、光線是否足夠")
+        raise RuntimeError("所有取樣影格都沒有偵測到人，無法比對——請確認受試者位於畫面內、光線是否足夠")
 
     mean_rmse, passed = compare_precision_rmse(fp32_results, fp16_results, args.rmse_threshold_px)
     chosen = "fp16" if passed else "fp32"

@@ -46,8 +46,8 @@ def test_signed_angle_in_plane_negative_rotation():
 
 
 def test_angle_between_vectors_raises_on_zero_length():
-    """零長度向量算不出角度。回傳0度會被讀成「完全沒偏移」，是最理想的姿勢，
-    但實際上是兩個關鍵點疊在一起、資料壞掉。"""
+    """零長度向量無法定義角度。回傳0度會被解讀成完全沒有偏移，也就是最理想的姿勢，
+    但實際情況是兩個關鍵點重疊、資料異常。"""
     with pytest.raises(ValueError):
         angle_between_vectors(np.zeros(3), np.array([1.0, 0.0, 0.0]))
 
@@ -70,6 +70,6 @@ def test_signed_angle_in_plane_ignores_out_of_plane_component():
     plane_normal = np.array([0.0, 0.0, 1.0])
     reference = np.array([1.0, 0.0, 0.0])
     theta = np.radians(30.0)
-    # 加一個Z分量，不應影響投影到XY平面後算出來的角度
+    # 加入一個Z分量，不應影響投影到XY平面後算出來的角度
     vector = np.array([np.cos(theta), np.sin(theta), 999.0])
     assert signed_angle_in_plane(vector, reference, plane_normal) == pytest.approx(30.0, abs=1e-6)

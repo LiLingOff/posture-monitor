@@ -16,7 +16,7 @@ def _add_chessboard_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_charuco_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--charuco", action="store_true", help="影像是用ChArUco板拍的")
+    p.add_argument("--charuco", action="store_true", help="影像是用ChArUco板拍攝的")
     p.add_argument("--squares-x", type=int, default=10)
     p.add_argument("--squares-y", type=int, default=8)
     p.add_argument("--marker-size-mm", type=float, default=18.0)
@@ -24,7 +24,7 @@ def _add_charuco_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--legacy-pattern",
         action="store_true",
-        help="現成板子（如AndyMark）常用OpenCV 4.6以前的舊版標記排列，偵測不到就加這個",
+        help="市售現成板子（如AndyMark）常用OpenCV 4.6以前的舊版標記排列，偵測不到時加上這個",
     )
 
 

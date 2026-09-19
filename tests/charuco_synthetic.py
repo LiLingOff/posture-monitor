@@ -1,8 +1,8 @@
 """測試用：合成ChArUco board的相機視角影像。
 
-原理跟tests/synthetic.py相同（平面標的物的相機成像=正面圖的一次homography變換），
-差別是frontal->object的mm對應關係改用實際偵測結果反推（cv2.findHomography），
-不依賴假設board的內部座標系原點/方向，對OpenCV版本間的座標慣例差異更穩健。
+原理與tests/synthetic.py相同（平面標的物的相機成像等於正面圖的一次homography變換），
+差別在於frontal->object的mm對應關係改用實際偵測結果反推（cv2.findHomography），
+不必假設board的內部座標系原點與方向，面對OpenCV各版本的座標慣例差異更穩健。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def make_charuco_frontal_image(board_spec: CharucoBoardSpec, pixels_per_square: 
 
 
 def frontal_to_object_homography(frontal_img: np.ndarray, board_spec: CharucoBoardSpec) -> np.ndarray:
-    """在無形變的正面圖上偵測角點，用(像素座標, 已知mm座標)反推homography。"""
+    """在無形變的正面圖上偵測角點，以(像素座標, 已知mm座標)反推homography。"""
     board = board_spec.build_board()
     detector = cv2.aruco.CharucoDetector(board)
     corners, ids, _, _ = detector.detectBoard(frontal_img)

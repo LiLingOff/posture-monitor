@@ -1,7 +1,7 @@
 """ChArUco板角點偵測。
 
-跟chessboard.py的差異：每個角點有獨立ID（靠ArUco標記辨識），
-影像不需要看到完整board、只要偵測到夠多角點就能用，
+與chessboard.py的差異：每個角點有獨立ID（靠ArUco標記辨識），
+影像不需要看到完整board，只要偵測到足夠多的角點就能使用，
 用來解決雙目模組兩顆鏡頭視野重疊區域小、無法同時拍到完整棋盤格的問題。
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ class CharucoBoardSpec:
     marker_size_mm: float
     dictionary_name: str = "DICT_5X5_100"
     # 部分現成板子（例如AndyMark）用OpenCV 4.6以前的舊版ArUco標記排列方式，
-    # 若偵測不到角點或角點對不上，改成True試試看。
+    # 若偵測不到角點或角點對應錯誤，改成True再試。
     legacy_pattern: bool = False
 
     def build_board(self) -> cv2.aruco.CharucoBoard:
@@ -60,7 +60,7 @@ def detect_charuco(
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """偵測ChArUco角點，回傳(charucoCorners shape(N,1,2), charucoIds shape(N,1))。
 
-    可能只偵測到board的一部分，N可以小於board實際角點總數。
+    可能只偵測到board的一部分，N可以小於board的實際角點總數。
     偵測到的角點數少於min_corners時回傳None。
     """
     detector = cv2.aruco.CharucoDetector(board)

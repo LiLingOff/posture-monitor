@@ -1,7 +1,7 @@
 """雙目3D三角測量。
 
 正確流程：先用undistortPoints把原始像素點去畸變＋套用stereoRectify的校正轉換
-（R1/R2/P1/P2是校正後座標系定義的，不能把原始像素直接丟進triangulatePoints），
+（R1/R2/P1/P2定義在校正後的座標系，不能把原始像素直接輸入triangulatePoints），
 再用triangulatePoints三角測量，最後除以齊次座標第4維還原3D點。
 """
 from __future__ import annotations
@@ -15,9 +15,9 @@ from calibration.stereo_calibration import StereoCalibrationResult
 def triangulate_points(
     calib: StereoCalibrationResult, points_left: np.ndarray, points_right: np.ndarray
 ) -> np.ndarray:
-    """points_left/points_right shape(N,2)，可含NaN列(缺偵測)。
+    """points_left/points_right shape(N,2)，可含NaN列(未偵測到)。
 
-    回傳shape(N,3)，單位跟標定時square_size_mm一致(mm)；NaN列的輸出也是NaN。
+    回傳shape(N,3)，單位與標定時square_size_mm一致(mm)；NaN列的輸出也是NaN。
     """
     points_left = np.asarray(points_left, dtype=np.float64)
     points_right = np.asarray(points_right, dtype=np.float64)
@@ -45,7 +45,7 @@ def triangulate_points(
         points_3d = (points_4d[:3] / points_4d[3]).T
 
     # 齊次座標第4維趨近0代表兩條視線幾乎平行、交點在無窮遠（左右對應點幾乎重合時會這樣）。
-    # 這種結果是inf或極大值，放著會混進角度計算變成看似合理的數字，統一標成NaN。
+    # 這種結果是inf或極大值，不處理會混入角度計算變成看似合理的數字，統一標記為NaN。
     points_3d[~np.isfinite(points_3d).all(axis=1)] = np.nan
 
     result[valid] = points_3d

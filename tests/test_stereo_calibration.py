@@ -15,7 +15,7 @@ TRUE_K = np.array(
         [0.0, 0.0, 1.0],
     ]
 )
-TRUE_BASELINE_MM = 120.0  # 右相機相對左相機沿 X 軸平移量
+TRUE_BASELINE_MM = 120.0  # 右相機相對左相機沿 X 軸的平移量
 
 
 def test_stereo_calibration_recovers_known_baseline(tmp_path: Path):

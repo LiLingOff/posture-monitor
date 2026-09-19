@@ -1,5 +1,5 @@
-"""確認pose.engine在沒裝torch/trt_pose的環境下也能import——
-torch/trt_pose的import都延遲到TrtPoseEngine的方法內部才執行。
+"""確認pose.engine在沒有安裝torch與trt_pose的環境下也能import——
+torch與trt_pose的import都延遲到TrtPoseEngine的方法內部才執行。
 """
 from pathlib import Path
 

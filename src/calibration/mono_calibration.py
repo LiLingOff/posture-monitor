@@ -60,9 +60,9 @@ def _per_view_reprojection_errors(
         projected, _ = cv2.projectPoints(
             obj_points[i], rvecs[i], tvecs[i], camera_matrix, dist_coeffs
         )
-        # cv2.norm給的是sqrt(所有點誤差平方和)，要除以sqrt(N)才是該張影像的RMS。
+        # cv2.norm回傳的是sqrt(所有點誤差平方和)，要除以sqrt(N)才是該張影像的RMS。
         # 除以N（OpenCV官方教學的寫法）會把誤差低估sqrt(N)倍，35個角點就差5.9倍，
-        # 會讓0.3px的品質門檻形同虛設。這樣算出來的總RMS會等於calibrateCamera的回傳值。
+        # 會讓0.3px的品質門檻失去作用。這樣算出來的總RMS會等於calibrateCamera的回傳值。
         error = cv2.norm(img_points[i], projected, cv2.NORM_L2) / np.sqrt(len(projected))
         errors.append(float(error))
     return errors
@@ -127,7 +127,7 @@ def calibrate_mono(
     if len(obj_points) < _MIN_IMAGES:
         raise ValueError(
             f"成功偵測到棋盤格的影像只有{len(obj_points)}張，需至少{_MIN_IMAGES}張。"
-            f"棋盤格要完整入鏡且對焦清楚，或確認--cols/--rows跟實際板子相符"
+            f"棋盤格要完整入鏡且對焦清楚，或確認--cols/--rows與實際板子相符"
         )
 
     assert image_size is not None
@@ -140,7 +140,7 @@ def calibrate_mono_charuco(
     target_error_px: float = 0.3,
     min_corners_per_view: int = _MIN_CHARUCO_CORNERS_PER_VIEW,
 ) -> MonoCalibrationResult:
-    """ChArUco版單眼標定。每張影像只要偵測到夠多角點就能用，不需要整塊board入鏡。"""
+    """ChArUco版單眼標定。每張影像只要偵測到足夠多的角點就能使用，不需要整塊board入鏡。"""
     board = board_spec.build_board()
     board_obj_points = board.getChessboardCorners()
     images = load_gray_images(image_dir)
@@ -166,7 +166,7 @@ def calibrate_mono_charuco(
     if len(obj_points) < _MIN_IMAGES:
         raise ValueError(
             f"偵測到足夠角點的影像只有{len(obj_points)}張，需至少{_MIN_IMAGES}張。"
-            f"確認--squares-x/--squares-y/--dictionary跟實際板子相符，或試試--legacy-pattern"
+            f"確認--squares-x/--squares-y/--dictionary與實際板子相符，或加上--legacy-pattern再試"
         )
 
     assert image_size is not None

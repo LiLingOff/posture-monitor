@@ -58,7 +58,7 @@ def test_triangulate_point_single():
 def test_triangulate_points_nan_rows_stay_nan():
     calib = make_synthetic_stereo_calibration(K, BASELINE_MM)
     points_left, points_right = _project_pairs(KNOWN_POINTS_3D)
-    points_left[1] = np.nan  # 模擬該點在左相機缺偵測
+    points_left[1] = np.nan  # 模擬該點在左相機未偵測到
 
     recovered = triangulate_points(calib, points_left, points_right)
 

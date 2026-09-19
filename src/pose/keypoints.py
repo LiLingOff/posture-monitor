@@ -9,8 +9,8 @@ from .topology import NUM_KEYPOINTS, keypoint_index
 
 @dataclass
 class PersonKeypoints:
-    points: np.ndarray  # shape (NUM_KEYPOINTS, 2) 像素座標，缺偵測為NaN
-    confidences: np.ndarray  # shape (NUM_KEYPOINTS,)，缺偵測為0.0
+    points: np.ndarray  # shape (NUM_KEYPOINTS, 2) 像素座標，未偵測到填NaN
+    confidences: np.ndarray  # shape (NUM_KEYPOINTS,)，未偵測到填0.0
 
     def __post_init__(self) -> None:
         if self.points.shape != (NUM_KEYPOINTS, 2):
@@ -24,7 +24,7 @@ class PersonKeypoints:
 
 
 def keypoints_rmse(a: PersonKeypoints, b: PersonKeypoints, min_confidence: float = 0.0) -> float:
-    """僅比較兩者皆有效（非NaN、信心>=門檻）的關鍵點座標RMSE，供FP32 vs FP16精度比對用。"""
+    """僅比較兩者皆有效（非NaN、信心>=門檻）的關鍵點座標RMSE，供FP32與FP16精度比對使用。"""
     valid = (
         ~np.isnan(a.points).any(axis=1)
         & ~np.isnan(b.points).any(axis=1)

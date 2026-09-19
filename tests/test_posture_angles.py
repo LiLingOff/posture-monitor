@@ -15,7 +15,7 @@ def _make_keypoints3d(overrides: dict[str, np.ndarray]) -> PersonKeypoints3D:
 
 def test_theta_ca_zero_when_ear_directly_above_shoulder():
     shoulder = np.array([0.0, 0.0, 0.0])
-    ear = shoulder + np.array([0.0, -100.0, 0.0])  # 正上方(Y向下為正，"上"是-Y)，無深度偏移
+    ear = shoulder + np.array([0.0, -100.0, 0.0])  # 正上方(Y向下為正，正上方是-Y)，無深度偏移
     kp = _make_keypoints3d({"right_shoulder": shoulder, "right_ear": ear})
     assert theta_ca(kp) == pytest.approx(0.0, abs=1e-6)
 
@@ -53,7 +53,7 @@ def test_theta_sym_known_tilt_angle():
     left = np.array([-50.0, 0.0, 0.0])
     angle_deg = 10.0
     rad = np.radians(angle_deg)
-    # 右肩比左肩高(Y更小)，偏移量對應angle_deg
+    # 右肩比左肩高(Y較小)，偏移量對應angle_deg
     right = left + 100.0 * np.array([np.cos(rad), -np.sin(rad), 0.0])
     kp = _make_keypoints3d({"left_shoulder": left, "right_shoulder": right})
     assert theta_sym(kp) == pytest.approx(-angle_deg, abs=1e-6)
@@ -66,9 +66,9 @@ def test_theta_sym_raises_when_shoulder_missing():
 
 
 def test_theta_ca_raises_when_keypoints_coincide():
-    """耳朵跟肩膀被算到同一個3D點時要報錯。
+    """耳朵與肩膀被計算到同一個3D點時要拋出例外。
 
-    這種情況原本會回傳0度，也就是「完美姿勢」，壞掉的資料反而永遠不會觸發警示。
+    這種情況原本會回傳0度，也就是完美姿勢，異常的資料反而永遠不會觸發警示。
     """
     same_point = np.array([0.0, 0.0, 500.0])
     kp = _make_keypoints3d({"right_shoulder": same_point, "right_ear": same_point.copy()})

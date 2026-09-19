@@ -1,7 +1,7 @@
 """重投影誤差計算的回歸測試。
 
 這個數字是標定品質的唯一判準（單眼<0.3px、雙目<0.5px），算錯不會有任何外顯症狀，
-只會讓爛標定悄悄通過門檻，所以用「已知位移量」跟「OpenCV自己算的RMS」兩種方式鎖住。
+只會讓品質不佳的標定悄悄通過門檻，因此用已知位移量與OpenCV自己算出的RMS兩種方式鎖定。
 """
 import cv2
 import numpy as np
@@ -22,9 +22,9 @@ SPEC = ChessboardSpec(cols=7, rows=5, square_size_mm=25.0)
 
 
 def test_per_view_error_equals_known_uniform_offset():
-    """每個點都位移固定d像素時，該張影像的RMS就該等於d。
+    """每個點都位移固定d像素時，該張影像的RMS就應該等於d。
 
-    除以N而不是sqrt(N)的話會變成d/sqrt(35)，差5.9倍。
+    除以N而非sqrt(N)的話會變成d/sqrt(35)，相差5.9倍。
     """
     objp = SPEC.object_points()
     rvec = np.array([0.05, -0.03, 0.02])
@@ -42,7 +42,7 @@ def test_per_view_error_equals_known_uniform_offset():
 
 
 def test_rms_matches_opencv_calibrate_camera(tmp_path):
-    """整條管線算出來的RMS要跟cv2.calibrateCamera自己回傳的RMS一致。"""
+    """整條流程算出來的RMS要與cv2.calibrateCamera自己回傳的RMS一致。"""
     frontal = make_frontal_chessboard_image(SPEC, margin_squares=2)
     pattern_w = (SPEC.cols - 1) * SPEC.square_size_mm
     pattern_h = (SPEC.rows - 1) * SPEC.square_size_mm
@@ -59,7 +59,7 @@ def test_rms_matches_opencv_calibrate_camera(tmp_path):
 
     result = calibrate_mono(image_dir, SPEC, target_error_px=1.0)
 
-    # 用同一批角點獨立跑一次calibrateCamera，拿它回傳的RMS當基準
+    # 用同一批角點獨立執行一次calibrateCamera，以它回傳的RMS作為基準
     objp = SPEC.object_points()
     obj_points, img_points = [], []
     for path in sorted(image_dir.glob("*.png")):

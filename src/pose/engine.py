@@ -26,10 +26,10 @@ class TrtPoseModelPaths:
 class TrtPoseEngine:
     """trt_pose + torch2trt包裝。
 
-    所有torch/trt_pose匯入都延遲到方法內部執行，讓沒裝torch的機器仍可
-    `import pose.engine`，只有真的instantiate這個class才需要torch/CUDA/trt_pose。
+    所有torch/trt_pose匯入都延遲到方法內部執行，讓沒有安裝torch的機器仍可
+    `import pose.engine`，只有實際建立這個class的實例時才需要torch/CUDA/trt_pose。
     內部實作（_build_fp32/_build_or_load_trt/_parse）依公開資料設計，
-    要到Jetson上對照實際clone下來的trt_pose/torch2trt原始碼調整。
+    需要在Jetson上對照實際clone下來的trt_pose/torch2trt原始碼調整。
     """
 
     def __init__(self, paths: TrtPoseModelPaths, precision: str = "fp16", input_size: int = 224):
@@ -51,10 +51,10 @@ class TrtPoseEngine:
         import trt_pose.coco
         from trt_pose.parse_objects import ParseObjects
 
-        # coco_category_to_topology回傳的是tensor不是dict，關節點/連結數量要從原始json拿
+        # coco_category_to_topology回傳的是tensor而非dict，關節點與連結數量要從原始json取得
         self._human_pose = json.loads(self._paths.topology_json.read_text(encoding="utf-8"))
         self._topology = trt_pose.coco.coco_category_to_topology(self._human_pose)
-        # ParseObjects建構成本不低，建一次重複用，不要每幀重建
+        # ParseObjects建構成本不低，建立一次重複使用，不要每幀重建
         self._parse_objects = ParseObjects(self._topology)
 
         if self._precision == "fp16":
@@ -117,11 +117,11 @@ class TrtPoseEngine:
                 if k < 0:
                     continue
                 # peaks是正規化座標(y, x, 值域0~1)，要乘回原始畫面尺寸才是像素座標。
-                # 前處理把整張畫面縮成正方形輸入，所以乘原始寬高剛好抵銷這個縮放。
+                # 前處理把整張畫面縮放成正方形後輸入，所以乘上原始寬高剛好抵銷這個縮放。
                 peak_y, peak_x = float(peaks[0][j][k][0]), float(peaks[0][j][k][1])
                 points[j] = [peak_x * frame_w, peak_y * frame_h]
-                # 信心度取cmap在該峰值位置的數值，不能寫死1.0——
-                # 下游triangulate_person_keypoints要靠這個值做min_confidence過濾
+                # 信心度取cmap在該峰值位置的數值，不能固定寫成1.0——
+                # 下游triangulate_person_keypoints要依靠這個值做min_confidence過濾
                 row = min(max(int(peak_y * cmap_h), 0), cmap_h - 1)
                 col = min(max(int(peak_x * cmap_w), 0), cmap_w - 1)
                 confidences[j] = float(cmap[0][j][row][col])

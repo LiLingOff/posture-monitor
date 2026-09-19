@@ -1,4 +1,4 @@
-"""測試用假引擎，符合pose.engine.PoseEngine Protocol，不需要torch/GPU。"""
+"""測試用的假引擎，符合pose.engine.PoseEngine Protocol，不需要torch或GPU。"""
 from __future__ import annotations
 
 import time

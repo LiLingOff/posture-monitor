@@ -13,7 +13,7 @@ from .triangulation import triangulate_points
 
 @dataclass
 class PersonKeypoints3D:
-    points: np.ndarray  # shape(NUM_KEYPOINTS, 3)，單位mm，缺偵測/未三角測量為NaN
+    points: np.ndarray  # shape(NUM_KEYPOINTS, 3)，單位mm，未偵測到或未三角測量填NaN
 
     def __post_init__(self) -> None:
         if self.points.shape != (NUM_KEYPOINTS, 3):
@@ -30,7 +30,7 @@ def triangulate_person_keypoints(
     right: PersonKeypoints,
     min_confidence: float = 0.0,
 ) -> PersonKeypoints3D:
-    """只三角測量左右都有效偵測（非NaN、信心>=門檻）的關節，其餘為NaN。"""
+    """只對左右都有效偵測（非NaN、信心>=門檻）的關節做三角測量，其餘填NaN。"""
     valid = (
         ~np.isnan(left.points).any(axis=1)
         & ~np.isnan(right.points).any(axis=1)
