@@ -174,6 +174,39 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     print("     更換解析度後舊的標定參數就失效，而且不會出現錯誤訊息")
 
 
+def split_merged_frame(
+    frame: np.ndarray, vertical_split: bool = False, swap_lr: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """把左右眼合併輸出的畫面切成(左, 右)。
+
+    拍攝與執行期必須用同一套切法，否則左右眼會對調，三角測量的深度符號整個反過來。
+    pose.cli也是呼叫這個函式，避免兩邊各自維護一份而慢慢分岔。
+    """
+    if vertical_split:
+        h = frame.shape[0]
+        a, b = frame[: h // 2], frame[h // 2 :]
+    else:
+        w = frame.shape[1]
+        a, b = frame[:, : w // 2], frame[:, w // 2 :]
+    return (b, a) if swap_lr else (a, b)
+
+
+def _next_frame_index(*out_dirs: Path) -> int:
+    """回傳下一個可用的檔名編號：現有檔名的最大編號加一。
+
+    用檔案數量當編號會在編號不連續時撞名。刪掉沒對焦的那張再重跑補拍是很自然的操作，
+    此時數量比最大編號小，新檔就會無聲蓋掉既有影像，而且印出的張數會比實際檔案數多。
+    雙目要左右一起看，確保同一個編號在兩邊都還沒被用掉。
+    """
+    max_index = 0
+    for out_dir in out_dirs:
+        for path in out_dir.glob("frame_*.png"):
+            suffix = path.stem.rsplit("_", 1)[-1]
+            if suffix.isdigit():
+                max_index = max(max_index, int(suffix))
+    return max_index + 1
+
+
 def _already_complete(out_dir: Path, target_count: int) -> bool:
     """資料夾已有足夠張數時回傳True，直接跳過，不必開啟相機。
 
@@ -228,6 +261,7 @@ def capture_mono(
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
     saved = len(list(out_dir.glob("*.png")))
+    next_index = _next_frame_index(out_dir)
     cancelled = False
     try:
         while saved < target_count:
@@ -235,7 +269,7 @@ def capture_mono(
             if not ok:
                 raise RuntimeError("讀取相機影格失敗")
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            corners = find_corners(gray, spec)
+            corners = find_corners(gray, spec, fast_check=True)
             display = frame.copy()
             _draw_feedback(display, spec, corners, saved, target_count)
             cv2.imshow("mono capture", display)
@@ -246,7 +280,8 @@ def capture_mono(
                 break
             if key == 32 and corners is not None:
                 saved += 1
-                cv2.imwrite(str(out_dir / f"frame_{saved:04d}.png"), frame)
+                cv2.imwrite(str(out_dir / f"frame_{next_index:04d}.png"), frame)
+                next_index += 1
                 print(f"已存 {saved}/{target_count}")
 
         print(f"拍攝結束，共存 {saved} 張於 {out_dir}")
@@ -278,18 +313,27 @@ def capture_stereo(
         raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
 
     saved = len(list(left_out.glob("*.png")))
+    next_index = _next_frame_index(left_out, right_out)
     cancelled = False
     try:
         while saved < target_count:
-            ok_l, frame_l = cap_l.read()
-            ok_r, frame_r = cap_r.read()
+            # 先兩邊都grab再各自retrieve。read()等於grab+retrieve，串著做的話
+            # 兩張畫面可能差到一個影格間隔加上MJPG解碼時間；標定要求板子在左右影像
+            # 位於同一個物理位置，中間有位移會直接污染外參R/T，而重投影誤差不會變差
+            # （各相機自己的幾何仍然自洽），壞掉的剛好是這個專案最在意的相對關係。
+            grabbed_l = cap_l.grab()
+            grabbed_r = cap_r.grab()
+            if not (grabbed_l and grabbed_r):
+                raise RuntimeError("讀取雙目相機影格失敗")
+            ok_l, frame_l = cap_l.retrieve()
+            ok_r, frame_r = cap_r.retrieve()
             if not (ok_l and ok_r):
                 raise RuntimeError("讀取雙目相機影格失敗")
 
             gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY)
             gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY)
-            corners_l = find_corners(gray_l, spec)
-            corners_r = find_corners(gray_r, spec)
+            corners_l = find_corners(gray_l, spec, fast_check=True)
+            corners_r = find_corners(gray_r, spec, fast_check=True)
 
             disp_l, disp_r = frame_l.copy(), frame_r.copy()
             _draw_feedback(disp_l, spec, corners_l, saved, target_count)
@@ -303,7 +347,8 @@ def capture_stereo(
                 break
             if key == 32 and corners_l is not None and corners_r is not None:
                 saved += 1
-                name = f"frame_{saved:04d}.png"
+                name = f"frame_{next_index:04d}.png"
+                next_index += 1
                 cv2.imwrite(str(left_out / name), frame_l)
                 cv2.imwrite(str(right_out / name), frame_r)
                 print(f"已存 {saved}/{target_count}")
@@ -343,13 +388,7 @@ def capture_stereo_single_device(
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
     def split(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if vertical_split:
-            h = frame.shape[0]
-            a, b = frame[: h // 2], frame[h // 2 :]
-        else:
-            w = frame.shape[1]
-            a, b = frame[:, : w // 2], frame[:, w // 2 :]
-        return (b, a) if swap_lr else (a, b)
+        return split_merged_frame(frame, vertical_split, swap_lr)
 
     ok, probe = cap.read()
     if not ok:
@@ -357,6 +396,7 @@ def capture_stereo_single_device(
     _warn_if_not_side_by_side(probe, vertical_split)
 
     saved = len(list(left_out.glob("*.png")))
+    next_index = _next_frame_index(left_out, right_out)
     cancelled = False
     try:
         while saved < target_count:
@@ -367,8 +407,8 @@ def capture_stereo_single_device(
 
             gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY)
             gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY)
-            corners_l = find_corners(gray_l, spec)
-            corners_r = find_corners(gray_r, spec)
+            corners_l = find_corners(gray_l, spec, fast_check=True)
+            corners_r = find_corners(gray_r, spec, fast_check=True)
 
             disp_l, disp_r = frame_l.copy(), frame_r.copy()
             _draw_feedback(disp_l, spec, corners_l, saved, target_count)
@@ -382,7 +422,8 @@ def capture_stereo_single_device(
                 break
             if key == 32 and corners_l is not None and corners_r is not None:
                 saved += 1
-                name = f"frame_{saved:04d}.png"
+                name = f"frame_{next_index:04d}.png"
+                next_index += 1
                 cv2.imwrite(str(left_out / name), frame_l)
                 cv2.imwrite(str(right_out / name), frame_r)
                 print(f"已存 {saved}/{target_count}")
@@ -430,6 +471,7 @@ def capture_mono_charuco(
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
     saved = len(list(out_dir.glob("*.png")))
+    next_index = _next_frame_index(out_dir)
     cancelled = False
     try:
         while saved < target_count:
@@ -448,7 +490,8 @@ def capture_mono_charuco(
                 break
             if key == 32 and detected is not None and len(detected[1]) >= min_corners:
                 saved += 1
-                cv2.imwrite(str(out_dir / f"frame_{saved:04d}.png"), frame)
+                cv2.imwrite(str(out_dir / f"frame_{next_index:04d}.png"), frame)
+                next_index += 1
                 print(f"已存 {saved}/{target_count}（{len(detected[1])}個角點）")
 
         print(f"拍攝結束，共存 {saved} 張於 {out_dir}")
@@ -512,11 +555,20 @@ def capture_stereo_charuco(
         raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
 
     saved = len(list(left_out.glob("*.png")))
+    next_index = _next_frame_index(left_out, right_out)
     cancelled = False
     try:
         while saved < target_count:
-            ok_l, frame_l = cap_l.read()
-            ok_r, frame_r = cap_r.read()
+            # 先兩邊都grab再各自retrieve。read()等於grab+retrieve，串著做的話
+            # 兩張畫面可能差到一個影格間隔加上MJPG解碼時間；標定要求板子在左右影像
+            # 位於同一個物理位置，中間有位移會直接污染外參R/T，而重投影誤差不會變差
+            # （各相機自己的幾何仍然自洽），壞掉的剛好是這個專案最在意的相對關係。
+            grabbed_l = cap_l.grab()
+            grabbed_r = cap_r.grab()
+            if not (grabbed_l and grabbed_r):
+                raise RuntimeError("讀取雙目相機影格失敗")
+            ok_l, frame_l = cap_l.retrieve()
+            ok_r, frame_r = cap_r.retrieve()
             if not (ok_l and ok_r):
                 raise RuntimeError("讀取雙目相機影格失敗")
 
@@ -537,7 +589,8 @@ def capture_stereo_charuco(
                 break
             if key == 32 and shared >= min_shared_corners:
                 saved += 1
-                name = f"frame_{saved:04d}.png"
+                name = f"frame_{next_index:04d}.png"
+                next_index += 1
                 cv2.imwrite(str(left_out / name), frame_l)
                 cv2.imwrite(str(right_out / name), frame_r)
                 print(f"已存 {saved}/{target_count}（共同角點{shared}個）")
@@ -574,13 +627,7 @@ def capture_stereo_charuco_single_device(
         raise RuntimeError(f"無法開啟相機 index={camera_index}")
 
     def split(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if vertical_split:
-            h = frame.shape[0]
-            a, b = frame[: h // 2], frame[h // 2 :]
-        else:
-            w = frame.shape[1]
-            a, b = frame[:, : w // 2], frame[:, w // 2 :]
-        return (b, a) if swap_lr else (a, b)
+        return split_merged_frame(frame, vertical_split, swap_lr)
 
     ok, probe = cap.read()
     if not ok:
@@ -588,6 +635,7 @@ def capture_stereo_charuco_single_device(
     _warn_if_not_side_by_side(probe, vertical_split)
 
     saved = len(list(left_out.glob("*.png")))
+    next_index = _next_frame_index(left_out, right_out)
     cancelled = False
     try:
         while saved < target_count:
@@ -613,7 +661,8 @@ def capture_stereo_charuco_single_device(
                 break
             if key == 32 and shared >= min_shared_corners:
                 saved += 1
-                name = f"frame_{saved:04d}.png"
+                name = f"frame_{next_index:04d}.png"
+                next_index += 1
                 cv2.imwrite(str(left_out / name), frame_l)
                 cv2.imwrite(str(right_out / name), frame_r)
                 print(f"已存 {saved}/{target_count}（共同角點{shared}個）")

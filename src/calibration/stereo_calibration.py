@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from .charuco import CharucoBoardSpec, detect_charuco
-from .chessboard import ChessboardSpec, find_corners, load_gray_images
+from .chessboard import ChessboardSpec, ensure_uniform_size, find_corners, load_gray_images
 
 _MIN_PAIRS = 10
 _MIN_SHARED_CHARUCO_CORNERS = 6
@@ -90,16 +90,19 @@ def _find_matched_corners(
         raise ValueError(f"左右資料夾沒有同名檔案可配對，雙目標定需要同一時刻拍的成對影像。"
             f"（left={left_dir}, right={right_dir}）")
 
+    # 左右一起檢查：兩邊解析度不同的話stereoCalibrate本身就沒有定義
+    image_size = ensure_uniform_size(
+        [(Path(n), left_images[n]) for n in common_names]
+        + [(Path(n), right_images[n]) for n in common_names]
+    )
+
     objp = spec.object_points()
     obj_points: list[np.ndarray] = []
     left_points: list[np.ndarray] = []
     right_points: list[np.ndarray] = []
-    image_size: tuple[int, int] | None = None
 
     for name in common_names:
         gray_l, gray_r = left_images[name], right_images[name]
-        if image_size is None:
-            image_size = (gray_l.shape[1], gray_l.shape[0])
         corners_l = find_corners(gray_l, spec)
         corners_r = find_corners(gray_r, spec)
         if corners_l is None or corners_r is None:
@@ -108,7 +111,6 @@ def _find_matched_corners(
         left_points.append(corners_l)
         right_points.append(corners_r)
 
-    assert image_size is not None
     return obj_points, left_points, right_points, image_size
 
 
@@ -249,15 +251,17 @@ def calibrate_stereo_charuco(
     if not common_names:
         raise ValueError(f"左右資料夾無同名檔案可配對（left={left_dir}, right={right_dir}）")
 
+    image_size = ensure_uniform_size(
+        [(Path(n), left_images[n]) for n in common_names]
+        + [(Path(n), right_images[n]) for n in common_names]
+    )
+
     obj_points: list[np.ndarray] = []
     left_points: list[np.ndarray] = []
     right_points: list[np.ndarray] = []
-    image_size: tuple[int, int] | None = None
 
     for name in common_names:
         gray_l, gray_r = left_images[name], right_images[name]
-        if image_size is None:
-            image_size = (gray_l.shape[1], gray_l.shape[0])
         corr = _charuco_frame_correspondence(gray_l, gray_r, board, board_obj_points, min_shared_corners)
         if corr is None:
             continue
@@ -272,5 +276,4 @@ def calibrate_stereo_charuco(
             f"拍攝時讓板子多出現在兩邊視野的重疊區，或調低min_shared_corners"
         )
 
-    assert image_size is not None
     return _run_stereo_calibration(obj_points, left_points, right_points, image_size, target_error_px)

@@ -121,3 +121,114 @@ def test_capture_still_opens_camera_when_images_missing(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         capture.capture_mono(0, out_dir, SPEC, target_count=40)
     assert opened == [0]
+
+
+class _AlwaysOnCamera:
+    """永遠讀得到畫面的假相機，畫面內容固定為fill值當指紋。"""
+
+    def __init__(self, fill=99, shape=(48, 64, 3)):
+        self._frame = np.full(shape, fill, dtype=np.uint8)
+        self.grabbed = 0
+        self.retrieved = 0
+
+    def isOpened(self):
+        return True
+
+    def read(self):
+        return True, self._frame.copy()
+
+    def grab(self):
+        self.grabbed += 1
+        return True
+
+    def retrieve(self):
+        self.retrieved += 1
+        return True, self._frame.copy()
+
+    def release(self):
+        pass
+
+
+@pytest.fixture
+def autopress_space(monkeypatch):
+    """讓拍攝迴圈以為使用者一直在按空白鍵，且角點永遠偵測得到。"""
+    monkeypatch.setattr(capture, "find_corners", lambda *a, **k: np.zeros((54, 1, 2), np.float32))
+    monkeypatch.setattr(capture.cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(capture.cv2, "drawChessboardCorners", lambda *a, **k: None)
+    monkeypatch.setattr(capture.cv2, "destroyAllWindows", lambda *a, **k: None)
+    monkeypatch.setattr(capture.cv2, "waitKey", lambda *a, **k: 32)
+
+
+def test_capture_does_not_overwrite_when_numbering_has_gaps(tmp_path, monkeypatch, autopress_space):
+    """編號不連續時補拍不該蓋掉既有影像。
+
+    拍完發現某張沒對焦、刪掉再重跑是很自然的操作。用檔案數量當索引的話
+    新檔會撞到既有檔名，無聲蓋掉一張，而且印出的張數會比實際檔案數多。
+    """
+    out_dir = tmp_path / "front"
+    out_dir.mkdir()
+    for i in range(1, 6):
+        cv2.imwrite(str(out_dir / f"frame_{i:04d}.png"), np.full((48, 64, 3), i * 10, np.uint8))
+    (out_dir / "frame_0003.png").unlink()
+
+    before = {p.name: int(cv2.imread(str(p))[0, 0, 0]) for p in out_dir.glob("*.png")}
+    monkeypatch.setattr(capture, "_open_camera", lambda *a, **k: _AlwaysOnCamera(fill=99))
+
+    capture.capture_mono(0, out_dir, SPEC, target_count=6)
+
+    after = {p.name: int(cv2.imread(str(p))[0, 0, 0]) for p in out_dir.glob("*.png")}
+    for name, fingerprint in before.items():
+        assert after.get(name) == fingerprint, f"{name} 被覆蓋了"
+    assert len(after) == 6, "印出的張數要與實際檔案數一致"
+
+
+def test_next_frame_index_uses_max_not_count(tmp_path):
+    tmp_path.joinpath("frame_0001.png").touch()
+    tmp_path.joinpath("frame_0009.png").touch()
+    tmp_path.joinpath("not_a_frame.png").touch()
+    assert capture._next_frame_index(tmp_path) == 10
+
+
+def test_next_frame_index_spans_both_stereo_dirs(tmp_path):
+    left, right = tmp_path / "l", tmp_path / "r"
+    left.mkdir()
+    right.mkdir()
+    left.joinpath("frame_0002.png").touch()
+    right.joinpath("frame_0007.png").touch()
+    assert capture._next_frame_index(left, right) == 8
+
+
+def test_stereo_grabs_both_cameras_before_retrieving(tmp_path, monkeypatch, autopress_space):
+    """左右要先各自grab再retrieve。
+
+    串著呼叫read()的話，兩張畫面會差到一個影格間隔加上解碼時間，板子只要有位移
+    就會污染外參R/T——而重投影誤差不會變差，看不出來。
+    """
+    left_out, right_out = tmp_path / "l", tmp_path / "r"
+    order = []
+
+    class _TracingCamera(_AlwaysOnCamera):
+        def __init__(self, tag):
+            super().__init__()
+            self._tag = tag
+
+        def grab(self):
+            order.append(f"grab_{self._tag}")
+            return super().grab()
+
+        def retrieve(self):
+            order.append(f"retrieve_{self._tag}")
+            return super().retrieve()
+
+        def read(self):
+            order.append(f"read_{self._tag}")
+            return super().read()
+
+    cams = {0: _TracingCamera("l"), 1: _TracingCamera("r")}
+    monkeypatch.setattr(capture, "_open_camera", lambda index, *a, **k: cams[index])
+
+    capture.capture_stereo(0, 1, left_out, right_out, SPEC, target_count=1)
+
+    assert "read_l" not in order and "read_r" not in order, "不該用read()，兩次曝光會被解碼時間拉開"
+    first_cycle = order[:4]
+    assert first_cycle == ["grab_l", "grab_r", "retrieve_l", "retrieve_r"], first_cycle

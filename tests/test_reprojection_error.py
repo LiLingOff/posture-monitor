@@ -7,8 +7,12 @@ import cv2
 import numpy as np
 import pytest
 
+from calibration.charuco import CharucoBoardSpec, detect_charuco
 from calibration.chessboard import ChessboardSpec, find_corners
-from calibration.mono_calibration import _per_view_reprojection_errors, calibrate_mono
+from calibration.mono_calibration import _per_view_reprojection_errors, calibrate_mono, calibrate_mono_charuco
+from charuco_synthetic import (frontal_to_object_homography,
+                               make_charuco_frontal_image,
+                               synthesize_charuco_view)
 from synthetic import make_frontal_chessboard_image, synthesize_view
 
 K = np.array(
@@ -71,3 +75,80 @@ def test_rms_matches_opencv_calibrate_camera(tmp_path):
     opencv_rms, *_ = cv2.calibrateCamera(obj_points, img_points, (640, 480), None, None)
 
     assert result.rms_reprojection_error == pytest.approx(opencv_rms, rel=1e-3)
+
+
+BOARD_SPEC = CharucoBoardSpec(squares_x=10, squares_y=8, square_size_mm=25.0, marker_size_mm=18.0)
+
+
+def test_rms_matches_opencv_when_corner_counts_differ(tmp_path):
+    """ChArUco每張角點數不同時，總RMS仍要與cv2.calibrateCamera一致。
+
+    總RMS的定義是sqrt(所有角點誤差平方和/角點總數)，所以各張的per-view RMS
+    必須依該張角點數加權。直接取平均只有在每張角點數相同時才正確——棋盤格成立，
+    ChArUco不成立，而ChArUco正是這個專案實際使用的路徑。
+    直接平均在這組資料會低估約4%，角點少的視角被放大了權重。
+    """
+    frontal = make_charuco_frontal_image(BOARD_SPEC)
+    H = frontal_to_object_homography(frontal, BOARD_SPEC)
+    board = BOARD_SPEC.build_board()
+    board_obj = board.getChessboardCorners()
+
+    pattern_w = (BOARD_SPEC.squares_x - 1) * BOARD_SPEC.square_size_mm
+    pattern_h = (BOARD_SPEC.squares_y - 1) * BOARD_SPEC.square_size_mm
+
+    rng = np.random.default_rng(7)
+    image_dir = tmp_path / "front"
+    image_dir.mkdir()
+    for i in range(20):
+        rvec = rng.uniform(-0.1, 0.1, size=3)
+        z = rng.uniform(200.0, 240.0)  # 近距離，每張看到的角點數不一樣
+        tvec = np.array([-pattern_w / 2 + rng.uniform(-15, 15), -pattern_h / 2 + rng.uniform(-10, 10), z])
+        cv2.imwrite(str(image_dir / f"frame_{i:04d}.png"),
+                    synthesize_charuco_view(frontal, H, K, rvec, tvec, (640, 480)))
+
+    result = calibrate_mono_charuco(image_dir, BOARD_SPEC, target_error_px=99.0)
+
+    obj_points, img_points = [], []
+    for path in sorted(image_dir.glob("*.png")):
+        gray = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2GRAY)
+        detected = detect_charuco(gray, board, min_corners=6)
+        if detected is None:
+            continue
+        corners, ids = detected
+        obj_points.append(board_obj[ids.flatten()].astype(np.float32))
+        img_points.append(corners.reshape(-1, 1, 2).astype(np.float32))
+    opencv_rms, *_ = cv2.calibrateCamera(obj_points, img_points, (640, 480), None, None)
+
+    counts = [len(o) for o in obj_points]
+    assert len(set(counts)) > 1, "這個測試的前提是各張角點數不同"
+    # 容差1e-4：基準是獨立再跑一次calibrateCamera，尾數會差約1e-5。
+    # 未加權的算法在這組資料會差4.4e-2，這個門檻擋得住。
+    assert result.rms_reprojection_error == pytest.approx(opencv_rms, rel=1e-4)
+
+
+def test_per_view_counts_recorded_and_saved(tmp_path):
+    """角點數要一起存進.npz，否則重新載入後算出來的RMS會退回等權重。"""
+    frontal = make_charuco_frontal_image(BOARD_SPEC)
+    H = frontal_to_object_homography(frontal, BOARD_SPEC)
+    pattern_w = (BOARD_SPEC.squares_x - 1) * BOARD_SPEC.square_size_mm
+    pattern_h = (BOARD_SPEC.squares_y - 1) * BOARD_SPEC.square_size_mm
+
+    rng = np.random.default_rng(11)
+    image_dir = tmp_path / "front"
+    image_dir.mkdir()
+    for i in range(14):
+        rvec = rng.uniform(-0.1, 0.1, size=3)
+        tvec = np.array([-pattern_w / 2, -pattern_h / 2, rng.uniform(200.0, 240.0)])
+        cv2.imwrite(str(image_dir / f"frame_{i:04d}.png"),
+                    synthesize_charuco_view(frontal, H, K, rvec, tvec, (640, 480)))
+
+    result = calibrate_mono_charuco(image_dir, BOARD_SPEC, target_error_px=99.0)
+    assert len(result.per_view_point_counts) == len(result.per_view_errors)
+
+    out = tmp_path / "mono.npz"
+    result.save(out)
+    from calibration.mono_calibration import MonoCalibrationResult
+
+    reloaded = MonoCalibrationResult.load(out)
+    assert reloaded.per_view_point_counts == result.per_view_point_counts
+    assert reloaded.rms_reprojection_error == pytest.approx(result.rms_reprojection_error)

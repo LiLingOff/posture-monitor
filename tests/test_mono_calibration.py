@@ -2,6 +2,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from calibration.chessboard import ChessboardSpec
 from calibration.mono_calibration import calibrate_mono
@@ -102,3 +103,16 @@ def test_mono_calibration_save_and_load_roundtrip(tmp_path: Path):
     loaded = MonoCalibrationResult.load(out_path)
     assert np.allclose(loaded.camera_matrix, result.camera_matrix)
     assert loaded.image_size == result.image_size
+
+
+def test_rejects_mixed_resolution_folder(tmp_path):
+    """資料夾混到不同解析度時要拒絕，不要擬合出無意義的內參。"""
+    image_dir = tmp_path / "front"
+    image_dir.mkdir()
+    for i in range(12):
+        h, w = (480, 640) if i < 6 else (720, 1280)
+        cv2.imwrite(str(image_dir / f"frame_{i:04d}.png"), np.zeros((h, w, 3), np.uint8))
+
+    with pytest.raises(ValueError) as e:
+        calibrate_mono(image_dir, ChessboardSpec(cols=7, rows=5, square_size_mm=25.0))
+    assert "解析度不一致" in str(e.value)

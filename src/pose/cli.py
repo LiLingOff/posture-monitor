@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..calibration.capture import _open_camera
+from ..calibration.capture import _open_camera, split_merged_frame
 from .benchmark import compare_precision_rmse, measure_latency, measure_sequential_multi_camera
 from .engine import TrtPoseModelPaths
 
@@ -28,11 +28,6 @@ def _grab_frames(
     return frames
 
 
-def _split_stereo(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    w = frame.shape[1]
-    return frame[:, : w // 2], frame[:, w // 2 :]
-
-
 def _run_benchmark(args: argparse.Namespace) -> None:
     from .engine import TrtPoseEngine
 
@@ -47,7 +42,7 @@ def _run_benchmark(args: argparse.Namespace) -> None:
     frame_sets = []
     for front, stereo in zip(front_frames, stereo_frames):
         if args.single_device:
-            left, right = _split_stereo(stereo)
+            left, right = split_merged_frame(stereo, args.vertical_split, args.swap_lr)
             frame_sets.append([front, left, right])
         else:
             frame_sets.append([front, stereo])
@@ -102,7 +97,12 @@ def main() -> None:
     bench_p.add_argument("--topology", type=Path, default=Path("data/pose_models/human_pose.json"))
     bench_p.add_argument("--front-camera", type=int, default=0)
     bench_p.add_argument("--stereo-camera", type=int, default=1)
-    bench_p.add_argument("--single-device", action="store_true")
+    bench_p.add_argument("--single-device", action="store_true",
+        help="雙目為單一裝置、左右眼合併在同一畫面")
+    bench_p.add_argument("--vertical-split", action="store_true",
+        help="合併畫面為上下拼接而非左右並排，需與拍攝時一致")
+    bench_p.add_argument("--swap-lr", action="store_true",
+        help="左右眼顛倒時加上這個對調，需與拍攝時一致")
     bench_p.add_argument("--frames", type=int, default=60)
     bench_p.add_argument("--warmup", type=int, default=5)
     bench_p.add_argument("--width", type=int, default=None,

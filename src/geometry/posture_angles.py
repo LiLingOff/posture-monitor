@@ -22,7 +22,7 @@ _MISSING_DEFINITION_MSG = "尚未取得θ_KA的精確定義（哪些關節點、
 
 
 def theta_ca(keypoints_3d: PersonKeypoints3D, side: str = "right") -> float:
-    """頸椎前傾角：耳朵-肩膀向量投影到矢狀面後相對垂直軸的帶號夾角。
+    """頸椎前傾角：肩膀→耳朵向量(ear - shoulder)投影到矢狀面後相對垂直軸的帶號夾角。
 
     前作用單一45°相機、靠sin(45°)補償透視壓縮才能計算這個角度；
     改用3D三角測量後直接以真實深度計算矢狀面投影，不再需要這個補償係數。

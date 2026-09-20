@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from .charuco import CharucoBoardSpec, detect_charuco
-from .chessboard import ChessboardSpec, find_corners, load_gray_images
+from .chessboard import ChessboardSpec, ensure_uniform_size, find_corners, load_gray_images
 
 _MIN_IMAGES = 10
 _MIN_CHARUCO_CORNERS_PER_VIEW = 6
@@ -20,10 +20,26 @@ class MonoCalibrationResult:
     image_size: tuple[int, int]
     per_view_errors: list[float]
     used_images: list[Path]
+    # 每張影像參與計算的角點數。ChArUco每張看到的角點數不一樣，
+    # 聚合成總RMS時要依角點數加權，見rms_reprojection_error。
+    per_view_point_counts: list[int] = field(default_factory=list)
 
     @property
     def rms_reprojection_error(self) -> float:
-        return float(np.sqrt(np.mean(np.square(self.per_view_errors))))
+        """全部角點的RMS重投影誤差，與cv2.calibrateCamera的回傳值一致。
+
+        總RMS的定義是sqrt(所有角點誤差平方和/角點總數)，所以各張影像的
+        per-view RMS要依該張的角點數加權，不能直接取平均。棋盤格每張角點數相同，
+        兩種算法剛好一樣；ChArUco每張都不同，直接平均會讓角點少的視角被放大權重。
+        """
+        errors = np.asarray(self.per_view_errors, dtype=np.float64)
+        if errors.size == 0:
+            raise ValueError("沒有任何per-view誤差，無法計算RMS")
+        counts = np.asarray(self.per_view_point_counts, dtype=np.float64)
+        if counts.size != errors.size:
+            # 舊版存的.npz沒有這個欄位，退回等權重（棋盤格下結果相同）
+            counts = np.ones_like(errors)
+        return float(np.sqrt(np.sum(counts * errors**2) / np.sum(counts)))
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +49,7 @@ class MonoCalibrationResult:
             dist_coeffs=self.dist_coeffs,
             image_size=np.array(self.image_size),
             per_view_errors=np.array(self.per_view_errors),
+            per_view_point_counts=np.array(self.per_view_point_counts, dtype=np.int64),
         )
 
     @classmethod
@@ -44,6 +61,11 @@ class MonoCalibrationResult:
             image_size=tuple(int(v) for v in data["image_size"]),
             per_view_errors=list(data["per_view_errors"]),
             used_images=[],
+            per_view_point_counts=(
+                [int(v) for v in data["per_view_point_counts"]]
+                if "per_view_point_counts" in data
+                else []
+            ),
         )
 
 
@@ -89,6 +111,7 @@ def _run_mono_calibration(
         image_size=image_size,
         per_view_errors=per_view_errors,
         used_images=used_paths,
+        per_view_point_counts=[len(p) for p in img_points],
     )
 
     if result.rms_reprojection_error > target_error_px:
@@ -108,15 +131,14 @@ def calibrate_mono(
     if len(images) < _MIN_IMAGES:
         raise ValueError(f"標定影像過少（{len(images)}張），至少要{_MIN_IMAGES}張、建議30–40張。資料夾：{image_dir}")
 
+    image_size = ensure_uniform_size(images)
+
     objp = spec.object_points()
     obj_points: list[np.ndarray] = []
     img_points: list[np.ndarray] = []
     used_paths: list[Path] = []
-    image_size: tuple[int, int] | None = None
 
     for path, gray in images:
-        if image_size is None:
-            image_size = (gray.shape[1], gray.shape[0])
         corners = find_corners(gray, spec)
         if corners is None:
             continue
@@ -130,7 +152,6 @@ def calibrate_mono(
             f"棋盤格要完整入鏡且對焦清楚，或確認--cols/--rows與實際板子相符"
         )
 
-    assert image_size is not None
     return _run_mono_calibration(obj_points, img_points, image_size, used_paths, target_error_px)
 
 
@@ -147,14 +168,13 @@ def calibrate_mono_charuco(
     if len(images) < _MIN_IMAGES:
         raise ValueError(f"標定影像過少（{len(images)}張），至少要{_MIN_IMAGES}張、建議30–40張。資料夾：{image_dir}")
 
+    image_size = ensure_uniform_size(images)
+
     obj_points: list[np.ndarray] = []
     img_points: list[np.ndarray] = []
     used_paths: list[Path] = []
-    image_size: tuple[int, int] | None = None
 
     for path, gray in images:
-        if image_size is None:
-            image_size = (gray.shape[1], gray.shape[0])
         detected = detect_charuco(gray, board, min_corners=min_corners_per_view)
         if detected is None:
             continue
@@ -169,5 +189,4 @@ def calibrate_mono_charuco(
             f"確認--squares-x/--squares-y/--dictionary與實際板子相符，或加上--legacy-pattern再試"
         )
 
-    assert image_size is not None
     return _run_mono_calibration(obj_points, img_points, image_size, used_paths, target_error_px)

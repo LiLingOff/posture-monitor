@@ -48,11 +48,16 @@ class TrtPoseEngine:
             return
         import json
 
+        # 拓樸核對擺在最前面。它只讀json、不需要torch或trt_pose，先做的好處有兩個：
+        # 一是拓樸對不上時不必等模型載入就直接報錯；二是沒裝套件的開發機也能測到
+        # 這條路徑確實被走過，而不是只測到方法本身。
+        # coco_category_to_topology回傳的是tensor而非dict，關節點與連結數量要從原始json取得
+        self._human_pose = json.loads(self._paths.topology_json.read_text(encoding="utf-8"))
+        self._check_topology_matches()
+
         import trt_pose.coco
         from trt_pose.parse_objects import ParseObjects
 
-        # coco_category_to_topology回傳的是tensor而非dict，關節點與連結數量要從原始json取得
-        self._human_pose = json.loads(self._paths.topology_json.read_text(encoding="utf-8"))
         self._topology = trt_pose.coco.coco_category_to_topology(self._human_pose)
         # ParseObjects建構成本不低，建立一次重複使用，不要每幀重建
         self._parse_objects = ParseObjects(self._topology)
@@ -61,6 +66,27 @@ class TrtPoseEngine:
             self._model = self._build_or_load_trt()
         else:
             self._model = self._build_fp32()
+
+    def _check_topology_matches(self) -> None:
+        """核對json的關鍵點清單與pose/topology.py是否一致。
+
+        _parse用topology.py的索引去讀模型輸出，兩邊順序不同的話所有關鍵點會整組錯位，
+        而且不會有任何錯誤訊息——耳朵的座標被當成肩膀，角度照樣算得出看似合理的數值。
+        數量不同至少會IndexError，順序不同則完全無聲，所以這裡比對名稱而非長度。
+        """
+        from .topology import COCO18_KEYPOINT_NAMES
+
+        names = tuple(self._human_pose.get("keypoints", ()))
+        if names == COCO18_KEYPOINT_NAMES:
+            return
+        raise ValueError(
+            f"{self._paths.topology_json} 的關鍵點清單與 pose/topology.py 不一致，"
+            f"索引會整組錯位且不會有任何徵兆。\n"
+            f"  json        : {list(names)}\n"
+            f"  topology.py : {list(COCO18_KEYPOINT_NAMES)}\n"
+            f"確認用的是trt_pose的human_pose.json；若刻意換模型，"
+            f"請同步更新 pose/topology.py 並重跑 tests/test_pose_topology.py"
+        )
 
     def _build_fp32(self):
         import torch
