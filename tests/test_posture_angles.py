@@ -80,3 +80,47 @@ def test_theta_ka_not_implemented():
     kp = _make_keypoints3d({})
     with pytest.raises(NotImplementedError):
         theta_ka(kp)
+
+
+def test_theta_ca_sign_forward_is_positive():
+    """頭往前伸（朝相機，-Z）為正，往後仰為負。
+
+    這個方向性是用atan2而非arccos的唯一理由：前作以 >10° 判定頭部前傾，
+    正負號搞反的話判定會整個顛倒——後仰被當成前傾，而數值大小完全一樣，
+    看不出任何異常。
+    """
+    shoulder = np.array([150.0, 0.0, 600.0])
+    lean = 120.0 * np.sin(np.radians(15.0))
+    drop = 120.0 * np.cos(np.radians(15.0))
+
+    forward = _make_keypoints3d({
+        "right_shoulder": shoulder,
+        "right_ear": shoulder + np.array([0.0, -drop, -lean]),
+    })
+    backward = _make_keypoints3d({
+        "right_shoulder": shoulder,
+        "right_ear": shoulder + np.array([0.0, -drop, +lean]),
+    })
+
+    assert theta_ca(forward) == pytest.approx(15.0, abs=1e-3)
+    assert theta_ca(backward) == pytest.approx(-15.0, abs=1e-3)
+
+
+def test_theta_sym_sign_left_shoulder_higher_is_positive():
+    """左肩較高為正、右肩較高為負（Y軸向下，較高代表Y較小）。"""
+    # 兩肩各偏移drop，但夾角看的是 right-left 這個向量，
+    # 兩倍的分子與分母會抵銷，所以傾角仍是6度而不是12度。
+    drop = 180.0 * np.sin(np.radians(6.0))
+    span = 180.0 * np.cos(np.radians(6.0))
+
+    left_higher = _make_keypoints3d({
+        "left_shoulder": np.array([-span, -drop, 600.0]),
+        "right_shoulder": np.array([span, +drop, 600.0]),
+    })
+    right_higher = _make_keypoints3d({
+        "left_shoulder": np.array([-span, +drop, 600.0]),
+        "right_shoulder": np.array([span, -drop, 600.0]),
+    })
+
+    assert theta_sym(left_higher) == pytest.approx(6.0, abs=1e-3)
+    assert theta_sym(right_higher) == pytest.approx(-6.0, abs=1e-3)

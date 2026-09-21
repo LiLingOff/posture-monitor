@@ -57,3 +57,37 @@ def triangulate_point(
 ) -> np.ndarray:
     """單點版本，回傳shape(3,)。"""
     return triangulate_points(calib, np.asarray(point_left).reshape(1, 2), np.asarray(point_right).reshape(1, 2))[0]
+
+
+def rectified_vertical_disparity(
+    calib: StereoCalibrationResult, points_left: np.ndarray, points_right: np.ndarray
+) -> np.ndarray:
+    """校正後左右對應點的垂直座標差（像素），shape(N,)。
+
+    stereoRectify的目的就是讓對極線變成水平線，所以校正後同一個點在左右影像的
+    y座標應該幾乎相同。這個差值偏大，代表標定不準或左右配對錯誤——
+    而三角測量不會因此報錯，它只會把兩條不相交的視線取最近點，
+    照樣吐出一個看似合理的3D座標。
+
+    這是少數能用真實資料（不是標定板）檢驗標定品質的指標。
+    """
+    points_left = np.asarray(points_left, dtype=np.float64)
+    points_right = np.asarray(points_right, dtype=np.float64)
+    n = len(points_left)
+    result = np.full(n, np.nan, dtype=np.float64)
+
+    valid = ~np.isnan(points_left).any(axis=1) & ~np.isnan(points_right).any(axis=1)
+    if not valid.any():
+        return result
+
+    rect_l = cv2.undistortPoints(
+        points_left[valid].reshape(-1, 1, 2),
+        calib.camera_matrix_left, calib.dist_coeffs_left, R=calib.R1, P=calib.P1,
+    ).reshape(-1, 2)
+    rect_r = cv2.undistortPoints(
+        points_right[valid].reshape(-1, 1, 2),
+        calib.camera_matrix_right, calib.dist_coeffs_right, R=calib.R2, P=calib.P2,
+    ).reshape(-1, 2)
+
+    result[valid] = rect_l[:, 1] - rect_r[:, 1]
+    return result

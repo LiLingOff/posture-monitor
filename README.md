@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-146個測試，全部使用合成資料，不需要相機或GPU。
+158個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似——標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -228,14 +228,47 @@ fp32 的網路是全卷積的，同一個模型吃任何尺寸。fp16 的 Tensor
 
 `src/geometry/` 將雙目標定的輸出（`P1/P2` 等）與 pose 模組的輸出（`PersonKeypoints`）銜接起來。
 
-```python
-from geometry import triangulate_person_keypoints
-from geometry.posture_angles import theta_ca, theta_sym
+端到端量測用 repo 根目錄的 `posture.py`：
 
-keypoints_3d = triangulate_person_keypoints(stereo_calib, left_keypoints, right_keypoints)
-theta_ca(keypoints_3d)   # 頸椎前傾角（度，帶正負號），side="right"/"left"
-theta_sym(keypoints_3d)  # 肩膀水平角（度，帶正負號）
+| 用途 | 指令 |
+|---|---|
+| 量測一次並印出完整診斷 | `python posture.py once --width 2560 --height 720` |
+| 持續量測，只印角度 | `python posture.py live --width 2560 --height 720` |
+
+`once` 會列出每個關鍵點的左右像素座標、3D座標、校正後的垂直視差，以及深度範圍與兩個角度。加 `--all-keypoints` 可以看全部18點。
+
+放在根目錄而不是 `python -m src.geometry.cli`，是因為 `src/geometry` 用絕對匯入（`from calibration...`）需要 `src/` 在 sys.path 上，而 `-m src.geometry.cli` 的 sys.path[0] 是 repo 根目錄。`posture.py` 先補路徑再匯入，與 `conftest.py` 給測試用的做法一致。
+
+程式介面：
+
+```python
+from geometry.pipeline import measure_posture
+
+m = measure_posture(stereo_calib, left_keypoints, right_keypoints)
+m.theta_ca_deg    # 頸椎前傾角，頭往前伸（朝相機）為正
+m.theta_sym_deg   # 肩膀水平角，左肩較高為正
+m.depth_range_mm
+m.max_abs_vertical_disparity_px
 ```
+
+### 角度的正負號代表什麼
+
+用 `atan2` 而非 `arccos(內積)` 的唯一理由就是保留方向，所以方向的意義必須定義清楚。兩者都假設**相機架在受試者正面**（矢狀面的法向量取相機 X 軸、冠狀面取 Z 軸，這只有正面視角才成立）。
+
+| 角度 | 正 | 負 |
+|---|---|---|
+| θ_CA | 頭往前伸（朝相機） | 頭往後仰 |
+| θ_sym | 左肩較高 | 右肩較高 |
+
+前作以 `θ_CA > 10°` 判定頭部前傾，對應的就是正值這一側。正負號搞反的話，後仰會被判成前傾，而數值大小完全一樣、看不出異常——`tests/test_posture_angles.py` 用已知幾何把兩個方向都鎖住。
+
+### 真實資料上的品質指標
+
+標定板上的 RMS 只反映標定當下的品質。實際量測時 `measure_posture` 會另外回報三項，它們都不會讓程式出錯，只會讓結果悄悄變錯：
+
+- **校正後的垂直視差**：`stereoRectify` 的目的就是讓對極線水平，所以配對正確時左右的 y 應該幾乎相同。差超過 3px 代表標定不夠準，或左右眼配對到不同的人體部位。三角測量遇到兩條不相交的視線只會取最近點，照樣吐出看似合理的座標，這是唯一的線索。
+- **深度範圍**：桌前坐姿應落在 200~3000mm。整體偏掉通常是 `--square-size-mm` 填錯造成尺度不對。
+- **左右共同關鍵點數**：太少的話角度的參考價值有限。
 
 三角測量的流程是先執行 `cv2.undistortPoints`（帶入 `R=R1, P=P1`）去除畸變並套用校正轉換，再進入 `cv2.triangulatePoints`。第一步不能省略：`P1/P2` 定義在校正後的座標系，把原始像素座標直接輸入不會出現錯誤訊息，只會無聲地算出錯誤的3D點。`tests/test_triangulation.py` 用已知3D點反推驗證這條路徑。
 
