@@ -5,7 +5,7 @@
 | 模組 | 狀態 | 內容 |
 |---|---|---|
 | `src/calibration` | 可用 | 棋盤格／ChArUco，單眼＋雙目，已用合成資料驗證準確度 |
-| `src/pose` | **推論未實機驗證** | Lightweight OpenPose + TensorRT。權重已確認可下載，推論與拓樸核對都還沒在Jetson上跑過 |
+| `src/pose` | 可用（fp32） | Lightweight OpenPose。Jetson 實測 123.7ms/幀，權重載入與拓樸核對都已確認；fp16/TensorRT 尚未啟用 |
 | `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym；θ_KA 公式未定 |
 | 判定與回饋 | 未開始 | 個人基準校正、閾值判定、LED／蜂鳴器 |
 
