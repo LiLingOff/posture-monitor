@@ -27,6 +27,16 @@ from .triangulation import rectified_vertical_disparity
 _PLAUSIBLE_DEPTH_MM = (200.0, 3000.0)
 # 校正後對極線應該是水平的，左右y座標差超過這個值代表標定或配對有問題。
 _MAX_VERTICAL_DISPARITY_PX = 3.0
+# 關鍵點定位的殘餘誤差。次像素精修把量化壓到0.2px以下，剩下的是模型本身的抖動，
+# 1px是保守估計，用來換算角度精度。
+_KEYPOINT_NOISE_PX = 1.0
+# 耳朵到肩膀的垂直距離，用來把深度誤差換算成角度誤差。
+_EAR_SHOULDER_MM = 170.0
+# 前作的頸椎前傾判定門檻。
+# 單幀誤差在這個硬體上本來就與門檻同量級，所以時間序列平均是必要的而非加分項：
+# 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
+# 因為那代表連平均都救不太回來，該做的是坐近一點。
+_THETA_CA_THRESHOLD_DEG = 10.0
 
 
 @dataclass
@@ -36,6 +46,7 @@ class PostureMeasurement:
     shared_count: int
     theta_ca_deg: float | None = None
     theta_sym_deg: float | None = None
+    theta_ca_precision_deg: float | None = None
     angle_errors: list[str] = field(default_factory=list)
 
     @property
@@ -49,6 +60,29 @@ class PostureMeasurement:
         d = np.abs(self.vertical_disparity_px)
         d = d[np.isfinite(d)]
         return float(d.max()) if d.size else None
+
+
+def estimate_theta_ca_precision_deg(
+    calib: StereoCalibrationResult,
+    depth_mm: float,
+    keypoint_noise_px: float = _KEYPOINT_NOISE_PX,
+) -> float:
+    """在這個距離下，單幀 θ_CA 的預期誤差（度）。
+
+    θ_CA 量的是耳朵與肩膀的深度差，而深度來自視差：Z = fx·B/d。
+    微分後 σ_Z = Z²·σ_d/(fx·B)——**誤差隨距離平方成長**。
+    兩個關鍵點各有一份誤差，所以深度差的誤差是 √2 倍。
+
+    這個數字決定了整個系統在多遠的距離還能用。實機參數（fx 568、基線 60mm）下，
+    500mm 時單幀誤差約 3.5°，1900mm 時是 50°——後者遠超過 10° 的判定門檻，
+    算出來的角度沒有意義。座位距離是使用者唯一能立刻改變的因素。
+    """
+    fx = float(calib.P1[0, 0])
+    baseline = calib.baseline_mm
+    if fx <= 0 or baseline <= 0 or depth_mm <= 0:
+        return float("inf")
+    sigma_z = depth_mm**2 * keypoint_noise_px / (fx * baseline)
+    return float(np.degrees(np.sqrt(2) * sigma_z / _EAR_SHOULDER_MM))
 
 
 def measure_posture(
@@ -67,6 +101,12 @@ def measure_posture(
         vertical_disparity_px=disparity,
         shared_count=shared,
     )
+
+    depth = measurement.depth_range_mm
+    if depth is not None:
+        measurement.theta_ca_precision_deg = estimate_theta_ca_precision_deg(
+            calib, float(np.mean(depth))
+        )
 
     # 缺關鍵點或資料退化都會拋例外。一個角度算不出來不該影響另一個，
     # 所以分開接，並把原因留下來給使用者看。
@@ -122,6 +162,11 @@ def format_measurement(
     lines.append(f"深度範圍         {'—' if depth is None else f'{depth[0]:.0f} ~ {depth[1]:.0f} mm'}")
     worst = measurement.max_abs_vertical_disparity_px
     lines.append(f"最大垂直視差     {'—' if worst is None else f'{worst:.2f} px'}")
+    if measurement.theta_ca_precision_deg is not None:
+        lines.append(
+            f"θ_CA 單幀誤差    ±{measurement.theta_ca_precision_deg:.1f}°"
+            f"（判定門檻 {_THETA_CA_THRESHOLD_DEG:.0f}°；誤差隨距離平方成長）"
+        )
     lines.append("")
 
     ca = measurement.theta_ca_deg
@@ -160,6 +205,17 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
                 f"（{low:.0f}~{high:.0f} mm）。多半是左右配對錯誤，"
                 f"或標定時的 --square-size-mm 填錯導致整體尺度不對"
             )
+
+    precision = measurement.theta_ca_precision_deg
+    if precision is not None and precision > _THETA_CA_THRESHOLD_DEG:
+        depth = measurement.depth_range_mm
+        middle = float(np.mean(depth)) if depth else 0.0
+        warnings.append(
+            f"在 {middle:.0f} mm 的距離下，θ_CA 單幀誤差約 ±{precision:.1f}°，"
+            f"已經超過 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻本身，這一幀的角度沒有意義。"
+            f"深度誤差隨距離平方成長——坐到 600mm 左右可以降到 ±5° 以內，"
+            f"是唯一能立刻改善的因素"
+        )
 
     if measurement.shared_count < 4:
         warnings.append(

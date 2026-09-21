@@ -147,3 +147,36 @@ def test_report_survives_a_frame_with_nothing_detected():
     assert m.depth_range_mm is None
     report = format_measurement(m, empty, empty)
     assert "算不出來" in report
+
+
+def test_angle_precision_grows_with_the_square_of_distance():
+    """深度誤差 σ_Z = Z²·σ_d/(fx·B)，所以距離加倍、誤差變四倍。
+
+    這決定了整個系統在多遠還能用，也是使用者唯一能立刻改變的因素。
+    """
+    from geometry.pipeline import estimate_theta_ca_precision_deg
+
+    calib = _calib()
+    near = estimate_theta_ca_precision_deg(calib, 500.0)
+    far = estimate_theta_ca_precision_deg(calib, 1000.0)
+    assert far == pytest.approx(4.0 * near, rel=1e-6)
+
+
+def test_warns_when_single_frame_error_exceeds_the_decision_threshold():
+    """2026-09-21 實機那次坐到 1900mm，單幀誤差約 50°，遠超過 10° 的判定門檻。"""
+    from geometry.pipeline import estimate_theta_ca_precision_deg
+
+    pose = {k: np.array([v[0], v[1], v[2] * 3.1]) for k, v in _seated_pose().items()}
+    left, right = _project(pose)
+    m = measure_posture(_calib(), left, right)
+
+    assert m.theta_ca_precision_deg > 10.0
+    assert any("單幀誤差" in w for w in plausibility_warnings(m))
+
+
+def test_precision_is_reported_even_when_it_is_acceptable():
+    """數字要一直在，使用者才知道現在的角度可以信到什麼程度。"""
+    left, right = _project(_seated_pose())
+    m = measure_posture(_calib(), left, right)
+    assert m.theta_ca_precision_deg is not None
+    assert "單幀誤差" in format_measurement(m, left, right)
