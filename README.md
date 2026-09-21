@@ -173,12 +173,30 @@ cd ../..
 
 Lightweight OpenPose 沒有 `setup.py`，不能 pip 安裝，所以程式是把 clone 下來的目錄加進 `sys.path`（用 `--repo-dir` 指定，預設 `third_party/lightweight-human-pose-estimation.pytorch`）。
 
-PyTorch 必須安裝 NVIDIA 官方的 Jetson 專用 wheel，一般的 `pip install torch` 無法使用（到 https://forums.developer.nvidia.com/t/pytorch-for-jetson 查詢 JetPack 6 的對應版本）。
+### PyTorch 一定要裝 Jetson 專用 wheel
+
+一般的 `pip install torch` 在 Jetson 上**裝得起來、import 得進去，但一碰 CUDA 就失敗**：
+
+```
+RuntimeError: The NVIDIA driver on your system is too old (found version 12060).
+Please update your GPU driver ...
+```
+
+這個訊息會誤導人去更新驅動。Jetson 的 GPU 驅動綁在 JetPack 的 BSP 裡，**不能單獨升級**——問題出在 PyPI 上的 wheel 編譯時對應的 CUDA 比 JetPack 提供的新。
+
+解法是換成 NVIDIA 為 Jetson 編譯的 wheel（到 https://forums.developer.nvidia.com/t/pytorch-for-jetson 查詢 JetPack 版本對應的檔案），先移除既有的：
+
+```
+pip3 uninstall -y torch torchvision
+```
+
+在那之前，用 `--device cpu --precision fp32` 就能驗證整條流程。Lightweight OpenPose 本來就是為 CPU 設計的（論文標題是 Real-time 2D Multi-Person Pose Estimation on CPU），速度雖然慢，但關鍵點座標、三角測量、角度計算的正確性都驗得出來。
 
 | 用途 | 指令 |
 |---|---|
 | 驗證安裝 | `python3 -c "import torch, torch2trt; print('ok')"` |
 | 核對關鍵點順序 | `python3 -c "import sys; sys.path.insert(0,'third_party/lightweight-human-pose-estimation.pytorch'); from modules.pose import Pose; print(Pose.kpt_names)"` |
+| CPU 驗證（不需要CUDA） | `python -m src.pose.cli benchmark --precision fp32 --device cpu --front-camera 0 --stereo-camera 0 --single-device --width 2560 --height 720 --frames 5 --warmup 2` |
 | 延遲基準（FP32） | `python -m src.pose.cli benchmark --precision fp32 --front-camera 1 --stereo-camera 0 --single-device --width 2560 --height 720` |
 | 延遲基準（FP16） | 同上改為 `--precision fp16`；第一次執行會花數分鐘建立TensorRT engine並存入快取 |
 | 精度比對 | `python -m src.pose.cli compare-precision --camera 0 --samples 30 --rmse-threshold-px 3.0` |

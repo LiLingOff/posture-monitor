@@ -32,7 +32,7 @@ def _run_benchmark(args: argparse.Namespace) -> None:
     from .engine import LightweightOpenPoseEngine
 
     paths = LightweightOpenPoseModelPaths(args.checkpoint, args.engine_cache, args.repo_dir)
-    engine = LightweightOpenPoseEngine(paths, precision=args.precision)
+    engine = LightweightOpenPoseEngine(paths, precision=args.precision, device=args.device)
 
     front_frames = _grab_frames(args.front_camera, args.warmup + args.frames, args.width, args.height)
     single = measure_latency(engine, front_frames, warmup=args.warmup)
@@ -56,7 +56,7 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
     from .engine import LightweightOpenPoseEngine
 
     paths = LightweightOpenPoseModelPaths(args.checkpoint, args.engine_cache, args.repo_dir)
-    fp32_engine = LightweightOpenPoseEngine(paths, precision="fp32")
+    fp32_engine = LightweightOpenPoseEngine(paths, precision="fp32", device=args.device)
     fp16_engine = LightweightOpenPoseEngine(paths, precision="fp16")
 
     frames = _grab_frames(args.camera, args.samples, args.width, args.height)
@@ -88,6 +88,8 @@ def main() -> None:
 
     bench_p = sub.add_parser("benchmark", help="單相機/多相機延遲基準測試")
     bench_p.add_argument("--precision", choices=["fp32", "fp16"], default="fp16")
+    bench_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+        help="cuda 或 cpu。Jetson 的 PyTorch 還沒弄好時，先用 cpu 搭配 --precision fp32 驗證流程——這個模型本來就是為 CPU 設計的")
     bench_p.add_argument(
         "--checkpoint",
         type=Path,
@@ -122,6 +124,8 @@ def main() -> None:
     compare_p.add_argument("--camera", type=int, default=0)
     compare_p.add_argument("--samples", type=int, default=30)
     compare_p.add_argument("--rmse-threshold-px", type=float, default=3.0)
+    compare_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+        help="fp32 那一側要用的裝置；fp16 一定是 cuda")
     compare_p.add_argument("--width", type=int, default=None,
         help="相機解析度寬度；雙目並排模式通常只在特定寬解析度下才有")
     compare_p.add_argument("--height", type=int, default=None, help="相機解析度高度")

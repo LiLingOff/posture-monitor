@@ -14,6 +14,7 @@ from .preprocess import (DEFAULT_INPUT_HEIGHT, DEFAULT_STRIDE,
 from .topology import NUM_KEYPOINTS, UPSTREAM_KEYPOINT_NAMES
 
 _PRECISIONS = ("fp32", "fp16")
+_DEVICES = ("cuda", "cpu")
 
 # 權重直連網址（Intel的伺服器，不需要登入）：
 # https://download.01.org/opencv/openvino_training_extensions/models/human_pose_estimation/checkpoint_iter_370000.pth
@@ -52,14 +53,22 @@ class LightweightOpenPoseEngine:
         self,
         paths: LightweightOpenPoseModelPaths,
         precision: str = "fp16",
+        device: str = "cuda",
         input_height: int = DEFAULT_INPUT_HEIGHT,
         stride: int = DEFAULT_STRIDE,
         upsample_ratio: int = DEFAULT_UPSAMPLE_RATIO,
     ):
         if precision not in _PRECISIONS:
             raise ValueError(f"precision必須是{_PRECISIONS}其中之一，收到{precision}")
+        if device not in _DEVICES:
+            raise ValueError(f"device必須是{_DEVICES}其中之一，收到{device}")
+        if precision == "fp16" and device == "cpu":
+            raise ValueError(
+                "fp16走的是TensorRT，必須在CUDA上執行。CPU請用 --precision fp32"
+            )
         self._paths = paths
         self._precision = precision
+        self._device = device
         self._input_height = input_height
         self._stride = stride
         self._upsample_ratio = upsample_ratio
@@ -132,7 +141,26 @@ class LightweightOpenPoseEngine:
             self._paths.checkpoint, map_location="cpu", weights_only=True
         )
         load_state(net, checkpoint)
-        return net.eval().cuda()
+        net = net.eval()
+        if self._device == "cpu":
+            # 這個模型本來就是為CPU設計的（論文標題就是Real-time ... on CPU），
+            # 所以GPU環境還沒弄好時，CPU模式足以驗證整條流程的正確性。
+            return net
+        self._require_cuda(torch)
+        return net.cuda()
+
+    @staticmethod
+    def _require_cuda(torch) -> None:
+        if torch.cuda.is_available():
+            return
+        raise RuntimeError(
+            "PyTorch 看不到 CUDA。Jetson 上最常見的原因是裝到了一般的 pip PyTorch，"
+            "它編譯時對應的 CUDA 比 JetPack 提供的驅動新，而 Jetson 的驅動綁在 JetPack 裡、"
+            "不能單獨升級。\n"
+            "請改裝 NVIDIA 的 Jetson 專用 wheel（見 README 的關鍵點偵測一節）。\n"
+            "在那之前可以先用 --device cpu --precision fp32 驗證流程，"
+            "這個模型本來就是為 CPU 設計的。"
+        )
 
     def _build_or_load_trt(self):
         import torch
@@ -149,6 +177,7 @@ class LightweightOpenPoseEngine:
                 "請先用fp32跑一次、或改呼叫warmup(frame)"
             )
 
+        self._require_cuda(torch)
         fp32_model = self._build_fp32()
         h, w = self._trt_input_shape
         dummy = torch.zeros((1, 3, h, w)).cuda()
@@ -184,7 +213,7 @@ class LightweightOpenPoseEngine:
                 f"執行期間不能更換相機解析度"
             )
 
-        tensor = torch.from_numpy(padded).permute(2, 0, 1).unsqueeze(0).float().cuda()
+        tensor = torch.from_numpy(padded).permute(2, 0, 1).unsqueeze(0).float().to(self._device)
         with torch.no_grad():
             stages_output = self._model(tensor)
 
