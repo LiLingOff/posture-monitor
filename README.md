@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-166個測試，全部使用合成資料，不需要相機或GPU。
+169個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似——標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -154,7 +154,9 @@ wget https://download.01.org/opencv/openvino_training_extensions/models/human_po
 
 方法學不變（部署基準測試、FP16加速、精度比對、必要時退回FP32）。相對於 trt_pose，這個選擇反而更貼近原研究文件寫的 OpenPose。
 
-**這個模組尚未在真實硬體上執行過。** 目前能開發與測試的只有不依賴GPU的部分：關鍵點資料結構、前處理與座標還原、RMSE計算、延遲統計、拓樸核對、CLI參數解析，以假引擎（`tests/pose_fakes.py`）驗證邏輯。真正的推論與 TensorRT 轉換必須在 Jetson 上才能執行。
+fp32 推論已在 Jetson 上跑通（2026-09-21）：權重載入沒有任何一層退回隨機初始值，上游的 `Pose.kpt_names` 與 `pose/topology.py` 逐一相符，單幀 123.7ms、單眼 456x256 約 78ms。fp16 與 TensorRT 轉換還沒啟用。
+
+開發機這一側能測的仍然只有不依賴GPU的部分：關鍵點資料結構、前處理與座標還原、RMSE計算、延遲統計、拓樸核對、CLI參數解析，以假引擎（`tests/pose_fakes.py`）驗證邏輯。
 
 Jetson 上的安裝步驟：
 
