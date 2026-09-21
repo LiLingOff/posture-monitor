@@ -74,3 +74,56 @@ def test_missing_cuda_message_names_the_jetson_wheel_and_the_cpu_fallback():
     message = str(e.value)
     assert "Jetson 專用 wheel" in message
     assert "--device cpu" in message
+
+
+def test_engine_cache_path_includes_the_input_size(tmp_path):
+    """每個輸入尺寸一個TensorRT engine，快取檔名要帶尺寸才不會互相覆蓋。
+
+    正面相機 2560x720 補邊後是 912x256，雙目單眼 1280x720 是 456x256——
+    同一次執行就會同時用到兩種，共用一個檔名的話後者會蓋掉前者。
+    """
+    engine = LightweightOpenPoseEngine(_paths(tmp_path), precision="fp32")
+    assert engine._engine_cache_path((256, 912)).name == "lightweight_openpose_fp16_912x256.pth"
+    assert engine._engine_cache_path((256, 456)).name == "lightweight_openpose_fp16_456x256.pth"
+    assert engine._engine_cache_path((256, 912)) != engine._engine_cache_path((256, 456))
+
+
+def test_fp32_reuses_one_model_across_input_sizes(tmp_path, monkeypatch):
+    """fp32是全卷積網路，不同尺寸共用同一個模型，不該重建。
+
+    先前把TensorRT的固定尺寸限制套用到fp32上，導致正面畫面與雙目半邊
+    混在同一個引擎時直接拋例外。
+    """
+    engine = LightweightOpenPoseEngine(_paths(tmp_path), precision="fp32", device="cpu")
+    monkeypatch.setattr(engine, "_ensure_loaded", lambda: None)
+
+    builds = []
+
+    def _fake_build():
+        builds.append(1)
+        return object()
+
+    monkeypatch.setattr(engine, "_build_fp32", _fake_build)
+
+    first = engine._model_for((256, 912))
+    second = engine._model_for((256, 456))
+    assert first is second
+    assert len(builds) == 1, "fp32 不該為了不同尺寸重建模型"
+
+
+def test_fp16_builds_one_engine_per_input_size(tmp_path, monkeypatch):
+    engine = LightweightOpenPoseEngine(_paths(tmp_path), precision="fp16")
+    monkeypatch.setattr(engine, "_ensure_loaded", lambda: None)
+
+    built = []
+
+    def _fake_build(shape):
+        built.append(shape)
+        return f"engine{shape}"
+
+    monkeypatch.setattr(engine, "_build_or_load_trt", _fake_build)
+
+    engine._model_for((256, 912))
+    engine._model_for((256, 456))
+    engine._model_for((256, 912))  # 已經建過，不該再建一次
+    assert built == [(256, 912), (256, 456)]

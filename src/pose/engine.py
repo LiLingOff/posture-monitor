@@ -72,8 +72,11 @@ class LightweightOpenPoseEngine:
         self._input_height = input_height
         self._stride = stride
         self._upsample_ratio = upsample_ratio
+        # fp32是全卷積網路，任何尺寸共用同一個模型。
+        # fp16走TensorRT，engine的輸入尺寸是固定的，所以每個尺寸各存一個。
         self._model = None
-        self._trt_input_shape: tuple[int, int] | None = None
+        self._trt_models: dict[tuple[int, int], object] = {}
+        self._prepared = False
 
     # ---------- 載入 ----------
 
@@ -111,17 +114,29 @@ class LightweightOpenPoseEngine:
         )
 
     def _ensure_loaded(self) -> None:
-        if self._model is not None:
+        """接上上游repo並核對拓樸。這兩步不需要torch，也與輸入尺寸無關。"""
+        if self._prepared:
             return
-        # 先把repo接上並核對拓樸：這兩步不需要torch，
-        # 擺在前面才能在拓樸對不上時立刻報錯，而不是等模型載入完。
+        # 擺在最前面才能在拓樸對不上時立刻報錯，而不是等模型載入完。
         self._add_repo_to_path()
         self._check_topology_matches()
+        self._prepared = True
 
-        if self._precision == "fp16":
-            self._model = self._build_or_load_trt()
-        else:
-            self._model = self._build_fp32()
+    def _model_for(self, shape: tuple[int, int]):
+        """取得能處理這個輸入尺寸的模型。
+
+        fp32的網路是全卷積的，同一個模型吃任何尺寸；fp16的TensorRT engine
+        則綁定單一輸入尺寸，所以每個尺寸各建一個、各存一份快取。
+        正面相機與雙目單眼的解析度本來就可能不同，同一個引擎要能同時服務兩者。
+        """
+        self._ensure_loaded()
+        if self._precision == "fp32":
+            if self._model is None:
+                self._model = self._build_fp32()
+            return self._model
+        if shape not in self._trt_models:
+            self._trt_models[shape] = self._build_or_load_trt(shape)
+        return self._trt_models[shape]
 
     def _build_fp32(self):
         import torch
@@ -162,60 +177,51 @@ class LightweightOpenPoseEngine:
             "這個模型本來就是為 CPU 設計的。"
         )
 
-    def _build_or_load_trt(self):
+    def _engine_cache_path(self, shape: tuple[int, int]) -> Path:
+        """每個輸入尺寸一個快取檔，檔名帶上尺寸避免互相覆蓋。"""
+        h, w = shape
+        base = self._paths.engine_cache
+        return base.with_name(f"{base.stem}_{w}x{h}{base.suffix}")
+
+    def _build_or_load_trt(self, shape: tuple[int, int]):
         import torch
         from torch2trt import TRTModule, torch2trt
 
-        if self._paths.engine_cache.exists():
+        cache = self._engine_cache_path(shape)
+        if cache.exists():
             model_trt = TRTModule()
-            model_trt.load_state_dict(torch.load(self._paths.engine_cache))
+            model_trt.load_state_dict(torch.load(cache))
             return model_trt
-
-        if self._trt_input_shape is None:
-            raise RuntimeError(
-                "建立TensorRT engine需要固定的輸入尺寸，但還沒有看過任何一幀。"
-                "請先用fp32跑一次、或改呼叫warmup(frame)"
-            )
 
         self._require_cuda(torch)
         fp32_model = self._build_fp32()
-        h, w = self._trt_input_shape
+        h, w = shape
         dummy = torch.zeros((1, 3, h, w)).cuda()
         model_trt = torch2trt(fp32_model, [dummy], fp16_mode=True)
-        self._paths.engine_cache.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(model_trt.state_dict(), self._paths.engine_cache)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model_trt.state_dict(), cache)
         return model_trt
 
     def warmup(self, bgr_frame: np.ndarray) -> None:
-        """用一幀決定TensorRT engine的輸入尺寸。
+        """先把這種畫面尺寸對應的模型準備好。
 
-        前處理是等比例縮放後補邊，寬度取決於畫面的長寬比，所以輸入尺寸
-        由相機解析度唯一決定。TensorRT需要固定shape，這正好成立——
-        前提是標定與執行用同一個解析度，那本來就是硬性要求。
+        fp16第一次遇到新尺寸時要建TensorRT engine，需要數分鐘。
+        在計時迴圈外先呼叫這個，延遲數字才不會把建置時間算進去。
         """
         padded, _ = resize_and_pad(bgr_frame, self._input_height, self._stride)
-        self._trt_input_shape = (padded.shape[0], padded.shape[1])
+        self._model_for((padded.shape[0], padded.shape[1]))
 
     # ---------- 推論 ----------
 
     def infer(self, bgr_frame: np.ndarray) -> list[PersonKeypoints]:
-        if self._trt_input_shape is None:
-            self.warmup(bgr_frame)
-        self._ensure_loaded()
-
         import torch
 
         padded, info = resize_and_pad(bgr_frame, self._input_height, self._stride)
-        if (padded.shape[0], padded.shape[1]) != self._trt_input_shape:
-            raise ValueError(
-                f"這一幀的網路輸入尺寸是{padded.shape[1]}x{padded.shape[0]}，"
-                f"與建立engine時的{self._trt_input_shape[1]}x{self._trt_input_shape[0]}不同。"
-                f"執行期間不能更換相機解析度"
-            )
+        model = self._model_for((padded.shape[0], padded.shape[1]))
 
         tensor = torch.from_numpy(padded).permute(2, 0, 1).unsqueeze(0).float().to(self._device)
         with torch.no_grad():
-            stages_output = self._model(tensor)
+            stages_output = model(tensor)
 
         # 上游取的是最後兩個stage輸出：倒數第二個是heatmaps、最後一個是PAFs
         heatmaps = stages_output[-2].squeeze().cpu().numpy().transpose(1, 2, 0)
