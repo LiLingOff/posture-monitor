@@ -1,78 +1,99 @@
-"""載入模型前要核對關鍵點拓樸。
+"""載入模型前要核對關鍵點順序。
 
-json的關鍵點順序與pose/topology.py不同時，_parse會用錯的索引去讀模型輸出，
-所有關鍵點整組錯位——耳朵的座標被當成肩膀，角度照樣算得出看似合理的數值，
-不會有任何錯誤訊息。所以這個核對要在載入模型之前就擋下來。
+從trt_pose換到Lightweight OpenPose時順序整個變了（neck從索引17移到索引1），
+這正是最危險的那種改動：數量一樣、名稱一樣，只有順序不同，
+沿用舊索引不會有任何錯誤訊息，耳朵的座標會被當成肩膀用。
 
-測試不需要torch或GPU：核對只讀json，而且刻意排在trt_pose匯入之前。
+測試不需要torch或GPU：核對只讀上游的modules/pose.py，而且刻意排在torch匯入之前。
+用一個假的repo目錄餵不同的kpt_names進去。
 """
-import json
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
-from pose.engine import TrtPoseEngine, TrtPoseModelPaths
-from pose.topology import COCO18_KEYPOINT_NAMES
+from pose.engine import LightweightOpenPoseEngine, LightweightOpenPoseModelPaths
+from pose.topology import UPSTREAM_KEYPOINT_NAMES
 
 
-def _engine(tmp_path: Path, keypoints) -> TrtPoseEngine:
-    topology_json = tmp_path / "human_pose.json"
-    topology_json.write_text(
-        json.dumps({"keypoints": list(keypoints), "skeleton": []}), encoding="utf-8"
+@pytest.fixture(autouse=True)
+def _isolate_sys_modules(monkeypatch):
+    """每個測試用自己的假repo，避免modules套件被前一個測試快取住。"""
+    for name in list(sys.modules):
+        if name == "modules" or name.startswith("modules."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+
+def _fake_repo(tmp_path: Path, kpt_names) -> Path:
+    repo = tmp_path / "lightweight-human-pose-estimation.pytorch"
+    (repo / "modules").mkdir(parents=True)
+    (repo / "modules" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "modules" / "pose.py").write_text(
+        textwrap.dedent(
+            f"""
+            class Pose:
+                num_kpts = {len(kpt_names)}
+                kpt_names = {list(kpt_names)!r}
+            """
+        ),
+        encoding="utf-8",
     )
-    paths = TrtPoseModelPaths(
-        checkpoint=tmp_path / "model.pth",
+    return repo
+
+
+def _engine(tmp_path: Path, kpt_names) -> LightweightOpenPoseEngine:
+    paths = LightweightOpenPoseModelPaths(
+        checkpoint=tmp_path / "checkpoint_iter_370000.pth",
         engine_cache=tmp_path / "engine.pth",
-        topology_json=topology_json,
+        repo_dir=_fake_repo(tmp_path, kpt_names),
     )
-    return TrtPoseEngine(paths, precision="fp32")
+    return LightweightOpenPoseEngine(paths, precision="fp32")
 
 
-def _engine_with_loaded_json(tmp_path: Path, keypoints) -> TrtPoseEngine:
-    """跳過_ensure_loaded、直接驗證核對本身的行為。"""
-    engine = _engine(tmp_path, keypoints)
-    engine._human_pose = json.loads(engine._paths.topology_json.read_text(encoding="utf-8"))
-    return engine
+def test_accepts_matching_order(tmp_path):
+    engine = _engine(tmp_path, UPSTREAM_KEYPOINT_NAMES)
+    engine._add_repo_to_path()
+    engine._check_topology_matches()
 
 
-def test_load_path_runs_the_check_before_importing_trt_pose(tmp_path):
-    """核對要真的接在載入流程上，而不只是一個沒人呼叫的方法。
-
-    拓樸不符時拿到的必須是ValueError；若拿到ImportError，代表核對被排在
-    trt_pose匯入之後、或根本沒有被呼叫。
-    """
-    swapped = list(COCO18_KEYPOINT_NAMES)
-    swapped[3], swapped[4] = swapped[4], swapped[3]  # left_ear / right_ear 對調
-
+def test_rejects_trt_pose_ordering(tmp_path):
+    """最實際的誤用：沿用舊模型的排序（neck擺在最後）。"""
+    trt_pose_like = [n for n in UPSTREAM_KEYPOINT_NAMES if n != "neck"] + ["neck"]
+    engine = _engine(tmp_path, trt_pose_like)
+    engine._add_repo_to_path()
     with pytest.raises(ValueError) as e:
-        _engine(tmp_path, swapped)._ensure_loaded()
+        engine._check_topology_matches()
     assert "不一致" in str(e.value)
 
 
-def test_matching_topology_passes_the_check_and_moves_on(tmp_path):
-    """拓樸相符時要通過核對繼續往下走。
-
-    這台開發機沒有trt_pose，所以往下走的表現就是匯入失敗——
-    重點在於拿到的不是ValueError，代表核對本身沒有誤擋。
-    """
-    with pytest.raises(ImportError):
-        _engine(tmp_path, COCO18_KEYPOINT_NAMES)._ensure_loaded()
-
-
-def test_accepts_matching_topology(tmp_path):
-    _engine_with_loaded_json(tmp_path, COCO18_KEYPOINT_NAMES)._check_topology_matches()
-
-
-def test_rejects_different_keypoint_count(tmp_path):
-    """COCO 17點模型沒有neck，少一個點。"""
+def test_rejects_swapped_left_right(tmp_path):
+    """左右對調不會改變數量，也不會改變名稱集合，只有順序不同。"""
+    swapped = list(UPSTREAM_KEYPOINT_NAMES)
+    swapped[2], swapped[5] = swapped[5], swapped[2]  # r_sho / l_sho
+    engine = _engine(tmp_path, swapped)
+    engine._add_repo_to_path()
     with pytest.raises(ValueError):
-        _engine_with_loaded_json(tmp_path, COCO18_KEYPOINT_NAMES[:-1])._check_topology_matches()
+        engine._check_topology_matches()
 
 
 def test_error_message_shows_both_lists(tmp_path):
-    """訊息要直接列出兩邊清單，否則只知道不一致、不知道差在哪。"""
+    engine = _engine(tmp_path, ["nose", "neck"])
+    engine._add_repo_to_path()
     with pytest.raises(ValueError) as e:
-        _engine_with_loaded_json(tmp_path, ["nose", "neck"])._check_topology_matches()
+        engine._check_topology_matches()
     message = str(e.value)
-    assert "json" in message and "topology.py" in message
+    assert "模型" in message and "topology.py" in message
     assert "nose" in message
+
+
+def test_load_path_runs_the_check_before_importing_torch(tmp_path):
+    """核對要真的接在載入流程上，而不只是一個沒人呼叫的方法。
+
+    順序不符時拿到的必須是ValueError；若拿到ImportError，
+    代表核對被排在torch匯入之後、或根本沒有被呼叫。
+    """
+    engine = _engine(tmp_path, ["nose", "neck"])
+    with pytest.raises(ValueError):
+        engine._ensure_loaded()

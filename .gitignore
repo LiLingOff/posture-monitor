@@ -9,3 +9,6 @@ data/calibration_output/*.npz
 
 data/pose_models/*.pth
 data/pose_models/*.json
+
+# clone 下來的 Lightweight OpenPose（沒有 setup.py，只能放路徑上）
+third_party/

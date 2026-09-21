@@ -5,7 +5,7 @@
 | 模組 | 狀態 | 內容 |
 |---|---|---|
 | `src/calibration` | 可用 | 棋盤格／ChArUco，單眼＋雙目，已用合成資料驗證準確度 |
-| `src/pose` | **推論未實機驗證** | trt_pose + TensorRT。安裝與關鍵點拓樸已在Jetson確認，推論本身尚未執行 |
+| `src/pose` | **推論未實機驗證** | Lightweight OpenPose + TensorRT。權重已確認可下載，推論與拓樸核對都還沒在Jetson上跑過 |
 | `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym；θ_KA 公式未定 |
 | 判定與回饋 | 未開始 | 個人基準校正、閾值判定、LED／蜂鳴器 |
 
@@ -19,7 +19,7 @@
 | 系統 | — | JetPack 6、Ubuntu 22.04、Python 3.10、CUDA 12 |
 | 能執行的範圍 | 標定、三角測量、全部測試 | 上述全部＋關鍵點偵測推論 |
 
-這個環境差異直接影響程式寫法：`src/pose/engine.py` 裡所有 `import torch` 與 `import trt_pose` 都放在方法內部，而非檔案開頭。開發機無法安裝這些套件，卻仍需要能 `import pose` 執行測試，因此把 import 延後到真正使用時才執行——沒有安裝 torch 的機器上 `import pose.engine` 依然會成功，只有實際建立 `TrtPoseEngine` 實例時才需要這些套件。`tests/test_pose_engine_import.py` 以測試鎖定這項性質。程式中若有寫法看起來迂迴，原因通常在此。
+這個環境差異直接影響程式寫法：`src/pose/engine.py` 裡所有 `import torch` 都放在方法內部，而非檔案開頭。開發機無法安裝這些套件，卻仍需要能 `import pose` 執行測試，因此把 import 延後到真正使用時才執行——沒有安裝 torch 的機器上 `import pose.engine` 依然會成功，只有實際建立 `LightweightOpenPoseEngine` 實例時才需要這些套件。`tests/test_pose_engine_import.py` 以測試鎖定這項性質。程式中若有寫法看起來迂迴，原因通常在此。
 
 ## 安裝與測試
 
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-108個測試，全部使用合成資料，不需要相機或GPU。
+117個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似——標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -95,7 +95,7 @@ python -m src.calibration.capture probe --camera 0
 
 這個指令會逐一嘗試常見解析度，印出實際取得的尺寸、寬高比與量測到的張數率，並標示哪些是驅動退回的模式而非原生支援。`v4l2-ctl -d /dev/video0 --list-formats-ext` 也能查詢，但某些UVC裝置不會完整回報格式清單。
 
-挑選模式時有三個考量：優先選擇驅動原生支援的模式，不要選退回來的；張數率要足夠即時監測使用，解析度再高，關鍵點偵測也會先縮放到 224×224 才輸入網路；最後一點最重要——**標定與執行時必須使用同一個解析度**。內參 `fx/fy/cx/cy` 的單位是像素，數值綁定於當時的解析度，在 3840×1200 完成標定卻用 2560×720 執行，整組參數就失效，而且不會有任何錯誤訊息。
+挑選模式時有三個考量：優先選擇驅動原生支援的模式，不要選退回來的；張數率要足夠即時監測使用，解析度再高，關鍵點偵測也會先等比例縮放到高度 256 才輸入網路；最後一點最重要——**標定與執行時必須使用同一個解析度**。內參 `fx/fy/cx/cy` 的單位是像素，數值綁定於當時的解析度，在 3840×1200 完成標定卻用 2560×720 執行，整組參數就失效，而且不會有任何錯誤訊息。
 
 選定後拍攝時帶上該解析度：
 
@@ -137,35 +137,65 @@ python -m src.calibration.capture stereo --single-device --left-camera 0 --width
 
 ## 關鍵點偵測 + TensorRT
 
-原研究文件寫的是 OpenPose Body_25，但 OpenPose（Caffe架構）約2021年後就不再更新、官方最高支援到 CUDA 10，在 JetPack 6 的 CUDA 12 環境下難以安裝。改用 [trt_pose](https://github.com/NVIDIA-AI-IOT/trt_pose)——NVIDIA 自己為 Jetson 開發的 TensorRT 姿態估測函式庫。方法學不變（部署基準測試、FP16加速、精度比對、必要時退回FP32），更換的只是實作所用的模型。
+原研究文件寫的是 OpenPose Body_25。OpenPose 本體（Caffe架構）約2021年後就不再更新、官方最高支援到 CUDA 10，在 JetPack 6 的 CUDA 12 環境下難以安裝，所以改用 [Lightweight OpenPose](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch)——論文《Real-time 2D Multi-Person Pose Estimation on CPU: Lightweight OpenPose》的官方實作，是 OpenPose 方法本身的最佳化版本，同樣是 Bottom-up + PAF、同樣輸出含 `neck` 的 COCO 18 點。
 
-**這個模組尚未在真實硬體上執行過。** 目前能開發與測試的只有不依賴GPU的部分：關鍵點資料結構、RMSE計算、延遲統計、CLI參數解析，以假引擎（`tests/pose_fakes.py`）驗證邏輯。真正的推論與 TensorRT 轉換必須在 Jetson 上才能執行，程式已完成但尚未驗證能否實際運作。
+中間一度打算用 trt_pose，最後放棄：它的權重掛在 Google Drive，連結長期處於無權限狀態（repo 內搜尋 download/permission 有 16 個 issue），換多台機器都下載不到，而該專案實質已停止維護。Lightweight OpenPose 的權重由 Intel 的伺服器直接提供，不需要登入：
 
-Jetson 上的手動安裝步驟：
+```
+wget https://download.01.org/opencv/openvino_training_extensions/models/human_pose_estimation/checkpoint_iter_370000.pth
+```
+
+方法學不變（部署基準測試、FP16加速、精度比對、必要時退回FP32）。相對於 trt_pose，這個選擇反而更貼近原研究文件寫的 OpenPose。
+
+**這個模組尚未在真實硬體上執行過。** 目前能開發與測試的只有不依賴GPU的部分：關鍵點資料結構、前處理與座標還原、RMSE計算、延遲統計、拓樸核對、CLI參數解析，以假引擎（`tests/pose_fakes.py`）驗證邏輯。真正的推論與 TensorRT 轉換必須在 Jetson 上才能執行。
+
+Jetson 上的安裝步驟：
 
 ```
 git clone https://github.com/NVIDIA-AI-IOT/torch2trt
 cd torch2trt && python3 setup.py install --user && cd ..
 
-git clone https://github.com/NVIDIA-AI-IOT/trt_pose
-cd trt_pose && python3 setup.py install --user && cd ..
+mkdir -p third_party && cd third_party
+git clone https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch
+cd ..
 
-cp trt_pose/tasks/human_pose/human_pose.json <repo>/data/pose_models/
+mkdir -p data/pose_models && cd data/pose_models
+wget https://download.01.org/opencv/openvino_training_extensions/models/human_pose_estimation/checkpoint_iter_370000.pth
+cd ../..
 ```
 
-trt_pose 的 `setup.py` 沒有完整宣告相依套件，還需要補上 `pip3 install --user tqdm pillow`（`pycocotools` 只有訓練與評估階段才會用到，在 ARM 上編譯耗時很久，不需要安裝）。
+Lightweight OpenPose 沒有 `setup.py`，不能 pip 安裝，所以程式是把 clone 下來的目錄加進 `sys.path`（用 `--repo-dir` 指定，預設 `third_party/lightweight-human-pose-estimation.pytorch`）。
 
-PyTorch 必須安裝 NVIDIA 官方的 Jetson 專用 wheel，一般的 `pip install torch` 無法使用（到 https://forums.developer.nvidia.com/t/pytorch-for-jetson 查詢 JetPack 6 的對應版本）。模型權重 `.pth` 從 trt_pose 的 model zoo 手動下載，放進 `data/pose_models/`。
+PyTorch 必須安裝 NVIDIA 官方的 Jetson 專用 wheel，一般的 `pip install torch` 無法使用（到 https://forums.developer.nvidia.com/t/pytorch-for-jetson 查詢 JetPack 6 的對應版本）。
 
 | 用途 | 指令 |
 |---|---|
-| 驗證安裝 | `python3 -c "import torch, torch2trt, trt_pose.models, trt_pose.coco; print('ok')"` |
-| 核對關鍵點定義 | `python3 -c "import json; print(json.load(open('data/pose_models/human_pose.json'))['keypoints'])"` |
-| 延遲基準（FP32） | `python -m src.pose.cli benchmark --precision fp32 --front-camera 1 --stereo-camera 3 --single-device` |
+| 驗證安裝 | `python3 -c "import torch, torch2trt; print('ok')"` |
+| 核對關鍵點順序 | `python3 -c "import sys; sys.path.insert(0,'third_party/lightweight-human-pose-estimation.pytorch'); from modules.pose import Pose; print(Pose.kpt_names)"` |
+| 延遲基準（FP32） | `python -m src.pose.cli benchmark --precision fp32 --front-camera 1 --stereo-camera 0 --single-device --width 2560 --height 720` |
 | 延遲基準（FP16） | 同上改為 `--precision fp16`；第一次執行會花數分鐘建立TensorRT engine並存入快取 |
-| 精度比對 | `python -m src.pose.cli compare-precision --camera 1 --samples 30 --rmse-threshold-px 3.0` |
+| 精度比對 | `python -m src.pose.cli compare-precision --camera 0 --samples 30 --rmse-threshold-px 3.0` |
 
-第一次在 Jetson 上執行時，最該優先確認的是 `infer()` 回傳的關鍵點座標數量級：應該是像素等級的數字（數百），而非 0~1 的小數。trt_pose 內部輸出的 peaks 是正規化座標，程式會乘回原始畫面寬高換算成像素；漏掉這個步驟會讓三角測量產生系統性偏差，而且完全不會出現錯誤訊息。
+### 換模型時最容易錯的一件事
+
+Lightweight OpenPose 的關鍵點順序與 trt_pose **完全不同**：`neck` 在索引 1 而非 17，而且左右是先右後左。沿用舊索引不會出現任何錯誤訊息，耳朵的座標會被當成肩膀用，角度照樣算得出看似合理的數值。
+
+所以 `engine.py` 在載入模型之前，會先拿上游 `modules/pose.py` 的 `Pose.kpt_names` 跟 `pose/topology.py` 逐一比對，對不上就直接拋例外。這個核對刻意排在 `import torch` 之前，開發機沒裝 torch 也測得到（`tests/test_pose_engine_topology_guard.py`）。
+
+### 前處理
+
+照上游 `demo.py::infer_fast` 實作：依高度等比例縮放到 256，再補邊到 stride 8 的整數倍。有兩點與直覺相反，寫錯不會報錯但結果全錯：
+
+- **不做 BGR 轉 RGB。** 上游是直接把 OpenCV 讀進來的 BGR 餵給網路的。
+- **正規化是 `(img - 128) / 256`**，不是 ImageNet 的 mean/std。
+
+熱圖座標要換算回原始畫面：`(x * stride / upsample_ratio - pad) / scale`。這一段抽成純 numpy 的 `restore_keypoint_coordinates()`，用往返還原的方式測（`tests/test_pose_preprocess.py`）——漏掉任何一步都只會讓三角測量拿到系統性偏移的2D點，不會有徵兆。
+
+等比例縮放順帶解決了先前記在待辦裡的問題：配合 trt_pose 時是直接把畫面拉成正方形，模型看到的人體是變形的。
+
+### TensorRT 的輸入尺寸
+
+補邊後的寬度取決於畫面長寬比，所以網路輸入尺寸由相機解析度唯一決定。TensorRT 需要固定 shape，這正好成立——前提是標定與執行用同一個解析度，而那本來就是硬性要求。引擎會用第一幀決定尺寸，之後若尺寸改變會直接拋例外而不是默默算錯。
 
 ## 三角測量與坐姿角度
 
@@ -209,10 +239,10 @@ src/calibration/
   capture.py             連接相機互動式拍照（6種模式）＋解析度查詢
   cli.py                 讀取已拍影像、執行標定計算
 src/pose/
-  topology.py            關鍵點命名（COCO 18點，含neck）
+  topology.py            關鍵點命名與順序（COCO 18點，含neck）
   keypoints.py           PersonKeypoints + RMSE計算
-  preprocess.py          畫面前處理（純numpy，不依賴torch）
-  engine.py              PoseEngine介面 + trt_pose實作（torch延遲import）
+  preprocess.py          等比例縮放補邊＋座標還原（純numpy，不依賴torch）
+  engine.py              PoseEngine介面 + Lightweight OpenPose實作（torch延遲import）
   benchmark.py           延遲量測、FP32/FP16精度比對
   cli.py                 執行基準測試與精度比對
 src/geometry/
@@ -229,18 +259,23 @@ tests/
 
 ## 待確認的假設
 
-撰寫這些程式時，手邊沒有真實硬體或安裝好的 trt_pose 可供核對。
+撰寫這些程式時，手邊沒有真實硬體或安裝好的模型可供核對。
 
 | 假設 | 假設有誤時要修改的位置 |
 |---|---|
-| `torch2trt`/`trt_pose` 的 API 呼叫方式 | `pose/engine.py` 內部，對照實際clone下來的原始碼 |
+| `torch2trt` 與 Lightweight OpenPose 的 API 呼叫方式 | `pose/engine.py` 內部，對照實際clone下來的原始碼 |
 | 相機大致水平架設、無明顯翻滾角 | `geometry/posture_angles.py`；架設明顯傾斜會讓角度產生系統性偏移 |
 | `--min-shared-corners` 6、`--rmse-threshold-px` 3.0、`_MIN_VECTOR_NORM` 1e-3 | 都是依經驗設定的起始值，取得實機數據後回頭調整 |
 
 ### 已在實機確認的項目
 
-- **關鍵點拓樸**（2026-09-18，Jetson）：trt_pose 的 `human_pose.json` 確實是 COCO 17 點加上第 18 個 `neck`，名稱與順序與 `pose/topology.py` 完全一致，不需要修改。`neck` 是模型實際偵測出來的點，並非由左右肩推算的中點——這是當初選擇 trt_pose 的理由之一。`tests/test_pose_topology.py` 已將這份清單固定寫入，作為基準鎖定。
+- **相機模式**（Jetson）：`probe` 找到 1280×480、2560×720、3840×1080 三個原生支援的並排模式。
+- **權重可下載**：Lightweight OpenPose 的 `checkpoint_iter_370000.pth` 實測 HTTP 200、88MB、直連無驗證。
+
+之前記錄的 trt_pose 拓樸核對（2026-09-18）已經作廢——那是針對 trt_pose 的 `human_pose.json`，換模型後排序完全不同，必須在 Jetson 上重新核對 `Pose.kpt_names`。
 
 ### 仍未驗證的項目
 
-`pose/engine.py` 的 API 假設包含：`fp16_mode` 參數、`TRTModule` 的存取方式、`ParseObjects` 用法、`peaks` 為正規化座標需乘回畫面尺寸、信心度從 `cmap` 取值。這些全部依公開資料撰寫，尚未經過實機驗證。
+`pose/engine.py` 的 API 假設包含：`fp16_mode` 參數、`TRTModule` 的存取方式、`extract_keypoints`/`group_keypoints` 的回傳格式（假設每列是 `(x, y, score, id)`）、`stages_output[-2]` 是熱圖而 `[-1]` 是 PAF、`pose_entries` 用 `-1` 表示未偵測。這些全部依上游原始碼撰寫，但尚未實機執行過。
+
+另外，上游是 PyTorch 0.4.1 年代的程式碼，在 JetPack 6 的 PyTorch 2.x 上載入 state_dict 通常沒問題，但沒有實測過。

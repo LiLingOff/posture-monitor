@@ -7,7 +7,7 @@ import numpy as np
 
 from ..calibration.capture import _open_camera, split_merged_frame
 from .benchmark import compare_precision_rmse, measure_latency, measure_sequential_multi_camera
-from .engine import TrtPoseModelPaths
+from .engine import LightweightOpenPoseModelPaths
 
 
 def _grab_frames(
@@ -29,10 +29,10 @@ def _grab_frames(
 
 
 def _run_benchmark(args: argparse.Namespace) -> None:
-    from .engine import TrtPoseEngine
+    from .engine import LightweightOpenPoseEngine
 
-    paths = TrtPoseModelPaths(args.checkpoint, args.engine_cache, args.topology)
-    engine = TrtPoseEngine(paths, precision=args.precision)
+    paths = LightweightOpenPoseModelPaths(args.checkpoint, args.engine_cache, args.repo_dir)
+    engine = LightweightOpenPoseEngine(paths, precision=args.precision)
 
     front_frames = _grab_frames(args.front_camera, args.warmup + args.frames, args.width, args.height)
     single = measure_latency(engine, front_frames, warmup=args.warmup)
@@ -53,11 +53,11 @@ def _run_benchmark(args: argparse.Namespace) -> None:
 
 
 def _run_compare_precision(args: argparse.Namespace) -> None:
-    from .engine import TrtPoseEngine
+    from .engine import LightweightOpenPoseEngine
 
-    paths = TrtPoseModelPaths(args.checkpoint, args.engine_cache, args.topology)
-    fp32_engine = TrtPoseEngine(paths, precision="fp32")
-    fp16_engine = TrtPoseEngine(paths, precision="fp16")
+    paths = LightweightOpenPoseModelPaths(args.checkpoint, args.engine_cache, args.repo_dir)
+    fp32_engine = LightweightOpenPoseEngine(paths, precision="fp32")
+    fp16_engine = LightweightOpenPoseEngine(paths, precision="fp16")
 
     frames = _grab_frames(args.camera, args.samples, args.width, args.height)
     fp32_results, fp16_results = [], []
@@ -91,10 +91,11 @@ def main() -> None:
     bench_p.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("data/pose_models/resnet18_baseline_att_224x224_A_epoch_249.pth"),
+        default=Path("data/pose_models/checkpoint_iter_370000.pth"),
     )
-    bench_p.add_argument("--engine-cache", type=Path, default=Path("data/pose_models/resnet18_fp16.pth"))
-    bench_p.add_argument("--topology", type=Path, default=Path("data/pose_models/human_pose.json"))
+    bench_p.add_argument("--engine-cache", type=Path, default=Path("data/pose_models/lightweight_openpose_fp16.pth"))
+    bench_p.add_argument("--repo-dir", type=Path, default=Path("third_party/lightweight-human-pose-estimation.pytorch"),
+        help="clone下來的lightweight-human-pose-estimation.pytorch目錄（該repo沒有setup.py，不能pip安裝）")
     bench_p.add_argument("--front-camera", type=int, default=0)
     bench_p.add_argument("--stereo-camera", type=int, default=1)
     bench_p.add_argument("--single-device", action="store_true",
@@ -113,10 +114,11 @@ def main() -> None:
     compare_p.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("data/pose_models/resnet18_baseline_att_224x224_A_epoch_249.pth"),
+        default=Path("data/pose_models/checkpoint_iter_370000.pth"),
     )
-    compare_p.add_argument("--engine-cache", type=Path, default=Path("data/pose_models/resnet18_fp16.pth"))
-    compare_p.add_argument("--topology", type=Path, default=Path("data/pose_models/human_pose.json"))
+    compare_p.add_argument("--engine-cache", type=Path, default=Path("data/pose_models/lightweight_openpose_fp16.pth"))
+    compare_p.add_argument("--repo-dir", type=Path, default=Path("third_party/lightweight-human-pose-estimation.pytorch"),
+        help="clone下來的lightweight-human-pose-estimation.pytorch目錄（該repo沒有setup.py，不能pip安裝）")
     compare_p.add_argument("--camera", type=int, default=0)
     compare_p.add_argument("--samples", type=int, default=30)
     compare_p.add_argument("--rmse-threshold-px", type=float, default=3.0)
