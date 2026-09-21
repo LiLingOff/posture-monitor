@@ -232,3 +232,58 @@ def test_stereo_grabs_both_cameras_before_retrieving(tmp_path, monkeypatch, auto
     assert "read_l" not in order and "read_r" not in order, "不該用read()，兩次曝光會被解碼時間拉開"
     first_cycle = order[:4]
     assert first_cycle == ["grab_l", "grab_r", "retrieve_l", "retrieve_r"], first_cycle
+
+
+def test_rejects_existing_images_from_a_different_resolution(tmp_path, forbid_camera):
+    """換過解析度卻沒清資料夾時要擋下來。
+
+    實際遇到的狀況：早期在沒有 --width/--height 的版本下拍了20組，驅動給的是
+    640x480 單眼畫面被切成兩半。之後改用 2560x720 重拍，程式卻只數張數，
+    回報「已有20張，跳過拍攝」，然後標定就在錯誤解析度的影像上算出一組內參。
+    內參綁定於解析度，用錯不會有任何徵兆。
+    """
+    left_out, right_out = tmp_path / "l", tmp_path / "r"
+    left_out.mkdir()
+    right_out.mkdir()
+    for i in range(1, 21):
+        # 舊的：640x480 切一半 -> 每眼 320x480
+        cv2.imwrite(str(left_out / f"frame_{i:04d}.png"), np.zeros((480, 320, 3), np.uint8))
+        cv2.imwrite(str(right_out / f"frame_{i:04d}.png"), np.zeros((480, 320, 3), np.uint8))
+
+    with pytest.raises(ValueError) as e:
+        capture.capture_stereo_charuco_single_device(
+            0, left_out, right_out, BOARD_SPEC, target_count=20,
+            width=2560, height=720,
+        )
+    message = str(e.value)
+    assert "320x480" in message and "1280x720" in message
+    assert "清空資料夾" in message
+
+
+def test_matching_resolution_still_skips(tmp_path, forbid_camera, capsys):
+    """尺寸相符時維持原本的跳過行為，不要因為多了檢查就變成每次重拍。"""
+    left_out, right_out = tmp_path / "l", tmp_path / "r"
+    left_out.mkdir()
+    right_out.mkdir()
+    for i in range(1, 21):
+        cv2.imwrite(str(left_out / f"frame_{i:04d}.png"), np.zeros((720, 1280, 3), np.uint8))
+        cv2.imwrite(str(right_out / f"frame_{i:04d}.png"), np.zeros((720, 1280, 3), np.uint8))
+
+    capture.capture_stereo_charuco_single_device(
+        0, left_out, right_out, BOARD_SPEC, target_count=20, width=2560, height=720,
+    )
+    assert "跳過拍攝" in capsys.readouterr().out
+
+
+def test_no_resolution_given_skips_the_size_check(tmp_path, forbid_camera, capsys):
+    """沒指定 --width/--height 時無從比對，維持舊行為。"""
+    out_dir = tmp_path / "front"
+    _fill_with_images(out_dir, 40)
+    capture.capture_mono(0, out_dir, SPEC, target_count=40)
+    assert "跳過拍攝" in capsys.readouterr().out
+
+
+def test_expected_eye_size_halves_the_right_axis():
+    assert capture._expected_eye_size(2560, 720, vertical_split=False) == (1280, 720)
+    assert capture._expected_eye_size(1280, 1440, vertical_split=True) == (1280, 720)
+    assert capture._expected_eye_size(None, None, vertical_split=False) is None

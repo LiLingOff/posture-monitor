@@ -227,17 +227,59 @@ def _next_frame_index(*out_dirs: Path) -> int:
     return max_index + 1
 
 
-def _already_complete(out_dir: Path, target_count: int) -> bool:
+def _existing_image_size(out_dir: Path) -> tuple[int, int] | None:
+    """回傳資料夾裡第一張影像的(寬, 高)，沒有影像則回傳None。"""
+    for path in sorted(out_dir.glob("*.png")):
+        img = cv2.imread(str(path))
+        if img is not None:
+            return (img.shape[1], img.shape[0])
+    return None
+
+
+def _reject_mismatched_existing_images(out_dir: Path, expected: tuple[int, int]) -> None:
+    """既有影像的尺寸與這次要拍的不同時直接拒絕。
+
+    換過解析度之後資料夾裡還留著舊影像是很容易發生的事，而張數檢查只數數量、
+    看不出這件事——工具會說「已有N張，跳過拍攝」，接著標定就在錯誤解析度的影像上
+    算出一組內參。內參綁定於解析度，用錯了不會有任何徵兆。
+    """
+    found = _existing_image_size(out_dir)
+    if found is None or found == expected:
+        return
+    raise ValueError(
+        f"{out_dir} 裡的影像是 {found[0]}x{found[1]}，這次要拍的是 {expected[0]}x{expected[1]}。\n"
+        f"內參綁定於解析度，兩種混在一起標定出來的結果沒有意義。\n"
+        f"請先清空資料夾再重拍：rm {out_dir}/*.png"
+    )
+
+
+def _already_complete(
+    out_dir: Path, target_count: int, expected_size: tuple[int, int] | None = None
+) -> bool:
     """資料夾已有足夠張數時回傳True，直接跳過，不必開啟相機。
 
     沒有這個檢查的話，拍攝迴圈一次都不會執行，後面要顯示最後一幀的變數
     就從未被指派，會以UnboundLocalError結束。
+
+    expected_size有給的話會先核對既有影像的尺寸，對不上直接拒絕——
+    只數張數的話，換過解析度卻沒清資料夾就會無聲沿用舊影像。
     """
+    if expected_size is not None:
+        _reject_mismatched_existing_images(out_dir, expected_size)
     saved = len(list(out_dir.glob("*.png")))
     if saved >= target_count:
         print(f"{out_dir} 已有{saved}張（目標{target_count}），跳過拍攝；要重拍請先清空資料夾")
         return True
     return False
+
+
+def _expected_eye_size(
+    width: int | None, height: int | None, vertical_split: bool
+) -> tuple[int, int] | None:
+    """合併畫面切一半之後，單眼影像應有的尺寸。未指定解析度時回傳None。"""
+    if width is None or height is None:
+        return None
+    return (width, height // 2) if vertical_split else (width // 2, height)
 
 
 def _hold_until_keypress(*frames_by_window: tuple[str, np.ndarray]) -> None:
@@ -273,7 +315,7 @@ def capture_mono(
     height: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    if _already_complete(out_dir, target_count):
+    if _already_complete(out_dir, target_count, (width, height) if width and height else None):
         return
 
     cap = _open_camera(camera_index, width, height)
@@ -324,7 +366,7 @@ def capture_stereo(
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count):
+    if _already_complete(left_out, target_count, (width, height) if width and height else None):
         return
 
     cap_l = _open_camera(left_index, width, height)
@@ -400,7 +442,7 @@ def capture_stereo_single_device(
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count):
+    if _already_complete(left_out, target_count, _expected_eye_size(width, height, vertical_split)):
         return
 
     cap = _open_camera(camera_index, width, height)
@@ -482,7 +524,7 @@ def capture_mono_charuco(
     height: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    if _already_complete(out_dir, target_count):
+    if _already_complete(out_dir, target_count, (width, height) if width and height else None):
         return
 
     board = board_spec.build_board()
@@ -565,7 +607,7 @@ def capture_stereo_charuco(
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count):
+    if _already_complete(left_out, target_count, (width, height) if width and height else None):
         return
 
     board = board_spec.build_board()
@@ -638,7 +680,7 @@ def capture_stereo_charuco_single_device(
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count):
+    if _already_complete(left_out, target_count, _expected_eye_size(width, height, vertical_split)):
         return
 
     board = board_spec.build_board()
