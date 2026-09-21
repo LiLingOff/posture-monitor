@@ -272,6 +272,7 @@ tests/
 - **相機模式**（2026-09-21）：`probe` 量到 1280×480 @30.0fps、2560×720 @32.4fps、3840×1080 @15.5fps 三個原生並排模式。**已選定 2560×720**（每眼 1280×720）。這是只接雙目模組時量的，正面相機接回去後要重測頻寬。
 - **權重可下載**（2026-09-21）：`checkpoint_iter_370000.pth` 已實際下載，84MB。
 - **關鍵點順序**（2026-09-21）：上游 `Pose.kpt_names` 與 `pose/topology.py` 逐一相符，`neck` 在索引 1。
+- **權重載入**（2026-09-21）：`load_state()` 沒有任何 `Not found pre-trained parameters` 警告，0.4.1 年代的 state_dict 在 JetPack 6 的 PyTorch 上完全對得上。
 
 之前記錄的 trt_pose 拓樸核對（2026-09-18）已經作廢——那是針對 trt_pose 的 `human_pose.json`，排序與現在的模型完全不同。
 
@@ -279,4 +280,4 @@ tests/
 
 `pose/engine.py` 的 API 假設包含：`fp16_mode` 參數、`TRTModule` 的存取方式、`extract_keypoints`/`group_keypoints` 的回傳格式（假設每列是 `(x, y, score, id)`）、`stages_output[-2]` 是熱圖而 `[-1]` 是 PAF、`pose_entries` 用 `-1` 表示未偵測。這些全部依上游原始碼撰寫，但尚未實機執行過。
 
-另外，上游是 PyTorch 0.4.1 年代的程式碼，在 JetPack 6 的 PyTorch 2.x 上載入 state_dict 通常沒問題，但沒有實測過。
+（載入 state_dict 這一項已在 Jetson 上確認沒問題。）
