@@ -13,7 +13,8 @@ K = np.array(
 BASELINE_MM = 80.0
 R_IDENTITY = np.eye(3)
 T_LEFT = np.zeros((3, 1))
-T_RIGHT = np.array([[BASELINE_MM], [0.0], [0.0]])
+# 第二台相機在右側，所以世界(=左相機)座標轉到它的平移是負的
+T_RIGHT = np.array([[-BASELINE_MM], [0.0], [0.0]])
 
 # 任意、非共平面的3D點(mm)，z為深度(相機前方)
 KNOWN_POINTS_3D = np.array(

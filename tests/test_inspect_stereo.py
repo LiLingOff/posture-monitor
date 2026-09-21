@@ -107,3 +107,24 @@ def test_report_lists_failures_when_something_is_off():
     report = format_report(calib)
     assert "不符預期" in report
     assert "0.9000 px" in report
+
+
+def test_flags_swapped_left_right_eyes():
+    """左右眼顛倒時 T_x 會變正號，而其他所有檢查都照樣通過。
+
+    這是唯一抓得到這件事的項目：RMS、夾角、平移比例、P2 一致性
+    在顛倒的情況下數值完全一樣，看不出任何異常。
+    """
+    calib = _calib()
+    calib.T = -np.asarray(calib.T)  # 左右對調
+    checks = _by_name(sanity_checks(calib))
+    assert checks["左右眼順序"].passed is False
+    assert "swap-lr" in checks["左右眼順序"].detail
+    for name in ("RMS 重投影誤差", "兩相機夾角", "平移方向", "左右焦距一致"):
+        assert checks[name].passed is True, f"{name} 抓不到左右顛倒，本來就不該抓到"
+
+
+def test_correct_order_reports_second_camera_on_the_right():
+    checks = _by_name(sanity_checks(_calib()))
+    assert checks["左右眼順序"].passed is True
+    assert "右側" in checks["左右眼順序"].detail

@@ -57,6 +57,7 @@ def sanity_checks(
     angle = rotation_angle_deg(calib.R)
     axis_ratio = translation_axis_ratio(calib.T)
     baseline = calib.baseline_mm
+    tx = float(np.asarray(calib.T).reshape(3)[0])
 
     # P2 第四欄編碼的是校正後的平移：|P2[0,3]| = fx_rect * baseline。
     # 這一項串起了內參、外參與校正三者，對不上代表某一段接錯了。
@@ -71,6 +72,10 @@ def sanity_checks(
         Check("兩相機夾角", f"{angle:.3f}°（剛性模組應 <2°）", angle < 2.0),
         Check("平移方向", f"{axis_ratio * 100:.1f}% 落在 X 軸（左右並排應 >95%）",
               axis_ratio > 0.95),
+        Check("左右眼順序",
+              f"T_x={tx:+.2f} mm，第二台相機在第一台的{'右' if tx < 0 else '左'}側"
+              + ("" if tx < 0 else "——可能左右顛倒，考慮 --swap-lr"),
+              tx < 0),
         Check("左右焦距一致", f"fx 左{fx_l:.1f} / 右{fx_r:.1f}（同型鏡頭應相近）",
               abs(fx_l - fx_r) / max(fx_l, fx_r) < 0.05),
         Check("像素長寬比", f"左 fx/fy={fx_l / fy_l:.4f}，右 fx/fy={fx_r / fy_r:.4f}（應接近1）",
