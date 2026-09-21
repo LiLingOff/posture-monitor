@@ -17,8 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-import numpy as np  # noqa: E402
-
 from calibration.capture import _open_camera, split_merged_frame  # noqa: E402
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import format_measurement, measure_posture  # noqa: E402
@@ -56,23 +54,40 @@ def _measure_once(engine, calib, cap, args):
     return measure_posture(calib, left, right, args.min_confidence), left, right
 
 
+def _step(message: str) -> None:
+    """載入權重與建TensorRT engine都要數秒到數分鐘，中間不出聲會像當掉。"""
+    print(message, flush=True)
+
+
 def _run_once(args) -> None:
     calib = StereoCalibrationResult.load(args.calibration)
+    _step(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
+          f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
+
     engine = _build_engine(args)
     cap = _open_camera(args.camera, args.width, args.height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={args.camera}")
     try:
-        # 前幾張通常還在自動曝光調整，直接用會偵測不到人
+        _step(f"丟掉前 {args.discard} 張讓自動曝光穩定…")
         for _ in range(args.discard):
             cap.read()
-        measurement, left, right = _measure_once(engine, calib, cap, args)
+
+        left_frame, right_frame = _grab_pair(cap, args)
+        _step(f"取得畫面，單眼 {left_frame.shape[1]}x{left_frame.shape[0]}")
+
+        # 第一次推論要載入權重、搬上GPU，fp16還要建TensorRT engine，
+        # 所以先明說一聲再開始。
+        _step(f"載入模型（{args.precision} / {args.device}），第一次會花一點時間…")
+        engine.warmup(left_frame)
+        _step("模型就緒，開始推論…")
+
+        left = _first_person(engine.infer(left_frame), "左")
+        right = _first_person(engine.infer(right_frame), "右")
+        measurement = measure_posture(calib, left, right, args.min_confidence)
     finally:
         cap.release()
 
-    print()
-    print(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
-          f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
     print()
     print(format_measurement(measurement, left, right, show_all_keypoints=args.all_keypoints))
 
@@ -83,7 +98,13 @@ def _run_live(args) -> None:
     cap = _open_camera(args.camera, args.width, args.height)
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={args.camera}")
-    print("Ctrl-C 結束")
+
+    ok, frame = cap.read()
+    if not ok:
+        raise RuntimeError("讀取相機影格失敗")
+    print(f"載入模型（{args.precision} / {args.device}），第一次會花一點時間…", flush=True)
+    engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
+    print("模型就緒。Ctrl-C 結束", flush=True)
     try:
         while True:
             try:
