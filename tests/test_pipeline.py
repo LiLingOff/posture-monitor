@@ -180,3 +180,47 @@ def test_precision_is_reported_even_when_it_is_acceptable():
     m = measure_posture(_calib(), left, right)
     assert m.theta_ca_precision_deg is not None
     assert "單幀誤差" in format_measurement(m, left, right)
+
+
+def test_precision_ignores_a_stray_keypoint_far_from_the_subject():
+    """精度換算要以耳朵與肩膀的深度為準，不能被離群點帶走。
+
+    原本取的是所有關鍵點深度的最大最小值中點。只要有一個關節配對錯誤、
+    三角測量跑到三公尺外，那個中點就會遠離受試者實際位置，
+    印出來的誤差跟著虛報，使用者會以為坐近一點沒有用。
+    """
+    pose = _seated_pose()
+    clean_left, clean_right = _project(pose)
+    clean = measure_posture(_calib(), clean_left, clean_right)
+
+    pose_with_outlier = dict(pose)
+    pose_with_outlier["right_wrist"] = np.array([0.0, 0.0, 2800.0])
+    left, right = _project(pose_with_outlier)
+    polluted = measure_posture(_calib(), left, right)
+
+    assert polluted.reference_depth_mm == pytest.approx(clean.reference_depth_mm, rel=1e-9)
+    assert polluted.theta_ca_precision_deg == pytest.approx(
+        clean.theta_ca_precision_deg, rel=1e-9
+    )
+
+
+def test_reference_depth_falls_back_to_the_median_when_ears_and_shoulders_are_missing():
+    from geometry.pipeline import reference_depth_mm
+
+    pose = {"neck": np.array([0.0, 0.0, 700.0]), "nose": np.array([0.0, -50.0, 680.0])}
+    left, right = _project(pose)
+    m = measure_posture(_calib(), left, right)
+    assert reference_depth_mm(m.keypoints_3d) == pytest.approx(690.0, abs=1.0)
+
+
+def test_report_columns_line_up_when_labels_are_chinese():
+    """中文標題佔兩欄，用 f-string 的 :<16 會把表頭排短，欄位對不齊。"""
+    from geometry.pipeline import _display_width
+
+    left, right = _project(_seated_pose())
+    report = format_measurement(measure_posture(_calib(), left, right), left, right)
+    lines = report.splitlines()
+
+    header = next(ln for ln in lines if ln.startswith("關鍵點"))
+    row = next(ln for ln in lines if ln.startswith("right_ear"))
+    assert _display_width(header) == _display_width(row)

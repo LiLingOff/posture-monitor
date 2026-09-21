@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -47,6 +48,7 @@ class PostureMeasurement:
     theta_ca_deg: float | None = None
     theta_sym_deg: float | None = None
     theta_ca_precision_deg: float | None = None
+    reference_depth_mm: float | None = None
     angle_errors: list[str] = field(default_factory=list)
 
     @property
@@ -60,6 +62,27 @@ class PostureMeasurement:
         d = np.abs(self.vertical_disparity_px)
         d = d[np.isfinite(d)]
         return float(d.max()) if d.size else None
+
+
+def reference_depth_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
+    """換算角度精度時要用的代表深度。
+
+    優先取耳朵與肩膀，因為要換算的就是這兩點之間的深度差。
+    兩者都沒有時退回所有關鍵點深度的中位數。不用最大與最小值的中點，
+    是因為只要有一個關鍵點三角測量失敗，那個中點就會被整個拉走——
+    手腕配對錯誤跑到三公尺外，換算出來的角度誤差就跟著大一倍。
+    """
+    depths = [
+        float(p[2])
+        for side in ("right", "left")
+        for part in ("ear", "shoulder")
+        if (p := keypoints_3d.get(f"{side}_{part}")) is not None
+    ]
+    if depths:
+        return float(np.mean(depths))
+    z = keypoints_3d.points[:, 2]
+    z = z[np.isfinite(z)]
+    return float(np.median(z)) if z.size else None
 
 
 def estimate_theta_ca_precision_deg(
@@ -102,10 +125,10 @@ def measure_posture(
         shared_count=shared,
     )
 
-    depth = measurement.depth_range_mm
-    if depth is not None:
+    measurement.reference_depth_mm = reference_depth_mm(keypoints_3d)
+    if measurement.reference_depth_mm is not None:
         measurement.theta_ca_precision_deg = estimate_theta_ca_precision_deg(
-            calib, float(np.mean(depth))
+            calib, measurement.reference_depth_mm
         )
 
     # 缺關鍵點或資料退化都會拋例外。一個角度算不出來不該影響另一個，
@@ -121,6 +144,17 @@ def measure_posture(
         else:
             measurement.theta_sym_deg = value
     return measurement
+
+
+def _display_width(text: str) -> int:
+    """終端機顯示寬度。中日韓字元佔兩欄，但 len() 只算一個。"""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _cell(text: str, width: int, align: str = "left") -> str:
+    """照顯示寬度補空白。直接用 f-string 的 :<16 會讓中文欄位短掉一半。"""
+    pad = " " * max(0, width - _display_width(text))
+    return text + pad if align == "left" else pad + text
 
 
 def format_measurement(
@@ -141,38 +175,50 @@ def format_measurement(
     interesting = ("right_ear", "right_shoulder", "left_shoulder", "left_ear", "neck", "nose")
     names = COCO18_KEYPOINT_NAMES if show_all_keypoints else interesting
 
-    lines.append(f"{'關鍵點':<16} {'左眼像素':>17} {'右眼像素':>17} {'3D座標 (mm)':>28} {'Δy':>7}")
+    lines.append(
+        f"{_cell('關鍵點', 16)} {_cell('左眼像素', 17, 'right')}"
+        f" {_cell('右眼像素', 17, 'right')} {_cell('3D座標 (mm)', 28, 'right')}"
+        f" {_cell('Δy', 7, 'right')}"
+    )
     for name in names:
         i = COCO18_KEYPOINT_NAMES.index(name)
         lp, rp = left.points[i], right.points[i]
         p3 = measurement.keypoints_3d.points[i]
         dy = measurement.vertical_disparity_px[i]
         if np.isnan(lp).any() and np.isnan(rp).any():
-            lines.append(f"{name:<16} {'未偵測到':>17}")
+            lines.append(f"{_cell(name, 16)} {_cell('未偵測到', 17, 'right')}")
             continue
-        lt = "        —        " if np.isnan(lp).any() else f"({lp[0]:7.1f},{lp[1]:7.1f})"
-        rt = "        —        " if np.isnan(rp).any() else f"({rp[0]:7.1f},{rp[1]:7.1f})"
-        p3t = "            —             " if np.isnan(p3).any() else \
-            f"[{p3[0]:8.1f},{p3[1]:8.1f},{p3[2]:8.1f}]"
-        dyt = "     —" if not np.isfinite(dy) else f"{dy:6.2f}"
-        lines.append(f"{name:<16} {lt:>17} {rt:>17} {p3t:>28} {dyt:>7}")
+        lt = "—" if np.isnan(lp).any() else f"({lp[0]:7.1f},{lp[1]:7.1f})"
+        rt = "—" if np.isnan(rp).any() else f"({rp[0]:7.1f},{rp[1]:7.1f})"
+        p3t = "—" if np.isnan(p3).any() else f"[{p3[0]:8.1f},{p3[1]:8.1f},{p3[2]:8.1f}]"
+        dyt = "—" if not np.isfinite(dy) else f"{dy:6.2f}"
+        lines.append(
+            f"{_cell(name, 16)} {_cell(lt, 17, 'right')} {_cell(rt, 17, 'right')}"
+            f" {_cell(p3t, 28, 'right')} {_cell(dyt, 7, 'right')}"
+        )
 
     lines.append("")
     depth = measurement.depth_range_mm
-    lines.append(f"深度範圍         {'—' if depth is None else f'{depth[0]:.0f} ~ {depth[1]:.0f} mm'}")
+    lines.append(
+        _cell("深度範圍", 17)
+        + ("—" if depth is None else f"{depth[0]:.0f} ~ {depth[1]:.0f} mm")
+    )
     worst = measurement.max_abs_vertical_disparity_px
-    lines.append(f"最大垂直視差     {'—' if worst is None else f'{worst:.2f} px'}")
+    lines.append(
+        _cell("最大垂直視差", 17) + ("—" if worst is None else f"{worst:.2f} px")
+    )
     if measurement.theta_ca_precision_deg is not None:
         lines.append(
-            f"θ_CA 單幀誤差    ±{measurement.theta_ca_precision_deg:.1f}°"
-            f"（判定門檻 {_THETA_CA_THRESHOLD_DEG:.0f}°；誤差隨距離平方成長）"
+            _cell("θ_CA 單幀誤差", 17)
+            + f"±{measurement.theta_ca_precision_deg:.1f}°"
+            + f"（判定門檻 {_THETA_CA_THRESHOLD_DEG:.0f}°）"
         )
     lines.append("")
 
     ca = measurement.theta_ca_deg
     sym = measurement.theta_sym_deg
-    lines.append(f"θ_CA  頸椎前傾   {'算不出來' if ca is None else f'{ca:+.2f}°'}")
-    lines.append(f"θ_sym 肩膀水平   {'算不出來' if sym is None else f'{sym:+.2f}°'}")
+    lines.append(_cell("θ_CA  頸椎前傾", 17) + ("算不出來" if ca is None else f"{ca:+.2f}°"))
+    lines.append(_cell("θ_sym 肩膀水平", 17) + ("算不出來" if sym is None else f"{sym:+.2f}°"))
     for err in measurement.angle_errors:
         lines.append(f"  {err}")
 
@@ -208,13 +254,11 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
 
     precision = measurement.theta_ca_precision_deg
     if precision is not None and precision > _THETA_CA_THRESHOLD_DEG:
-        depth = measurement.depth_range_mm
-        middle = float(np.mean(depth)) if depth else 0.0
+        distance = measurement.reference_depth_mm or 0.0
         warnings.append(
-            f"在 {middle:.0f} mm 的距離下，θ_CA 單幀誤差約 ±{precision:.1f}°，"
-            f"已經超過 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻本身，這一幀的角度沒有意義。"
-            f"深度誤差隨距離平方成長——坐到 600mm 左右可以降到 ±5° 以內，"
-            f"是唯一能立刻改善的因素"
+            f"距離 {distance:.0f} mm，θ_CA 單幀誤差約 ±{precision:.1f}°，"
+            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。"
+            f"深度誤差隨距離的平方成長，坐到 600 mm 左右就能降到 ±5° 以內"
         )
 
     if measurement.shared_count < 4:

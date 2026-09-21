@@ -62,6 +62,12 @@ def _step(message: str) -> None:
     print(message, flush=True)
 
 
+def _discard_frames(cap, count: int) -> None:
+    """自動曝光要幾張影格才穩定，前幾張通常偏暗，關鍵點信心會低一截。"""
+    for _ in range(count):
+        cap.read()
+
+
 def _run_once(args) -> None:
     calib = StereoCalibrationResult.load(args.calibration)
     _step(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
@@ -72,18 +78,17 @@ def _run_once(args) -> None:
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={args.camera}")
     try:
-        _step(f"丟掉前 {args.discard} 張讓自動曝光穩定…")
-        for _ in range(args.discard):
-            cap.read()
+        _step(f"等自動曝光穩定，丟掉前 {args.discard} 張")
+        _discard_frames(cap, args.discard)
 
         left_frame, right_frame = _grab_pair(cap, args)
         _step(f"取得畫面，單眼 {left_frame.shape[1]}x{left_frame.shape[0]}")
 
-        # 第一次推論要載入權重、搬上GPU，fp16還要建TensorRT engine，
-        # 所以先明說一聲再開始。
-        _step(f"載入模型（{args.precision} / {args.device}），第一次會花一點時間…")
+        # 載入權重、搬上GPU，fp16還要建TensorRT engine，這段可能要等上幾分鐘，
+        # 中間沒有任何輸出會看起來像當掉。
+        _step(f"載入模型（{args.precision} / {args.device}）")
         engine.warmup(left_frame)
-        _step("模型就緒，開始推論…")
+        _step("開始推論")
 
         left = _first_person(engine.infer(left_frame), "左")
         right = _first_person(engine.infer(right_frame), "右")
@@ -102,12 +107,13 @@ def _run_live(args) -> None:
     if not cap.isOpened():
         raise RuntimeError(f"無法開啟相機 index={args.camera}")
 
+    _discard_frames(cap, args.discard)
     ok, frame = cap.read()
     if not ok:
         raise RuntimeError("讀取相機影格失敗")
-    print(f"載入模型（{args.precision} / {args.device}），第一次會花一點時間…", flush=True)
+    print(f"載入模型（{args.precision} / {args.device}）", flush=True)
     engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
-    print("模型就緒。Ctrl-C 結束", flush=True)
+    print("開始量測，Ctrl-C 結束", flush=True)
     try:
         while True:
             try:
@@ -117,11 +123,14 @@ def _run_live(args) -> None:
                 continue
             ca = measurement.theta_ca_deg
             sym = measurement.theta_sym_deg
-            depth = measurement.depth_range_mm
+            distance = measurement.reference_depth_mm
+            precision = measurement.theta_ca_precision_deg
+            # 誤差也一起印，調整座位時可以直接看著這個數字找位置
             print(
                 f"\rθ_CA {'  —  ' if ca is None else f'{ca:+6.1f}°'}"
                 f"   θ_sym {'  —  ' if sym is None else f'{sym:+6.1f}°'}"
-                f"   深度 {'—' if depth is None else f'{depth[0]:.0f}~{depth[1]:.0f}mm'}"
+                f"   距離 {'—' if distance is None else f'{distance:4.0f}mm'}"
+                f"   誤差 {'—' if precision is None else f'±{precision:4.1f}°'}"
                 f"   共同點 {measurement.shared_count:2d}   ",
                 end="", flush=True,
             )
@@ -172,8 +181,8 @@ def main() -> None:
             f"找不到標定檔 {args.calibration}。先執行：\n"
             f"  python -m src.calibration.cli stereo --charuco ..."
         )
-    if not getattr(args, "all_keypoints", False):
-        args.all_keypoints = False
+    # live 沒有這個選項，補一個預設值讓兩條路徑共用同一個 args
+    args.all_keypoints = getattr(args, "all_keypoints", False)
 
     if args.mode == "once":
         _run_once(args)
