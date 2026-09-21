@@ -27,15 +27,16 @@ def _seated_pose(theta_ca_deg: float = 15.0, shoulder_tilt_deg: float = 0.0) -> 
     dy = -ear_len * np.cos(np.radians(theta_ca_deg))
     dz = -ear_len * np.sin(np.radians(theta_ca_deg))
 
+    # 面向相機：解剖右肩在影像左半邊(X為負)、左肩在右半邊(X為正)
     half = 180.0
     tilt = np.radians(shoulder_tilt_deg)
-    right_sho = np.array([half * np.cos(tilt), -half * np.sin(tilt), 600.0])
-    left_sho = np.array([-half * np.cos(tilt), half * np.sin(tilt), 600.0])
+    right_sho = np.array([-half * np.cos(tilt), -half * np.sin(tilt), 600.0])
+    left_sho = np.array([half * np.cos(tilt), half * np.sin(tilt), 600.0])
     return {
         "right_shoulder": right_sho,
         "left_shoulder": left_sho,
-        "right_ear": right_sho + np.array([-40.0, dy, dz]),
-        "left_ear": left_sho + np.array([40.0, dy, dz]),
+        "right_ear": right_sho + np.array([40.0, dy, dz]),
+        "left_ear": left_sho + np.array([-40.0, dy, dz]),
         "neck": (right_sho + left_sho) / 2 + np.array([0.0, -60.0, 0.0]),
     }
 

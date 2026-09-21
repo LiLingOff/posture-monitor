@@ -43,20 +43,22 @@ def test_theta_ca_raises_when_ear_missing():
 
 
 def test_theta_sym_zero_when_shoulders_level():
-    left = np.array([-50.0, 0.0, 0.0])
-    right = np.array([50.0, 0.0, 0.0])
+    # 受試者面向相機：解剖學上的右肩出現在影像左半邊(X較小)，左肩在右半邊(X較大)。
+    # 擺反的話 left-right 會指向 -X，算出來永遠接近 ±180° 而不是 0°。
+    right = np.array([-50.0, 0.0, 0.0])
+    left = np.array([50.0, 0.0, 0.0])
     kp = _make_keypoints3d({"left_shoulder": left, "right_shoulder": right})
     assert theta_sym(kp) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_theta_sym_known_tilt_angle():
-    left = np.array([-50.0, 0.0, 0.0])
+    right = np.array([-50.0, 0.0, 0.0])
     angle_deg = 10.0
     rad = np.radians(angle_deg)
-    # 右肩比左肩高(Y較小)，偏移量對應angle_deg
-    right = left + 100.0 * np.array([np.cos(rad), -np.sin(rad), 0.0])
+    # 從右肩往左肩，左肩比右肩低(Y較大) -> 右肩較高 -> 正值
+    left = right + 100.0 * np.array([np.cos(rad), np.sin(rad), 0.0])
     kp = _make_keypoints3d({"left_shoulder": left, "right_shoulder": right})
-    assert theta_sym(kp) == pytest.approx(-angle_deg, abs=1e-6)
+    assert theta_sym(kp) == pytest.approx(angle_deg, abs=1e-6)
 
 
 def test_theta_sym_raises_when_shoulder_missing():
@@ -106,21 +108,40 @@ def test_theta_ca_sign_forward_is_positive():
     assert theta_ca(backward) == pytest.approx(-15.0, abs=1e-3)
 
 
-def test_theta_sym_sign_left_shoulder_higher_is_positive():
-    """左肩較高為正、右肩較高為負（Y軸向下，較高代表Y較小）。"""
-    # 兩肩各偏移drop，但夾角看的是 right-left 這個向量，
+def test_theta_sym_sign_right_shoulder_higher_is_positive():
+    """右肩較高為正、左肩較高為負（Y軸向下，較高代表Y較小）。
+
+    這個方向與前作的 arctan[(y_L-y_R)/(x_L-x_R)] 一致。
+    擺位前提是受試者面向相機：解剖右肩在影像左半邊(X較小)、左肩在右半邊(X較大)。
+    這個前提一度在程式與測試裡同時弄反，導致兩邊互相印證、實機資料才抓出來。
+    """
+    # 兩肩各偏移drop，但夾角看的是兩肩連線這個向量，
     # 兩倍的分子與分母會抵銷，所以傾角仍是6度而不是12度。
     drop = 180.0 * np.sin(np.radians(6.0))
     span = 180.0 * np.cos(np.radians(6.0))
 
-    left_higher = _make_keypoints3d({
-        "left_shoulder": np.array([-span, -drop, 600.0]),
-        "right_shoulder": np.array([span, +drop, 600.0]),
-    })
     right_higher = _make_keypoints3d({
-        "left_shoulder": np.array([-span, +drop, 600.0]),
-        "right_shoulder": np.array([span, -drop, 600.0]),
+        "right_shoulder": np.array([-span, -drop, 600.0]),
+        "left_shoulder": np.array([span, +drop, 600.0]),
+    })
+    left_higher = _make_keypoints3d({
+        "right_shoulder": np.array([-span, +drop, 600.0]),
+        "left_shoulder": np.array([span, -drop, 600.0]),
     })
 
-    assert theta_sym(left_higher) == pytest.approx(6.0, abs=1e-3)
-    assert theta_sym(right_higher) == pytest.approx(-6.0, abs=1e-3)
+    assert theta_sym(right_higher) == pytest.approx(6.0, abs=1e-3)
+    assert theta_sym(left_higher) == pytest.approx(-6.0, abs=1e-3)
+
+
+def test_theta_sym_is_near_zero_not_180_for_a_person_facing_the_camera():
+    """用實機量到的肩膀座標當回歸案例。
+
+    2026-09-21 在 Jetson 上量到 right_shoulder x=219、left_shoulder x=418，
+    當時程式取 right-left，算出 +157°。符號方向錯的話這個測試會再紅一次。
+    """
+    kp = _make_keypoints3d({
+        "right_shoulder": np.array([219.2, 316.2, 588.9]),
+        "left_shoulder": np.array([417.8, 233.3, 434.8]),
+    })
+    value = theta_sym(kp)
+    assert abs(value) < 45.0, f"算出 {value:.1f}°，接近±180°代表左右肩向量取反了"

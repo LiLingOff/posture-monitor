@@ -42,7 +42,12 @@ def theta_ca(keypoints_3d: PersonKeypoints3D, side: str = "right") -> float:
 def theta_sym(keypoints_3d: PersonKeypoints3D) -> float:
     """肩膀水平角：左右肩連線投影到冠狀面後相對水平軸的帶號夾角。
 
-    正負號：雙肩等高是0°，**左肩較高為正、右肩較高為負**
+    向量取 left - right，不是反過來。受試者面向相機時，解剖學上的右肩會出現在
+    影像的左半邊（X較小），左肩在右半邊（X較大），所以 left - right 才會指向 +X、
+    雙肩等高時得到0°。取成 right - left 的話會指向 -X，算出來永遠接近 ±180°。
+    這個方向與前作的 arctan[(y_L-y_R)/(x_L-x_R)] 一致。
+
+    正負號：雙肩等高是0°，**右肩較高為正、左肩較高為負**
     （Y軸向下，所以較高代表Y較小）。前作以絕對值 >5° 判定聳肩或脊椎側彎傾向，
     但左右哪一邊高在臨床上是不同的事，所以這裡保留方向。
     """
@@ -50,7 +55,7 @@ def theta_sym(keypoints_3d: PersonKeypoints3D) -> float:
     right = keypoints_3d.get("right_shoulder")
     if left is None or right is None:
         raise ValueError("left_shoulder或right_shoulder未偵測到，無法計算theta_sym")
-    return signed_angle_in_plane(right - left, _LATERAL_AXIS, plane_normal=_DEPTH_AXIS)
+    return signed_angle_in_plane(left - right, _LATERAL_AXIS, plane_normal=_DEPTH_AXIS)
 
 
 def theta_ka(keypoints_3d: PersonKeypoints3D) -> float:
