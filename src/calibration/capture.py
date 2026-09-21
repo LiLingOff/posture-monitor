@@ -99,6 +99,26 @@ _PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
 )
 
 
+def _summarize_side_by_side(
+    results: list[tuple[int, int, float, bool]]
+) -> dict[tuple[int, int], tuple[float, bool]]:
+    """從逐一測試的結果整理出可用的並排模式。
+
+    同一個實際模式可能由好幾個要求解析度達成：例如要求2560x960時驅動給2560x720，
+    而2560x720本身又是直接要得到的。只要有任何一次是直接要到的，這個模式就是
+    原生支援，不能被後來的退回結果覆蓋掉——否則會把原生模式標成退回模式，
+    剛好誤導掉「優先選原生支援」這條挑選原則。
+    """
+    stereo: dict[tuple[int, int], tuple[float, bool]] = {}
+    for w, h, fps, exact in results:
+        if w / h < 2.0:
+            continue
+        previous = stereo.get((w, h))
+        if previous is None or (exact and not previous[1]):
+            stereo[(w, h)] = (fps, exact)
+    return stereo
+
+
 def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     """逐一測試各種解析度，印出相機實際提供的畫面尺寸與張數率。
 
@@ -154,7 +174,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
         print(f"{want_w:>5}x{want_h:<5}  {got_w:>5}x{got_h:<5}  {ratio:>6.2f}  {fps:>5.1f}  {verdict}")
         results.append((got_w, got_h, fps, exact))
 
-    stereo = {(w, h): (fps, exact) for w, h, fps, exact in results if w / h >= 2.0}
+    stereo = _summarize_side_by_side(results)
     print()
     if not stereo:
         print("沒有測到任何寬高比>=2的模式。這顆相機可能不屬於左右眼合併輸出的類型，")
@@ -169,7 +189,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     print()
     print("挑選原則：")
     print("  1. 優先選擇驅動原生支援的模式，不要選退回來的")
-    print("  2. fps 要足夠即時監測使用；解析度再高，關鍵點偵測也會先縮放到 224x224 才輸入網路")
+    print("  2. fps 要足夠即時監測使用；解析度再高，關鍵點偵測也會先等比例縮放到高度 256 才輸入網路")
     print("  3. 標定與執行時必須使用同一個解析度——內參 fx/fy/cx/cy 的數值綁定於解析度，")
     print("     更換解析度後舊的標定參數就失效，而且不會出現錯誤訊息")
 
