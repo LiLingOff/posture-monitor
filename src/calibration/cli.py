@@ -6,7 +6,9 @@ from pathlib import Path
 from .charuco import CharucoBoardSpec
 from .chessboard import ChessboardSpec
 from .mono_calibration import calibrate_mono, calibrate_mono_charuco
-from .stereo_calibration import calibrate_stereo, calibrate_stereo_charuco
+from .inspect_stereo import format_report
+from .stereo_calibration import (StereoCalibrationResult, calibrate_stereo,
+                                 calibrate_stereo_charuco)
 
 
 def _add_chessboard_args(p: argparse.ArgumentParser) -> None:
@@ -59,7 +61,20 @@ def main() -> None:
     _add_charuco_args(stereo_p)
     stereo_p.add_argument("--target-error-px", type=float, default=0.5)
 
+    inspect_p = sub.add_parser("inspect", help="檢視已存的雙目標定結果並做合理性驗算")
+    inspect_p.add_argument(
+        "--path", type=Path, default=Path("data/calibration_output/stereo.npz")
+    )
+    inspect_p.add_argument("--target-error-px", type=float, default=0.5)
+
     args = parser.parse_args()
+
+    if args.mode == "inspect":
+        calib = StereoCalibrationResult.load(args.path)
+        print(f"讀取 {args.path}")
+        print()
+        print(format_report(calib, args.target_error_px))
+        return
 
     if args.mode == "mono":
         if args.charuco:
@@ -103,6 +118,8 @@ def main() -> None:
         result.save(args.out)
         print(f"雙目標定完成：RMS重投影誤差 = {result.rms_error:.4f}px")
         print(f"基線長度 = {result.baseline_mm:.2f}mm，已存至 {args.out}")
+        print()
+        print(format_report(result, args.target_error_px))
 
 
 if __name__ == "__main__":

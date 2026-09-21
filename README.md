@@ -122,10 +122,15 @@ python -m src.calibration.capture stereo --single-device --left-camera 0 --width
 | 單眼 | `python -m src.calibration.cli mono --images data/calibration_images/front` |
 | 雙目 | `python -m src.calibration.cli stereo --left-images data/calibration_images/stereo_left --right-images data/calibration_images/stereo_right` |
 | ChArUco | 上述指令加上 `--charuco` 與拍攝時**完全相同**的板子參數 |
+| 檢視已存的標定結果 | `python -m src.calibration.cli inspect` |
 
 輸出 `.npz` 檔：內參、畸變係數；雙目另含 `R/T/E/F/R1/R2/P1/P2/Q`。目標重投影誤差為單眼 <0.3px、雙目 <0.5px。
 
 板子參數與拍攝時不一致的話，角點ID會對應到錯誤的物理座標——標定結果是錯的，但通常不會出現錯誤訊息，這類錯誤很難發現。
+
+算完會接著印一份合理性驗算（也可以之後用 `inspect` 單獨看）。RMS 低只代表標定在內部自洽，說不出參數物理上合不合理，所以另外拿結果去對照剛性雙目模組應有的樣子：兩顆鏡頭應幾乎平行、平移應幾乎只有 X 分量、像素應接近正方形、光心應在畫面中央附近、`|P2[0,3]|` 應等於 `fx × baseline`。最後一項串起內參、外參與校正三者，對不上代表某一段接錯了。
+
+這些檢查抓不到的是**尺度**。`--square-size-mm` 填錯的話所有參數仍然自洽，只是整個系統的長度單位跟著錯。唯一的外部驗證是把基線長度拿去跟雙目模組的規格書對照。
 
 誤差超標只印出警告、照常存檔。這樣設計並非認為誤差無所謂，而是因為機械式地擋著不讓使用，反而會讓人略過警告內容、改用更寬鬆的門檻重新執行，不如把數字完整呈現讓人自行判斷。
 
