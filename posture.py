@@ -28,7 +28,10 @@ def _build_engine(args) -> LightweightOpenPoseEngine:
     paths = LightweightOpenPoseModelPaths(
         checkpoint=args.checkpoint, engine_cache=args.engine_cache, repo_dir=args.repo_dir
     )
-    return LightweightOpenPoseEngine(paths, precision=args.precision, device=args.device)
+    return LightweightOpenPoseEngine(
+        paths, precision=args.precision, device=args.device,
+        input_height=args.input_height, subpixel=not args.no_subpixel,
+    )
 
 
 def _first_person(detections, side: str):
@@ -154,6 +157,11 @@ def main() -> None:
                        help="低於這個信心度的關鍵點不參與三角測量")
         p.add_argument("--discard", type=int, default=5,
                        help="開始量測前先丟掉幾張，讓自動曝光穩定")
+        p.add_argument("--input-height", type=int, default=256,
+                       help="網路輸入高度。調高會直接降低熱圖的量化誤差（深度精度的"
+                            "主要瓶頸），代價是推論變慢；384或512值得一試")
+        p.add_argument("--no-subpixel", action="store_true",
+                       help="關掉熱圖峰值的次像素精修，用來量化它的影響")
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")

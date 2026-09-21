@@ -9,8 +9,8 @@ import numpy as np
 
 from .keypoints import PersonKeypoints
 from .preprocess import (DEFAULT_INPUT_HEIGHT, DEFAULT_STRIDE,
-                         DEFAULT_UPSAMPLE_RATIO, resize_and_pad,
-                         restore_keypoint_coordinates)
+                         DEFAULT_UPSAMPLE_RATIO, refine_peak_subpixel,
+                         resize_and_pad, restore_keypoint_coordinates)
 from .topology import NUM_KEYPOINTS, UPSTREAM_KEYPOINT_NAMES
 
 _PRECISIONS = ("fp32", "fp16")
@@ -57,6 +57,7 @@ class LightweightOpenPoseEngine:
         input_height: int = DEFAULT_INPUT_HEIGHT,
         stride: int = DEFAULT_STRIDE,
         upsample_ratio: int = DEFAULT_UPSAMPLE_RATIO,
+        subpixel: bool = True,
     ):
         if precision not in _PRECISIONS:
             raise ValueError(f"precision必須是{_PRECISIONS}其中之一，收到{precision}")
@@ -72,6 +73,9 @@ class LightweightOpenPoseEngine:
         self._input_height = input_height
         self._stride = stride
         self._upsample_ratio = upsample_ratio
+        # 熱圖峰值只有整數解析度，換算回原始畫面是好幾個像素，
+        # 對三角測量來說太粗。預設開啟次像素精修，留開關是為了能量化它的影響。
+        self._subpixel = subpixel
         # fp32是全卷積網路，任何尺寸共用同一個模型。
         # fp16走TensorRT，engine的輸入尺寸是固定的，所以每個尺寸各存一個。
         self._model = None
@@ -245,8 +249,23 @@ class LightweightOpenPoseEngine:
         if len(all_keypoints) == 0:
             return []
 
-        # all_keypoints每列是(x, y, score, id)，座標仍在熱圖尺度上
+        # all_keypoints每列是(x, y, score, id)，座標仍在熱圖尺度上。
+        # all_keypoints_by_type是按關鍵點種類分組的同一批點，順序一致，
+        # 所以可以照長度還原每一列屬於哪一種，精修時才知道要查哪一張熱圖。
         all_keypoints = np.asarray(all_keypoints, dtype=np.float64)
+        kpt_type_of: list[int] = []
+        for kpt_idx, group in enumerate(all_keypoints_by_type):
+            kpt_type_of.extend([kpt_idx] * len(group))
+
+        if self._subpixel:
+            for i in range(len(all_keypoints)):
+                if i >= len(kpt_type_of):
+                    break
+                x, y = int(all_keypoints[i, 0]), int(all_keypoints[i, 1])
+                all_keypoints[i, 0], all_keypoints[i, 1] = refine_peak_subpixel(
+                    heatmaps[:, :, kpt_type_of[i]], x, y
+                )
+
         restored = restore_keypoint_coordinates(
             all_keypoints[:, :2], info, self._stride, self._upsample_ratio
         )

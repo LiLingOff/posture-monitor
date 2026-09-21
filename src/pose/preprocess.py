@@ -92,3 +92,37 @@ def restore_keypoint_coordinates(
     restored[:, 0] = (points[:, 0] * factor - info.pad_left) / info.scale
     restored[:, 1] = (points[:, 1] * factor - info.pad_top) / info.scale
     return restored
+
+
+def refine_peak_subpixel(heatmap: np.ndarray, x: int, y: int) -> tuple[float, float]:
+    """用拋物線內插把熱圖峰值精修到次像素，回傳(x, y)。
+
+    上游的 extract_keypoints 取的是整數 argmax，所以關鍵點只能落在熱圖網格上。
+    換算回原始畫面後，這個網格的間距是 (stride/upsample_ratio)/scale 個像素——
+    2560x720 的設定下是 5.6px。對 2D 顯示無所謂，對雙目三角測量是致命的：
+    視差只能跳著走，深度跟著以數百mm為單位跳動，而耳朵與肩膀的深度差只有幾十mm。
+
+    做法是拿峰值與左右（上下）鄰居三個取樣點配一條拋物線，取頂點位置。
+    這是熱圖式關鍵點偵測的標準後處理。
+    """
+    h, w = heatmap.shape[:2]
+    fx, fy = float(x), float(y)
+
+    if 0 < x < w - 1:
+        left, centre, right = (
+            float(heatmap[y, x - 1]), float(heatmap[y, x]), float(heatmap[y, x + 1])
+        )
+        denom = 2.0 * centre - left - right
+        # denom<=0 代表這裡不是凸的峰，內插沒有意義，保留整數位置
+        if denom > 0:
+            fx += float(np.clip(0.5 * (right - left) / denom, -0.5, 0.5))
+
+    if 0 < y < h - 1:
+        up, centre, down = (
+            float(heatmap[y - 1, x]), float(heatmap[y, x]), float(heatmap[y + 1, x])
+        )
+        denom = 2.0 * centre - up - down
+        if denom > 0:
+            fy += float(np.clip(0.5 * (down - up) / denom, -0.5, 0.5))
+
+    return fx, fy
