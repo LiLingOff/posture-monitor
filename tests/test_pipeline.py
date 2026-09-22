@@ -104,7 +104,9 @@ def test_flags_implausible_depth():
     pose = {k: v * 8.0 for k, v in _seated_pose().items()}
     left, right = _project(pose)
     m = measure_posture(_calib(), left, right)
-    assert any("深度範圍" in w for w in plausibility_warnings(m))
+    warnings = plausibility_warnings(m)
+    assert any("超出桌前坐姿的合理區間" in w for w in warnings)
+    assert any("right_shoulder" in w for w in warnings), "要指名是哪個點，否則無從查起"
 
 
 def test_missing_keypoints_do_not_abort_the_other_angle():
@@ -224,3 +226,59 @@ def test_report_columns_line_up_when_labels_are_chinese():
     header = next(ln for ln in lines if ln.startswith("關鍵點"))
     row = next(ln for ln in lines if ln.startswith("right_ear"))
     assert _display_width(header) == _display_width(row)
+
+
+def test_a_bad_limb_does_not_read_as_a_calibration_problem():
+    """2026-09-22 實機：四個角度點的 Δy 都 <3px，整體最大卻是 38px。
+
+    自底向上的關聯常把手腕這類點在左右影像連到不同位置，而角度根本沒用到它們。
+    兩者混在一起報的話，標定明明已經夠準，看到的還是一行「垂直視差 38px」，
+    會讓人白白再重拍一次標定板。
+    """
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[COCO18_KEYPOINT_NAMES.index("right_wrist")] = [200.0, 40.0]
+    left_pts = left.points.copy()
+    left_pts[COCO18_KEYPOINT_NAMES.index("right_wrist")] = [260.0, 300.0]
+    conf = np.full(NUM_KEYPOINTS, 0.9, np.float32)
+    m = measure_posture(
+        _calib(), PersonKeypoints(left_pts, conf), PersonKeypoints(broken, conf)
+    )
+
+    warnings = plausibility_warnings(m)
+    assert m.max_abs_vertical_disparity_px > 3.0
+    disparity_warnings = [w for w in warnings if "垂直視差" in w]
+    assert len(disparity_warnings) == 1
+    assert "right_wrist" in disparity_warnings[0]
+    assert "不影響這一次的角度" in disparity_warnings[0]
+
+
+def test_a_bad_angle_keypoint_is_reported_as_untrustworthy():
+    """同樣的偏移落在角度用到的點上，講法要完全不同。"""
+    left, right = _project(_seated_pose())
+    shifted = right.points.copy()
+    shifted[COCO18_KEYPOINT_NAMES.index("right_shoulder"), 1] += 25.0
+    m = measure_posture(_calib(), left, PersonKeypoints(shifted, right.confidences))
+
+    warning = next(w for w in plausibility_warnings(m) if "垂直視差" in w)
+    assert "right_shoulder" in warning
+    assert "角度不可信" in warning
+
+
+def test_negative_depth_is_named_as_a_pairing_error_not_a_scale_error():
+    """深度為負代表點在相機後方，跟 --square-size-mm 填錯是兩回事。"""
+    left, right = _project(_seated_pose())
+    swapped = right.points.copy()
+    i = COCO18_KEYPOINT_NAMES.index("right_wrist")
+    swapped[i] = [900.0, 300.0]
+    left_pts = left.points.copy()
+    left_pts[i] = [100.0, 300.0]
+    conf = np.full(NUM_KEYPOINTS, 0.9, np.float32)
+    m = measure_posture(
+        _calib(), PersonKeypoints(left_pts, conf), PersonKeypoints(swapped, conf)
+    )
+
+    assert m.keypoints_3d.points[i, 2] < 0
+    warning = next(w for w in plausibility_warnings(m) if "合理區間" in w)
+    assert "相機後方" in warning
+    assert "square-size-mm" not in warning

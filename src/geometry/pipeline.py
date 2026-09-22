@@ -38,6 +38,8 @@ _EAR_SHOULDER_MM = 170.0
 # 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
 # 因為那代表連平均都救不太回來，該做的是坐近一點。
 _THETA_CA_THRESHOLD_DEG = 10.0
+# θ_CA 與 θ_sym 實際用到的四個點。品質指標落在這幾點上才會影響角度。
+_ANGLE_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
 
 
 @dataclass
@@ -203,9 +205,17 @@ def format_measurement(
         _cell("深度範圍", 17)
         + ("—" if depth is None else f"{depth[0]:.0f} ~ {depth[1]:.0f} mm")
     )
-    worst = measurement.max_abs_vertical_disparity_px
+    # 分開印。整體最大常常落在手腕、腳踝這些角度用不到的點上，
+    # 只印一個數字會讓人以為是標定有問題。
+    worst_all = _worst_disparity(measurement)
     lines.append(
-        _cell("最大垂直視差", 17) + ("—" if worst is None else f"{worst:.2f} px")
+        _cell("最大垂直視差", 17)
+        + ("—" if worst_all is None else f"{worst_all[1]:.2f} px（{worst_all[0]}）")
+    )
+    worst_angle = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    lines.append(
+        _cell("  角度用到的點", 17)
+        + ("—" if worst_angle is None else f"{worst_angle[1]:.2f} px（{worst_angle[0]}）")
     )
     if measurement.theta_ca_precision_deg is not None:
         lines.append(
@@ -230,27 +240,71 @@ def format_measurement(
     return "\n".join(lines)
 
 
+def _worst_disparity(
+    measurement: PostureMeasurement, names: tuple[str, ...] | None = None
+) -> tuple[str, float] | None:
+    """垂直視差最大的那個關鍵點與它的數值。names 限定只看某幾個點。"""
+    candidates = names or COCO18_KEYPOINT_NAMES
+    worst: tuple[str, float] | None = None
+    for name in candidates:
+        d = measurement.vertical_disparity_px[COCO18_KEYPOINT_NAMES.index(name)]
+        if not np.isfinite(d):
+            continue
+        if worst is None or abs(d) > worst[1]:
+            worst = (name, abs(float(d)))
+    return worst
+
+
+def _implausible_depth_names(measurement: PostureMeasurement) -> list[str]:
+    low, high = _PLAUSIBLE_DEPTH_MM
+    bad = []
+    for i, name in enumerate(COCO18_KEYPOINT_NAMES):
+        z = measurement.keypoints_3d.points[i, 2]
+        if np.isfinite(z) and not (low <= z <= high):
+            bad.append(f"{name} {z:.0f}mm")
+    return bad
+
+
 def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
-    """回報真實資料上看得出來的異常。這些都不會讓程式出錯，只會讓結果悄悄變錯。"""
+    """回報真實資料上看得出來的異常。這些都不會讓程式出錯，只會讓結果悄悄變錯。
+
+    異常要分成兩類來看。落在角度用到的那四個點上，角度本身就不能信；
+    落在手腕、腳踝這些點上，多半是自底向上的關聯把左右兩張影像的同一個肢體
+    連到了不同位置，角度不受影響。兩者混在一起報，標定明明已經夠準，
+    看到的卻還是一行「垂直視差 38px」，會讓人白白再去重拍一次標定板。
+    """
     warnings: list[str] = []
 
-    worst = measurement.max_abs_vertical_disparity_px
-    if worst is not None and worst > _MAX_VERTICAL_DISPARITY_PX:
+    worst_angle = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    worst_all = _worst_disparity(measurement)
+    if worst_angle is not None and worst_angle[1] > _MAX_VERTICAL_DISPARITY_PX:
         warnings.append(
-            f"校正後的垂直視差最大 {worst:.1f} px（應 <{_MAX_VERTICAL_DISPARITY_PX}）。"
-            f"對極線校正後左右的 y 應該幾乎相同，差這麼多代表標定不夠準、"
-            f"或左右眼配對到不同的人體部位"
+            f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f} px"
+            f"（應 <{_MAX_VERTICAL_DISPARITY_PX}）。對極線校正後左右的 y 應該幾乎相同，"
+            f"差這麼多代表標定不夠準，或這個點左右配對到了不同位置。角度不可信"
+        )
+    elif worst_all is not None and worst_all[1] > _MAX_VERTICAL_DISPARITY_PX:
+        warnings.append(
+            f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f} px（應 <{_MAX_VERTICAL_DISPARITY_PX}），"
+            f"這個點左右配對錯了。角度用到的點都在門檻內，所以不影響這一次的角度，"
+            f"但它會汙染深度範圍這類整體指標"
         )
 
-    depth = measurement.depth_range_mm
-    if depth is not None:
+    bad_depths = _implausible_depth_names(measurement)
+    if bad_depths:
         low, high = _PLAUSIBLE_DEPTH_MM
-        if depth[0] < low or depth[1] > high:
-            warnings.append(
-                f"深度範圍 {depth[0]:.0f}~{depth[1]:.0f} mm 超出桌前坐姿的合理區間"
-                f"（{low:.0f}~{high:.0f} mm）。多半是左右配對錯誤，"
-                f"或標定時的 --square-size-mm 填錯導致整體尺度不對"
-            )
+        listed = "、".join(bad_depths[:4])
+        more = f" 等 {len(bad_depths)} 個點" if len(bad_depths) > 4 else ""
+        negative = any(d.endswith("mm") and float(d.split()[1][:-2]) < 0 for d in bad_depths)
+        reason = (
+            "深度為負代表算出來的點在相機後方，只可能是左右配對錯誤"
+            if negative
+            else "整體偏掉通常是標定時的 --square-size-mm 填錯造成尺度不對"
+        )
+        warnings.append(
+            f"{listed}{more} 的深度超出桌前坐姿的合理區間"
+            f"（{low:.0f}~{high:.0f} mm）。{reason}"
+        )
 
     precision = measurement.theta_ca_precision_deg
     if precision is not None and precision > _THETA_CA_THRESHOLD_DEG:
