@@ -66,7 +66,9 @@ def anatomical_axes(keypoints_3d: PersonKeypoints3D) -> tuple[np.ndarray, np.nda
 def theta_ca(keypoints_3d: PersonKeypoints3D, side: str = "right") -> float:
     """頸椎前傾角：肩膀→耳朵向量(ear - shoulder)投影到矢狀面後相對垂直軸的帶號夾角。
 
-    正負號：耳朵在肩膀正上方是0°，**頭往前伸（朝相機方向）為正**，往後仰為負。
+    正負號：耳朵在肩膀正上方是0°，**頭往受試者自己的前方伸為正**，往後仰為負。
+    這裡的前方由雙肩連線決定，與相機架在哪一側無關——早期版本寫成「朝相機方向」，
+    那只有在相機正對受試者時才成立。
     前作以 >10° 判定頭部前傾姿勢，對應的就是正值這一側。
     這個方向性是用atan2而非arccos的唯一理由，判定邏輯要靠它區分前傾與後仰。
 

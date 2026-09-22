@@ -38,8 +38,11 @@ _EAR_SHOULDER_MM = 170.0
 # 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
 # 因為那代表連平均都救不太回來，該做的是坐近一點。
 _THETA_CA_THRESHOLD_DEG = 10.0
-# θ_CA 與 θ_sym 實際用到的四個點。品質指標落在這幾點上才會影響角度。
-_ANGLE_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
+# 角度實際用到的點。θ_CA 預設取右側（right_ear + right_shoulder），
+# θ_sym 與解剖平面取雙肩。left_ear 不在裡面：預設參數下沒有任何角度用到它，
+# 放進來的話它配對錯誤就會誤報成「角度不可信」。
+# 改用 theta_ca(side="left") 時要連同這裡一起調整。
+_ANGLE_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder")
 
 
 @dataclass
@@ -109,8 +112,12 @@ def estimate_theta_ca_precision_deg(
     σ_d 是**視差**的誤差，等於 √2·σ_px：視差是左右兩次像素量測的差。
     外層再一個 √2 是因為耳朵與肩膀各有一份誤差。
 
-    蒙地卡羅（3000 次、1px 高斯雜訊、620mm）對照，誤差在 10% 以內：
-    方位角 0° 解析式 ±10.8° 對模擬 ±10.0°，90° 是 ±0.7° 對 ±0.9°。
+    與蒙地卡羅對照過（3000 次、1px 高斯雜訊、620mm、耳肩距 170mm，
+    也就是這個函式用的同一組參數），誤差在 20% 以內：
+
+        方位角      0°      30°     45°     60°     75°     90°
+        解析式    ±7.60°  ±6.59°  ±5.39°  ±3.83°  ±2.03°  ±0.52°
+        模擬      ±7.14°  ±6.98°  ±5.96°  ±4.29°  ±2.16°  ±0.63°
     """
     fx = float(calib.P1[0, 0])
     baseline = calib.baseline_mm
@@ -132,9 +139,9 @@ def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float:
     由雙肩連線與相機 X 軸的夾角算出。雙肩取不到時回傳 0，
     也就是當成正面——那是 θ_CA 精度最差的情況，估計誤差時取保守值。
     """
+    # 雙肩取不到時 anatomical_axes 會退回相機的 X 軸，算出來剛好是 0 度，
+    # 不需要另外判斷。取絕對值是因為左右兩側對精度的影響相同。
     lateral, _ = anatomical_axes(keypoints_3d)
-    if keypoints_3d.get("left_shoulder") is None or keypoints_3d.get("right_shoulder") is None:
-        return 0.0
     cos_alpha = abs(float(np.dot(lateral, np.array([1.0, 0.0, 0.0]))))
     return float(np.degrees(np.arccos(np.clip(cos_alpha, 0.0, 1.0))))
 
@@ -279,7 +286,7 @@ def _worst_disparity(
     measurement: PostureMeasurement, names: tuple[str, ...] | None = None
 ) -> tuple[str, float] | None:
     """垂直視差最大的那個關鍵點與它的數值。names 限定只看某幾個點。"""
-    candidates = names or COCO18_KEYPOINT_NAMES
+    candidates = COCO18_KEYPOINT_NAMES if names is None else names
     worst: tuple[str, float] | None = None
     for name in candidates:
         d = measurement.vertical_disparity_px[COCO18_KEYPOINT_NAMES.index(name)]
@@ -290,13 +297,14 @@ def _worst_disparity(
     return worst
 
 
-def _implausible_depth_names(measurement: PostureMeasurement) -> list[str]:
+def _implausible_depths(measurement: PostureMeasurement) -> list[tuple[str, float]]:
+    """深度落在合理區間外的關鍵點與它的深度值。"""
     low, high = _PLAUSIBLE_DEPTH_MM
-    bad = []
+    bad: list[tuple[str, float]] = []
     for i, name in enumerate(COCO18_KEYPOINT_NAMES):
-        z = measurement.keypoints_3d.points[i, 2]
+        z = float(measurement.keypoints_3d.points[i, 2])
         if np.isfinite(z) and not (low <= z <= high):
-            bad.append(f"{name} {z:.0f}mm")
+            bad.append((name, z))
     return bad
 
 
@@ -325,15 +333,14 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
             f"但它會汙染深度範圍這類整體指標"
         )
 
-    bad_depths = _implausible_depth_names(measurement)
+    bad_depths = _implausible_depths(measurement)
     if bad_depths:
         low, high = _PLAUSIBLE_DEPTH_MM
-        listed = "、".join(bad_depths[:4])
+        listed = "、".join(f"{name} {z:.0f}mm" for name, z in bad_depths[:4])
         more = f" 等 {len(bad_depths)} 個點" if len(bad_depths) > 4 else ""
-        negative = any(d.endswith("mm") and float(d.split()[1][:-2]) < 0 for d in bad_depths)
         reason = (
             "深度為負代表算出來的點在相機後方，只可能是左右配對錯誤"
-            if negative
+            if any(z < 0 for _, z in bad_depths)
             else "整體偏掉通常是標定時的 --square-size-mm 填錯造成尺度不對"
         )
         warnings.append(

@@ -125,11 +125,14 @@ def _run_live(args) -> None:
             sym = measurement.theta_sym_deg
             distance = measurement.reference_depth_mm
             precision = measurement.theta_ca_precision_deg
-            # 誤差也一起印，調整座位時可以直接看著這個數字找位置
+            azimuth = measurement.camera_azimuth_deg
+            # 距離、方位角與誤差一起印。找架設位置時要看的就是這三個：
+            # 方位角推大誤差會降，推到 θ_sym 算不出來就是遠側肩膀被擋住，該退回來。
             print(
                 f"\rθ_CA {'  —  ' if ca is None else f'{ca:+6.1f}°'}"
                 f"   θ_sym {'  —  ' if sym is None else f'{sym:+6.1f}°'}"
                 f"   距離 {'—' if distance is None else f'{distance:4.0f}mm'}"
+                f"   方位 {'—' if azimuth is None else f'{azimuth:3.0f}°'}"
                 f"   誤差 {'—' if precision is None else f'±{precision:4.1f}°'}"
                 f"   共同點 {measurement.shared_count:2d}   ",
                 end="", flush=True,

@@ -326,3 +326,39 @@ def test_azimuth_is_measured_from_the_shoulders():
 
     assert camera_azimuth_deg(measure_posture(_calib(), *_project(_seated_pose())).keypoints_3d) \
         == pytest.approx(0.0, abs=0.5)
+
+
+def test_a_bad_left_ear_does_not_discredit_the_angles():
+    """left_ear 在預設參數下沒有任何角度用到——θ_CA 取右側、θ_sym 取雙肩。
+
+    把它放進「角度用到的點」會讓它配對錯誤時誤報成角度不可信，
+    而實際上兩個角度都不受影響。
+    """
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[COCO18_KEYPOINT_NAMES.index("left_ear"), 1] += 40.0
+    m = measure_posture(_calib(), left, PersonKeypoints(broken, right.confidences))
+
+    warning = next(w for w in plausibility_warnings(m) if "垂直視差" in w)
+    assert "left_ear" in warning
+    assert "角度不可信" not in warning
+    assert m.theta_ca_deg is not None and m.theta_sym_deg is not None
+
+
+def test_depth_warning_survives_a_rename_of_the_display_format():
+    """判斷深度為負要看數值，不能去剖析自己格式化出來的字串。"""
+    from geometry.pipeline import _implausible_depths
+
+    left, right = _project(_seated_pose())
+    m = measure_posture(_calib(), left, right)
+    assert _implausible_depths(m) == []
+
+
+def test_worst_disparity_with_an_empty_selection_returns_nothing():
+    """空的名單代表沒有要看的點，不該退回全部 18 點。"""
+    from geometry.pipeline import _worst_disparity
+
+    left, right = _project(_seated_pose())
+    m = measure_posture(_calib(), left, right)
+    assert _worst_disparity(m, ()) is None
+    assert _worst_disparity(m) is not None
