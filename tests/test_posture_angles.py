@@ -145,3 +145,81 @@ def test_theta_sym_is_near_zero_not_180_for_a_person_facing_the_camera():
     })
     value = theta_sym(kp)
     assert abs(value) < 45.0, f"算出 {value:.1f}°，接近±180°代表左右肩向量取反了"
+
+
+def _rotate_about_vertical(kp: PersonKeypoints3D, degrees: float) -> PersonKeypoints3D:
+    """把整個人繞垂直軸轉一個角度，相當於把相機挪到另一個方位。"""
+    a = np.radians(degrees)
+    R = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+    centre = np.array([0.0, 0.0, 600.0])
+    points = kp.points.copy()
+    valid = ~np.isnan(points).any(axis=1)
+    points[valid] = (points[valid] - centre) @ R.T + centre
+    return PersonKeypoints3D(points=points)
+
+
+def _upright_pose(theta_ca_deg: float = 15.0, tilt_deg: float = 6.0) -> PersonKeypoints3D:
+    drop = 180.0 * np.sin(np.radians(tilt_deg))
+    span = 180.0 * np.cos(np.radians(tilt_deg))
+    right_sho = np.array([-span, -drop, 600.0])
+    left_sho = np.array([span, +drop, 600.0])
+    lean = 120.0 * np.sin(np.radians(theta_ca_deg))
+    fall = 120.0 * np.cos(np.radians(theta_ca_deg))
+    return _make_keypoints3d({
+        "right_shoulder": right_sho,
+        "left_shoulder": left_sho,
+        "right_ear": right_sho + np.array([0.0, -fall, -lean]),
+        "left_ear": left_sho + np.array([0.0, -fall, -lean]),
+    })
+
+
+def test_both_angles_are_unchanged_when_the_camera_moves_around_the_subject():
+    """把相機從正面挪到側面，角度不應該跟著變。
+
+    文件寫的正確性前提是「相機大致水平，不限制方位角」，而程式一度拿相機的 X 軸
+    當左右方向，等於偷偷把方位角要求加了回來。解剖平面改由雙肩連線定義之後，
+    雙目模組架在哪個方位都一樣。
+    """
+    base = _upright_pose()
+    reference_ca = theta_ca(base)
+    reference_sym = theta_sym(base)
+
+    for azimuth in (-60.0, -30.0, 15.0, 45.0, 80.0):
+        rotated = _rotate_about_vertical(base, azimuth)
+        assert theta_ca(rotated) == pytest.approx(reference_ca, abs=1e-6), f"方位角 {azimuth}"
+        assert theta_sym(rotated) == pytest.approx(reference_sym, abs=1e-6), f"方位角 {azimuth}"
+
+
+def test_a_camera_axis_sagittal_plane_would_inflate_the_shoulder_angle():
+    """把錯誤的作法算出來，確認它真的會錯，而且錯的量級與 1/cos(方位角) 相符。
+
+    這是前作 sin(45°) 的同一類係數換了個位置：補償了深度壓縮，卻仍用相機軸
+    定義解剖平面的話，方位角會重新混進角度裡。
+    """
+    from geometry.angles import signed_angle_in_plane
+
+    base = _upright_pose(tilt_deg=6.0)
+    rotated = _rotate_about_vertical(base, 45.0)
+    left = rotated.get("left_shoulder")
+    right = rotated.get("right_shoulder")
+
+    camera_axis_result = signed_angle_in_plane(
+        left - right, np.array([1.0, 0.0, 0.0]), plane_normal=np.array([0.0, 0.0, 1.0])
+    )
+    assert theta_sym(rotated) == pytest.approx(6.0, abs=1e-6)
+    # tan(量到的) = tan(真值)/cos(45°)
+    expected_inflated = np.degrees(np.arctan(np.tan(np.radians(6.0)) / np.cos(np.radians(45.0))))
+    assert camera_axis_result == pytest.approx(expected_inflated, abs=1e-6)
+    assert camera_axis_result > 8.0
+
+
+def test_falls_back_to_the_camera_axes_when_a_shoulder_is_missing():
+    """只有單邊肩膀時無從定義解剖平面，退回相機軸並維持原本的正負號慣例。"""
+    shoulder = np.array([0.0, 0.0, 600.0])
+    lean = 120.0 * np.sin(np.radians(15.0))
+    fall = 120.0 * np.cos(np.radians(15.0))
+    kp = _make_keypoints3d({
+        "right_shoulder": shoulder,
+        "right_ear": shoulder + np.array([0.0, -fall, -lean]),
+    })
+    assert theta_ca(kp) == pytest.approx(15.0, abs=1e-6)
