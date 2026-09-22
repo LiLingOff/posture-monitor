@@ -20,7 +20,7 @@ from pose.keypoints import PersonKeypoints
 from pose.topology import COCO18_KEYPOINT_NAMES
 
 from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
-from .posture_angles import theta_ca, theta_sym
+from .posture_angles import anatomical_axes, theta_ca, theta_sym
 from .triangulation import rectified_vertical_disparity
 
 # 桌前坐姿的合理深度範圍。超出這個範圍多半是配對錯誤或標定尺度不對，
@@ -51,6 +51,7 @@ class PostureMeasurement:
     theta_sym_deg: float | None = None
     theta_ca_precision_deg: float | None = None
     reference_depth_mm: float | None = None
+    camera_azimuth_deg: float | None = None
     angle_errors: list[str] = field(default_factory=list)
 
     @property
@@ -90,24 +91,52 @@ def reference_depth_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
 def estimate_theta_ca_precision_deg(
     calib: StereoCalibrationResult,
     depth_mm: float,
+    azimuth_deg: float = 0.0,
     keypoint_noise_px: float = _KEYPOINT_NOISE_PX,
 ) -> float:
-    """在這個距離下，單幀 θ_CA 的預期誤差（度）。
+    """這個距離與這個相機方位下，單幀 θ_CA 的預期誤差（度）。
 
-    θ_CA 量的是耳朵與肩膀的深度差，而深度來自視差：Z = fx·B/d。
-    微分後 σ_Z = Z²·σ_d/(fx·B)——**誤差隨距離平方成長**。
-    兩個關鍵點各有一份誤差，所以深度差的誤差是 √2 倍。
+    θ_CA 量的是耳朵相對肩膀往前伸多少，而「往前」在相機座標系裡落在哪個軸，
+    取決於雙目模組架在受試者的哪個方位。兩個軸的精度差了一個數量級：
 
-    這個數字決定了整個系統在多遠的距離還能用。實機參數（fx 568、基線 60mm）下，
-    500mm 時單幀誤差約 3.5°，1900mm 時是 50°——後者遠超過 10° 的判定門檻，
-    算出來的角度沒有意義。座位距離是使用者唯一能立刻改變的因素。
+    - 深度軸：σ_Z = Z²·σ_d/(fx·B)，隨距離平方成長。620mm 下約 16mm。
+    - 影像平面（左右）軸：σ_X = Z·σ_px/fx，只隨距離線性成長。620mm 下約 1.1mm。
+
+    兩者的比值就是 Z/B，620mm 配 60mm 基線是 10 倍。所以相機架在正面時
+    「往前伸」完全落在最差的深度軸上，架在側面則完全落在最好的影像平面軸上。
+    方位角 α 的組合誤差是 √((cos α·σ_Z)² + (sin α·σ_X)²)。
+
+    σ_d 是**視差**的誤差，等於 √2·σ_px：視差是左右兩次像素量測的差。
+    外層再一個 √2 是因為耳朵與肩膀各有一份誤差。
+
+    蒙地卡羅（3000 次、1px 高斯雜訊、620mm）對照，誤差在 10% 以內：
+    方位角 0° 解析式 ±10.8° 對模擬 ±10.0°，90° 是 ±0.7° 對 ±0.9°。
     """
     fx = float(calib.P1[0, 0])
     baseline = calib.baseline_mm
     if fx <= 0 or baseline <= 0 or depth_mm <= 0:
         return float("inf")
-    sigma_z = depth_mm**2 * keypoint_noise_px / (fx * baseline)
-    return float(np.degrees(np.sqrt(2) * sigma_z / _EAR_SHOULDER_MM))
+
+    sigma_disparity = np.sqrt(2.0) * keypoint_noise_px
+    sigma_depth = depth_mm**2 * sigma_disparity / (fx * baseline)
+    sigma_lateral = depth_mm * keypoint_noise_px / fx
+
+    alpha = np.radians(azimuth_deg)
+    sigma_forward = np.hypot(np.cos(alpha) * sigma_depth, np.sin(alpha) * sigma_lateral)
+    return float(np.degrees(np.sqrt(2) * sigma_forward / _EAR_SHOULDER_MM))
+
+
+def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float:
+    """雙目模組相對受試者正面的方位角（0~90度）。0是正面、90是正側面。
+
+    由雙肩連線與相機 X 軸的夾角算出。雙肩取不到時回傳 0，
+    也就是當成正面——那是 θ_CA 精度最差的情況，估計誤差時取保守值。
+    """
+    lateral, _ = anatomical_axes(keypoints_3d)
+    if keypoints_3d.get("left_shoulder") is None or keypoints_3d.get("right_shoulder") is None:
+        return 0.0
+    cos_alpha = abs(float(np.dot(lateral, np.array([1.0, 0.0, 0.0]))))
+    return float(np.degrees(np.arccos(np.clip(cos_alpha, 0.0, 1.0))))
 
 
 def measure_posture(
@@ -128,9 +157,10 @@ def measure_posture(
     )
 
     measurement.reference_depth_mm = reference_depth_mm(keypoints_3d)
+    measurement.camera_azimuth_deg = camera_azimuth_deg(keypoints_3d)
     if measurement.reference_depth_mm is not None:
         measurement.theta_ca_precision_deg = estimate_theta_ca_precision_deg(
-            calib, measurement.reference_depth_mm
+            calib, measurement.reference_depth_mm, measurement.camera_azimuth_deg
         )
 
     # 缺關鍵點或資料退化都會拋例外。一個角度算不出來不該影響另一個，
@@ -217,6 +247,11 @@ def format_measurement(
         _cell("  角度用到的點", 17)
         + ("—" if worst_angle is None else f"{worst_angle[1]:.2f} px（{worst_angle[0]}）")
     )
+    if measurement.camera_azimuth_deg is not None:
+        lines.append(
+            _cell("相機方位角", 17)
+            + f"{measurement.camera_azimuth_deg:.0f}°（0 是正面、90 是正側面）"
+        )
     if measurement.theta_ca_precision_deg is not None:
         lines.append(
             _cell("θ_CA 單幀誤差", 17)
@@ -309,10 +344,16 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
     precision = measurement.theta_ca_precision_deg
     if precision is not None and precision > _THETA_CA_THRESHOLD_DEG:
         distance = measurement.reference_depth_mm or 0.0
+        azimuth = measurement.camera_azimuth_deg or 0.0
+        advice = (
+            "深度誤差隨距離的平方成長，坐近一點會有幫助"
+            if azimuth > 60.0
+            else "把雙目模組往側面移比坐近更有效：正面時「往前伸」完全落在深度軸上，"
+            "側面則落在影像平面上，兩者精度差了 Z/B 倍"
+        )
         warnings.append(
-            f"距離 {distance:.0f} mm，θ_CA 單幀誤差約 ±{precision:.1f}°，"
-            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。"
-            f"深度誤差隨距離的平方成長，坐到 600 mm 左右就能降到 ±5° 以內"
+            f"距離 {distance:.0f} mm、方位角 {azimuth:.0f}°，θ_CA 單幀誤差約 ±{precision:.1f}°，"
+            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。{advice}"
         )
 
     if measurement.shared_count < 4:

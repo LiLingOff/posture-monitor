@@ -282,3 +282,47 @@ def test_negative_depth_is_named_as_a_pairing_error_not_a_scale_error():
     warning = next(w for w in plausibility_warnings(m) if "合理區間" in w)
     assert "相機後方" in warning
     assert "square-size-mm" not in warning
+
+
+def test_side_mounting_is_an_order_of_magnitude_better_for_theta_ca():
+    """θ_CA 量的是往前伸多少，而「往前」落在哪個軸由相機方位決定。
+
+    正面時它完全落在深度軸（σ_Z 隨距離平方成長），側面時落在影像平面
+    （σ_X 只隨距離線性成長），兩者差 Z/B 倍。620mm 配 60mm 基線就是 10 倍。
+    這個差距比坐近一點能得到的改善大得多，卻一度完全沒有反映在估計值裡。
+    """
+    from geometry.pipeline import estimate_theta_ca_precision_deg
+
+    calib = _calib()
+    frontal = estimate_theta_ca_precision_deg(calib, 620.0, azimuth_deg=0.0)
+    side = estimate_theta_ca_precision_deg(calib, 620.0, azimuth_deg=90.0)
+    assert frontal / side > 8.0
+    # 中間的方位角要落在兩者之間，而且靠近正面那側改善有限
+    oblique = estimate_theta_ca_precision_deg(calib, 620.0, azimuth_deg=30.0)
+    assert side < oblique < frontal
+    assert oblique > 0.8 * frontal, "30 度只換到很小的改善，不該看起來像解決了問題"
+
+
+def test_disparity_noise_is_larger_than_keypoint_noise():
+    """視差是左右兩次像素量測的差，所以 σ_d = √2·σ_px。
+
+    早期版本把關鍵點雜訊直接當成視差雜訊，整個精度估計低估了 √2 倍——
+    600mm 正面算出 ±5° 而實際接近 ±7°，對 10° 的門檻來說是有意義的差別。
+    蒙地卡羅（3000 次、1px 雜訊、620mm、正面）量到 ±10.0°，解析式給 ±10.8°。
+    """
+    from geometry.pipeline import estimate_theta_ca_precision_deg
+
+    calib = _calib()
+    fx, baseline = float(calib.P1[0, 0]), calib.baseline_mm
+    depth = 620.0
+    naive = np.degrees(np.sqrt(2) * depth**2 * 1.0 / (fx * baseline) / 170.0)
+    assert estimate_theta_ca_precision_deg(calib, depth) == pytest.approx(
+        np.sqrt(2) * naive, rel=1e-9
+    )
+
+
+def test_azimuth_is_measured_from_the_shoulders():
+    from geometry.pipeline import camera_azimuth_deg
+
+    assert camera_azimuth_deg(measure_posture(_calib(), *_project(_seated_pose())).keypoints_3d) \
+        == pytest.approx(0.0, abs=0.5)
