@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
@@ -23,6 +24,9 @@ from calibration.capture import (_open_camera,  # noqa: E402
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import (format_measurement,  # noqa: E402
                                measure_posture, unusable_reason)
+from geometry.baseline import (BaselineCollector,  # noqa: E402
+                               PostureBaseline)
+from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -117,6 +121,11 @@ def _run_live(args) -> None:
         raise RuntimeError("讀取相機影格失敗")
     print(f"載入模型（{args.precision} / {args.device}）", flush=True)
     engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
+
+    baseline = _load_baseline(args)
+    log = MeasurementLog(args.log, subject=args.subject) if args.log else None
+    if log is not None:
+        print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
     print("要看的是平均值，不是單幀——單幀誤差與判定門檻同量級", flush=True)
 
@@ -129,24 +138,109 @@ def _run_live(args) -> None:
                 measurement, _, _ = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
                 _print_line(str(exc))
+                if log is not None:
+                    log.write(None, reject_reason=str(exc))
                 continue
 
             reason = unusable_reason(measurement)
-            if reason is not None:
+            corrected = _corrected(baseline, measurement)
+            if reason is None:
+                if corrected[0] is not None:
+                    ca_window.add(corrected[0])
+                if corrected[1] is not None:
+                    sym_window.add(corrected[1])
+            else:
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
-                _print_line(_live_line(ca_window, sym_window, measurement, rejected, reason))
-                continue
-            if measurement.theta_ca_deg is not None:
-                ca_window.add(measurement.theta_ca_deg)
-            if measurement.theta_sym_deg is not None:
-                sym_window.add(measurement.theta_sym_deg)
-            _print_line(_live_line(ca_window, sym_window, measurement, rejected, None))
+
+            _print_line(_live_line(ca_window, sym_window, measurement, rejected, reason))
+            if log is not None:
+                log.write(
+                    measurement, reject_reason=reason, corrected=corrected,
+                    ca_mean=ca_window.mean, sym_mean=sym_window.mean,
+                    ca_standard_error=ca_window.standard_error,
+                )
     except KeyboardInterrupt:
         print()
-        _print_summary(ca_window, sym_window, rejected)
+        _print_summary(ca_window, sym_window, rejected, baseline)
+        if log is not None:
+            print(f"已記錄 {log.frames_written} 幀到 {log.path}")
+    finally:
+        if log is not None:
+            log.close()
+        cap.release()
+
+
+def _load_baseline(args) -> PostureBaseline | None:
+    if not args.baseline:
+        print("沒有指定個人基準，印出的是原始角度。", flush=True)
+        print("判定門檻套在原始角度上會因人而異，正式量測前先跑一次 "
+              "python posture.py baseline", flush=True)
+        return None
+    baseline = PostureBaseline.load(args.baseline)
+    print(baseline.describe(), flush=True)
+    print("以下的角度都已扣除這個基準，也就是相對這個人端正坐姿的偏移量", flush=True)
+    return baseline
+
+
+def _corrected(baseline: PostureBaseline | None, measurement):
+    """有基準就扣掉，沒有就原樣傳回，讓下游不必分兩種情況處理。"""
+    if baseline is None:
+        return measurement.theta_ca_deg, measurement.theta_sym_deg
+    return baseline.correct(measurement.theta_ca_deg, measurement.theta_sym_deg)
+
+
+def _run_baseline(args) -> None:
+    """請受試者坐正保持不動，取這段時間的平均當作他的零點。"""
+    calib = StereoCalibrationResult.load(args.calibration)
+    engine = _build_engine(args)
+    cap = _open_camera(args.camera, args.width, args.height)
+    if not cap.isOpened():
+        raise RuntimeError(describe_camera_open_failure(args.camera))
+
+    collector = BaselineCollector()
+    try:
+        _discard_frames(cap, args.discard)
+        ok, frame = cap.read()
+        if not ok:
+            raise RuntimeError("讀取相機影格失敗")
+        _step(f"載入模型（{args.precision} / {args.device}）")
+        engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
+
+        print()
+        print(f"請 {args.subject} 坐正、目視前方、雙肩放鬆，保持不動 {args.seconds:.0f} 秒。")
+        for remaining in range(args.countdown, 0, -1):
+            print(f"\r{remaining} 秒後開始…", end="", flush=True)
+            time.sleep(1.0)
+        print("\r開始取樣，請保持不動        ", flush=True)
+
+        start = time.perf_counter()
+        while (elapsed := time.perf_counter() - start) < args.seconds:
+            try:
+                measurement, _, _ = _measure_once(engine, calib, cap, args)
+            except RuntimeError as exc:
+                _print_line(str(exc))
+                continue
+            reason = collector.add(measurement)
+            _print_line(
+                f"剩下 {args.seconds - elapsed:4.1f} 秒   已收 {collector.count:3d} 幀"
+                + (f"   略過 {collector.rejected}" if collector.rejected else "")
+                + (f"   （{reason}）" if reason else "")
+            )
+        print()
     finally:
         cap.release()
+
+    baseline = collector.finish(args.subject, time.perf_counter() - start)
+    print()
+    print(baseline.describe())
+    for warning in collector.quality_warnings(baseline):
+        print(f"  需要注意：{warning}")
+
+    baseline.save(args.out)
+    print()
+    print(f"已存到 {args.out}。之後這樣用：")
+    print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
 
 
 def _print_line(text: str) -> None:
@@ -185,8 +279,12 @@ def _live_line(
     )
 
 
-def _print_summary(ca_window: RollingAngle, sym_window: RollingAngle, rejected: int) -> None:
+def _print_summary(
+    ca_window: RollingAngle, sym_window: RollingAngle, rejected: int,
+    baseline: PostureBaseline | None = None,
+) -> None:
     """結束時把整段的統計印出來，這才是可以記錄下來的數字。"""
+    print("相對個人基準的偏移量：" if baseline else "原始角度（未扣除個人基準）：")
     for name, window in (("θ_CA ", ca_window), ("θ_sym", sym_window)):
         if window.mean is None:
             print(f"{name}  沒有可用的量測")
@@ -202,7 +300,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="端到端坐姿量測")
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    for name, help_text in (("once", "量測一次並印出完整診斷"), ("live", "持續量測，只印角度")):
+    modes = (
+        ("once", "量測一次並印出完整診斷"),
+        ("live", "持續量測，印移動平均"),
+        ("baseline", "請受試者坐正保持不動，取個人基準（θ_offset）"),
+    )
+    for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--calibration", type=Path,
                        default=Path("data/calibration_output/stereo.npz"))
@@ -235,6 +338,22 @@ def main() -> None:
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
+        if name in ("live", "baseline"):
+            p.add_argument("--subject", default="受試者",
+                           help="受試者代號，寫進基準檔與 CSV")
+        if name == "live":
+            p.add_argument("--baseline", type=Path, default=None,
+                           help="個人基準檔，由 baseline 子指令產生。"
+                                "指定之後印出的是相對這個人端正坐姿的偏移量")
+            p.add_argument("--log", type=Path, default=None,
+                           help="把每一幀寫成 CSV，含被略過的幀。"
+                                "事後分析與 Kinovea 對標都需要這份原始資料")
+        if name == "baseline":
+            p.add_argument("--out", type=Path, default=Path("data/baselines/baseline.json"))
+            p.add_argument("--seconds", type=float, default=10.0,
+                           help="取樣長度。實機約 6.4fps，10 秒約 60 幀")
+            p.add_argument("--countdown", type=int, default=3,
+                           help="開始前的倒數秒數，讓受試者坐定")
 
     args = parser.parse_args()
     if not args.calibration.is_file():
@@ -245,10 +364,7 @@ def main() -> None:
     # live 沒有這個選項，補一個預設值讓兩條路徑共用同一個 args
     args.all_keypoints = getattr(args, "all_keypoints", False)
 
-    if args.mode == "once":
-        _run_once(args)
-    else:
-        _run_live(args)
+    {"once": _run_once, "live": _run_live, "baseline": _run_baseline}[args.mode](args)
 
 
 if __name__ == "__main__":
