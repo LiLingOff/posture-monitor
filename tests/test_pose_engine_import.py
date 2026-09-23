@@ -1,4 +1,4 @@
-"""確認pose.engine在沒有安裝torch的環境下也能import——
+"""確認pose.engine在沒有安裝torch的環境下也能import。
 torch的import都延遲到LightweightOpenPoseEngine的方法內部才執行。
 """
 from pathlib import Path
@@ -79,7 +79,7 @@ def test_missing_cuda_message_names_the_jetson_wheel_and_the_cpu_fallback():
 def test_engine_cache_path_includes_the_input_size(tmp_path):
     """每個輸入尺寸一個TensorRT engine，快取檔名要帶尺寸才不會互相覆蓋。
 
-    正面相機 2560x720 補邊後是 912x256，雙目單眼 1280x720 是 456x256——
+    正面相機 2560x720 補邊後是 912x256，雙目單眼 1280x720 是 456x256。
     同一次執行就會同時用到兩種，共用一個檔名的話後者會蓋掉前者。
     """
     engine = LightweightOpenPoseEngine(_paths(tmp_path), precision="fp32")

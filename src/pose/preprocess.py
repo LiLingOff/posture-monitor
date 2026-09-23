@@ -1,7 +1,7 @@
 """Lightweight OpenPose 的前處理與座標還原。
 
 前處理照該repo的 demo.py::infer_fast 與 val.py::pad_width 實作：
-依高度等比例縮放，再補邊到stride的整數倍。等比例縮放這點很重要——
+依高度等比例縮放，再補邊到stride的整數倍。等比例縮放這點很重要。
 先前配合trt_pose的寫法是直接拉成正方形，模型看到的人體是變形的。
 
 兩個容易寫錯而且不會報錯的地方：
@@ -98,7 +98,7 @@ def refine_peak_subpixel(heatmap: np.ndarray, x: int, y: int) -> tuple[float, fl
     """用拋物線內插把熱圖峰值精修到次像素，回傳(x, y)。
 
     上游的 extract_keypoints 取的是整數 argmax，所以關鍵點只能落在熱圖網格上。
-    換算回原始畫面後，這個網格的間距是 (stride/upsample_ratio)/scale 個像素——
+    換算回原始畫面後，這個網格的間距是 (stride/upsample_ratio)/scale 個像素。
     2560x720 的設定下是 5.6px。對 2D 顯示無所謂，對雙目三角測量是致命的：
     視差只能跳著走，深度跟著以數百mm為單位跳動，而耳朵與肩膀的深度差只有幾十mm。
 

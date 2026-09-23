@@ -94,7 +94,7 @@ def _gaussian_heatmap(cx: float, cy: float, n: int = 21, sigma: float = 1.5) -> 
 def test_subpixel_refinement_recovers_the_true_peak():
     """整數argmax最多差半格；熱圖一格在2560x720下是5.6個原始像素。
 
-    這對2D顯示無所謂，對雙目三角測量是致命的——視差只能跳著走，
+    這對2D顯示無所謂，對雙目三角測量是致命的：視差只能跳著走，
     深度就跟著以數百mm為單位跳動，而耳肩深度差只有幾十mm。
     """
     from pose.preprocess import refine_peak_subpixel

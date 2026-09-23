@@ -1,7 +1,7 @@
 """檢視雙目標定結果並做合理性驗算。
 
 RMS 重投影誤差只說明標定在內部自洽，說不出參數本身合不合理。
-這裡做的是另一類檢查：拿標定結果去對照「這組硬體應該長什麼樣」——
+這裡做的是另一類檢查：拿標定結果去對照「這組硬體應該長什麼樣」。
 剛性雙目模組的兩顆鏡頭應該幾乎平行、平移應該幾乎只有 X 分量、
 像素應該接近正方形、光心應該落在畫面中央附近。
 任何一項明顯不對，代表標定收斂到了一個內部自洽但物理上錯誤的解。
@@ -74,7 +74,7 @@ def sanity_checks(
               axis_ratio > 0.95),
         Check("左右眼順序",
               f"T_x={tx:+.2f} mm，第二台相機在第一台的{'右' if tx < 0 else '左'}側"
-              + ("" if tx < 0 else "——可能左右顛倒，考慮 --swap-lr"),
+              + ("" if tx < 0 else "，可能左右顛倒，考慮 --swap-lr"),
               tx < 0),
         Check("左右焦距一致", f"fx 左{fx_l:.1f} / 右{fx_r:.1f}（同型鏡頭應相近）",
               abs(fx_l - fx_r) / max(fx_l, fx_r) < 0.05),
@@ -123,7 +123,7 @@ def format_report(calib: StereoCalibrationResult, target_error_px: float = 0.5) 
     lines.append("")
     if failed:
         lines.append(f"有 {len(failed)} 項不符預期。RMS 低只代表內部自洽，")
-        lines.append("這些項目對不上時，標定可能收斂到了物理上錯誤的解——建議重拍。")
+        lines.append("這些項目對不上時，標定可能收斂到了物理上錯誤的解，建議重拍。")
     else:
         lines.append("全部通過。基線長度請再與雙目模組的規格書對照：")
         lines.append("差距若是固定比例，通常是 --square-size-mm 填錯了同樣的比例。")

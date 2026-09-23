@@ -76,7 +76,7 @@ def _run_compare_precision(args: argparse.Namespace) -> None:
     if skipped:
         print(f"有{skipped}/{len(frames)}張影格沒有偵測到人，已略過")
     if not fp32_results:
-        raise RuntimeError("所有取樣影格都沒有偵測到人，無法比對——請確認受試者位於畫面內、光線是否足夠")
+        raise RuntimeError("所有取樣影格都沒有偵測到人，無法比對。請確認受試者位於畫面內、光線是否足夠")
 
     mean_rmse, passed = compare_precision_rmse(fp32_results, fp16_results, args.rmse_threshold_px)
     chosen = "fp16" if passed else "fp32"
@@ -90,7 +90,7 @@ def main() -> None:
     bench_p = sub.add_parser("benchmark", help="單相機/多相機延遲基準測試")
     bench_p.add_argument("--precision", choices=["fp32", "fp16"], default="fp16")
     bench_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
-        help="cuda 或 cpu。Jetson 的 PyTorch 還沒弄好時，先用 cpu 搭配 --precision fp32 驗證流程——這個模型本來就是為 CPU 設計的")
+        help="cuda 或 cpu。Jetson 的 PyTorch 還沒弄好時，先用 cpu 搭配 --precision fp32 驗證流程，這個模型本來就是為 CPU 設計的")
     bench_p.add_argument(
         "--checkpoint",
         type=Path,

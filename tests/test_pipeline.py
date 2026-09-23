@@ -1,6 +1,6 @@
 """端到端量測：從左右兩組關鍵點到角度與品質指標。
 
-不需要相機或模型——直接餵已知的3D姿勢投影出來的關鍵點。
+不需要相機或模型，直接餵已知的3D姿勢投影出來的關鍵點。
 """
 import numpy as np
 import pytest
@@ -87,7 +87,7 @@ def test_vertical_disparity_is_near_zero_for_correct_correspondences():
 def test_flags_mismatched_correspondences():
     """左右配對到不同部位時垂直視差會變大。
 
-    三角測量不會因此報錯——它只會取兩條不相交視線的最近點，
+    三角測量不會因此報錯，它只會取兩條不相交視線的最近點，
     照樣給出一個數量級正常的3D座標，所以這是唯一的線索。
     """
     left, right = _project(_seated_pose())
@@ -306,7 +306,7 @@ def test_side_mounting_is_an_order_of_magnitude_better_for_theta_ca():
 def test_disparity_noise_is_larger_than_keypoint_noise():
     """視差是左右兩次像素量測的差，所以 σ_d = √2·σ_px。
 
-    早期版本把關鍵點雜訊直接當成視差雜訊，整個精度估計低估了 √2 倍——
+    早期版本把關鍵點雜訊直接當成視差雜訊，整個精度估計低估了 √2 倍。
     600mm 正面算出 ±5° 而實際接近 ±7°，對 10° 的門檻來說是有意義的差別。
     蒙地卡羅（3000 次、1px 雜訊、620mm、正面）量到 ±10.0°，解析式給 ±10.8°。
     """
@@ -329,7 +329,7 @@ def test_azimuth_is_measured_from_the_shoulders():
 
 
 def test_a_bad_left_ear_does_not_discredit_the_angles():
-    """left_ear 在預設參數下沒有任何角度用到——θ_CA 取右側、θ_sym 取雙肩。
+    """left_ear 在預設參數下沒有任何角度用到：θ_CA 取右側、θ_sym 取雙肩。
 
     把它放進「角度用到的點」會讓它配對錯誤時誤報成角度不可信，
     而實際上兩個角度都不受影響。
@@ -373,7 +373,7 @@ def test_rejects_the_frame_that_reports_the_best_error_for_the_worst_data():
     """2026-09-23 實機錄到距離 74mm 配誤差 ±0.1°。
 
     誤差公式只看距離，距離愈近算出來愈小，所以偵測失誤跑到近處時，
-    印出來的誤差數字反而最好看。這種幀一定要在進入平均前擋掉——
+    印出來的誤差數字反而最好看。這種幀一定要在進入平均前擋掉，
     靠數值大小是擋不住的，因為它的數值全部落在正常範圍。
     """
     from geometry.pipeline import unusable_reason

@@ -1,7 +1,7 @@
 """個人基準（θ_offset）。
 
 判定門檻不能直接套在原始角度上：頸部解剖結構因人而異，同樣坐得端正，
-兩個人量到的 θ_CA 可以差十幾度。基準取錯的後果比執行期單幀算錯嚴重——
+兩個人量到的 θ_CA 可以差十幾度。基準取錯的後果比執行期單幀算錯嚴重：
 執行期的雜訊會被平均掉，基準的偏差會固定留在之後每一次判定裡。
 """
 import numpy as np
@@ -139,7 +139,7 @@ def test_describe_names_the_conditions_it_was_taken_under():
 def test_refuses_to_overwrite_an_existing_baseline(tmp_path):
     """連續替幾位受試者取基準時很容易忘記換檔名。
 
-    蓋掉的話前一位的判定基準就沒了，而且不會有任何跡象——
+    蓋掉的話前一位的判定基準就沒了，而且不會有任何跡象：
     檔案還在，內容卻換成了另一個人的。
     """
     path = tmp_path / "b.json"

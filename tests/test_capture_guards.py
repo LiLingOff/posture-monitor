@@ -22,7 +22,7 @@ def _fill_with_images(directory: Path, count: int) -> None:
 
 @pytest.fixture
 def forbid_camera(monkeypatch):
-    """任何開啟相機的嘗試都直接讓測試失敗——用來證明提前返回時完全沒有存取硬體。"""
+    """任何開啟相機的嘗試都直接讓測試失敗，用來證明提前返回時完全沒有存取硬體。"""
 
     def _boom(index, width=None, height=None):
         raise AssertionError(f"不應開啟相機（index={index}）")
@@ -34,7 +34,7 @@ def test_capture_mono_returns_early_when_already_enough(tmp_path, forbid_camera,
     """張數已達標時要正常返回。
 
     沒有這個保護的話拍攝迴圈一次都不會執行，顯示最後一幀的變數從未被指派，
-    會以UnboundLocalError結束——重新執行同一條指令就會遇到。
+    會以UnboundLocalError結束，重新執行同一條指令就會遇到。
     """
     out_dir = tmp_path / "front"
     _fill_with_images(out_dir, 40)
@@ -202,7 +202,7 @@ def test_stereo_grabs_both_cameras_before_retrieving(tmp_path, monkeypatch, auto
     """左右要先各自grab再retrieve。
 
     串著呼叫read()的話，兩張畫面會差到一個影格間隔加上解碼時間，板子只要有位移
-    就會污染外參R/T——而重投影誤差不會變差，看不出來。
+    就會污染外參R/T，而重投影誤差不會變差，看不出來。
     """
     left_out, right_out = tmp_path / "l", tmp_path / "r"
     order = []

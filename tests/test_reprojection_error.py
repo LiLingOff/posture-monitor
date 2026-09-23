@@ -84,7 +84,7 @@ def test_rms_matches_opencv_when_corner_counts_differ(tmp_path):
     """ChArUco每張角點數不同時，總RMS仍要與cv2.calibrateCamera一致。
 
     總RMS的定義是sqrt(所有角點誤差平方和/角點總數)，所以各張的per-view RMS
-    必須依該張角點數加權。直接取平均只有在每張角點數相同時才正確——棋盤格成立，
+    必須依該張角點數加權。直接取平均只有在每張角點數相同時才正確。棋盤格成立，
     ChArUco不成立，而ChArUco正是這個專案實際使用的路徑。
     直接平均在這組資料會低估約4%，角點少的視角被放大了權重。
     """

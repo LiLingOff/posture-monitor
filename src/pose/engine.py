@@ -99,7 +99,7 @@ class LightweightOpenPoseEngine:
     def _check_topology_matches(self) -> None:
         """核對模型自己的關鍵點順序與pose/topology.py是否一致。
 
-        兩邊順序不同的話所有關鍵點會整組錯位，而且不會有任何錯誤訊息——
+        兩邊順序不同的話所有關鍵點會整組錯位，而且不會有任何錯誤訊息。
         耳朵的座標被當成肩膀，算出來的角度仍然落在正常範圍。
         這次從trt_pose換過來，順序本來就變了（neck從索引17移到索引1），
         所以這個核對比先前更有必要。

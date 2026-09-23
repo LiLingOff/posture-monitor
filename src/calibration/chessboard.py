@@ -66,7 +66,7 @@ def ensure_uniform_size(images: Sequence[tuple[Path, np.ndarray]]) -> tuple[int,
 
     內參fx/fy/cx/cy的單位是像素、綁定於當時的解析度。資料夾裡混到不同解析度的影像
     （換過拍攝模式、舊檔案沒清乾淨）時，擬合出來的參數沒有意義，
-    而OpenCV只會照算不會抱怨——這正是最難察覺的一類錯誤。
+    而OpenCV只會照算不會抱怨，這正是最難察覺的一類錯誤。
     """
     if not images:
         raise ValueError("沒有可用的影像")

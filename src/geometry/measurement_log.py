@@ -1,6 +1,6 @@
 """逐幀記錄成 CSV。
 
-找人來坐二十分鐘，結束時終端機只剩最後一行——要做 Kinovea 對標、要算準確率、
+找人來坐二十分鐘，結束時終端機只剩最後一行。要做 Kinovea 對標、要算準確率、
 要在報告裡放任何一張圖，都需要逐幀的原始資料。
 
 **被略過的幀也要記錄。** 略過率本身就是結果的一部分（偵測在什麼條件下會失效），
@@ -36,7 +36,7 @@ _COLUMNS = (
 
 
 def _number(value, digits: int = 3):
-    """None 一律寫成空字串，不要寫 0——0 是合法的角度值。"""
+    """None 一律寫成空字串，不要寫 0，因為 0 是合法的角度值。"""
     return "" if value is None else round(float(value), digits)
 
 
@@ -51,7 +51,7 @@ class MeasurementLog:
         self._path = Path(path)
         if self._path.exists() and not overwrite:
             raise FileExistsError(
-                f"{self._path} 已經存在。一次量測要跑二十分鐘，蓋掉就沒了——"
+                f"{self._path} 已經存在。一次量測要跑二十分鐘，蓋掉就沒了。"
                 f"換個檔名，或確定要覆蓋的話加上 --overwrite"
             )
         self._path.parent.mkdir(parents=True, exist_ok=True)

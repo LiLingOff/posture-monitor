@@ -1,6 +1,6 @@
 """測試用：合成雙目標定結果與3D點投影，供三角測量驗證用。
 
-與tests/synthetic.py不同——那份是homography-based，假設標的物是平面(Z=0)，
+與tests/synthetic.py不同。那份是homography-based，假設標的物是平面(Z=0)，
 三角測量要驗證的是任意非共平面的3D點，因此這裡直接用cv2.projectPoints合成。
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ def make_synthetic_stereo_calibration(
     """零畸變、純X軸平移基線，第二台相機位於第一台右側baseline_mm處。
 
     T是「把第一台相機座標系的點轉到第二台」的平移。第二台在右側b mm時，
-    第一台的原點在它眼中落在x=-b，所以T_x是負的——這與OpenCV的
+    第一台的原點在它眼中落在x=-b，所以T_x是負的，這與OpenCV的
     stereoCalibrate在真實左右並排模組上算出來的正負號一致。
     """
     dist = np.zeros(5)

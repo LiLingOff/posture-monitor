@@ -66,7 +66,7 @@ class PostureBaseline:
         if path.exists() and not overwrite:
             raise FileExistsError(
                 f"{path} 已經存在。連續替幾位受試者取基準時很容易忘記換檔名，"
-                f"蓋掉的話前一位的判定基準就沒了——換個檔名，"
+                f"蓋掉的話前一位的判定基準就沒了。換個檔名，"
                 f"或確定要覆蓋的話加上 --overwrite"
             )
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,7 +97,7 @@ class PostureBaseline:
 class BaselineCollector:
     """把一段時間內的量測收集起來，算出這個人的零點。
 
-    壞幀要在這裡就擋掉。基準算錯的後果比執行期單幀算錯嚴重得多——
+    壞幀要在這裡就擋掉。基準算錯的後果比執行期單幀算錯嚴重得多：
     執行期的雜訊會被平均掉，基準的偏差會固定地留在之後每一次判定裡。
     """
 

@@ -96,7 +96,7 @@ def test_flags_off_centre_principal_point():
 
 
 def test_report_mentions_the_square_size_trap_when_all_pass():
-    """全通過時要提醒基線還得跟規格書對照——尺度錯了這些檢查都抓不到。"""
+    """全通過時要提醒基線還得跟規格書對照，因為尺度錯了這些檢查都抓不到。"""
     report = format_report(_calib())
     assert "square-size-mm" in report
     assert "規格書" in report

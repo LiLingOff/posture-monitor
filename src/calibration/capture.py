@@ -30,7 +30,7 @@ def _own_processes_holding(node: Path) -> list[str]:
 
     掃 /proc 而不是呼叫 fuser，因為 fuser 不一定裝得到，而且這段是在錯誤處理
     路徑上跑的，不該再依賴外部指令。別的使用者的程序看不到（需要 root），
-    所以查不到不代表沒有人佔著——訊息裡要講清楚這件事。
+    所以查不到不代表沒有人佔著，訊息裡要講清楚這件事。
     """
     holders = []
     try:
@@ -53,7 +53,7 @@ def _own_processes_holding(node: Path) -> list[str]:
 def describe_camera_open_failure(index: int) -> str:
     """相機開不起來時，實際去查一遍再回報。
 
-    這件事在同一台機器上時好時壞，光給一份檢查清單沒有用——清單上的每一項
+    這件事在同一台機器上時好時壞，光給一份檢查清單沒有用。清單上的每一項
     使用者都得自己跑一次，而其中兩項程式當場就查得到。所以這裡直接看
     /dev/videoN 在不在、權限夠不夠、本使用者有沒有別的程序開著它，
     把查得到的講成事實，查不到的才留成待確認項目。
@@ -82,7 +82,7 @@ def describe_camera_open_failure(index: int) -> str:
             )
             lines.append(f"       python posture.py live --camera {available[0][len('video'):]} ...")
         else:
-            lines.append("  一個 /dev/video* 都沒有——裝置沒接上，或 USB 沒認到。用 dmesg | tail -30 看看。")
+            lines.append("  一個 /dev/video* 都沒有。裝置沒接上，或 USB 沒認到。用 dmesg | tail -30 看看。")
         return "\n".join(lines)
 
     lines.append(f"  /dev/video{index} 存在。")
@@ -188,7 +188,7 @@ def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
         return
     print(
         f"[警告] 畫面{w}x{h}，{axis}只有{ratio:.2f}，不像{layout}的雙目輸出（應該>={threshold}）。"
-        f"這張很可能是單眼視角——切成兩半會得到兩塊不重疊的畫面，標定無法取得足夠的共同角點。"
+        f"這張很可能是單眼視角，切成兩半會得到兩塊不重疊的畫面，標定無法取得足夠的共同角點。"
         f"用 --width/--height 指定相機的並排模式解析度"
     )
 
@@ -216,7 +216,7 @@ def _summarize_side_by_side(
 
     同一個實際模式可能由好幾個要求解析度達成：例如要求2560x960時驅動給2560x720，
     而2560x720本身又是直接要得到的。只要有任何一次是直接要到的，這個模式就是
-    原生支援，不能被後來的退回結果覆蓋掉——否則會把原生模式標成退回模式，
+    原生支援，不能被後來的退回結果覆蓋掉。覆蓋掉的話會把原生模式標成退回模式，
     剛好誤導掉「優先選原生支援」這條挑選原則。
     """
     stereo: dict[tuple[int, int], tuple[float, bool]] = {}
@@ -233,7 +233,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     """逐一測試各種解析度，印出相機實際提供的畫面尺寸與張數率。
 
     用途是在v4l2-ctl列不出格式、或不確定哪個模式才是左右並排時，直接向相機查詢。
-    判斷依據是cap.read()實際取得的frame.shape，而非cap.get()回報的值——
+    判斷依據是cap.read()實際取得的frame.shape，而非cap.get()回報的值，
     驅動回報值與實際提供的畫面不一致是常態。
 
     同時量測張數率，因為USB 2.0頻寬有限，高解析度的並排模式常常只剩個位數fps，
@@ -300,7 +300,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
     print("挑選原則：")
     print("  1. 優先選擇驅動原生支援的模式，不要選退回來的")
     print("  2. fps 要足夠即時監測使用；解析度再高，關鍵點偵測也會先等比例縮放到高度 256 才輸入網路")
-    print("  3. 標定與執行時必須使用同一個解析度——內參 fx/fy/cx/cy 的數值綁定於解析度，")
+    print("  3. 標定與執行時必須使用同一個解析度。內參 fx/fy/cx/cy 的數值綁定於解析度，")
     print("     更換解析度後舊的標定參數就失效，而且不會出現錯誤訊息")
 
 
@@ -350,7 +350,7 @@ def _reject_mismatched_existing_images(out_dir: Path, expected: tuple[int, int])
     """既有影像的尺寸與這次要拍的不同時直接拒絕。
 
     換過解析度之後資料夾裡還留著舊影像是很容易發生的事，而張數檢查只數數量、
-    看不出這件事——工具會說「已有N張，跳過拍攝」，接著標定就在錯誤解析度的影像上
+    看不出這件事。工具會說「已有N張，跳過拍攝」，接著標定就在錯誤解析度的影像上
     算出一組內參。內參綁定於解析度，用錯了不會有任何外顯症狀。
     """
     found = _existing_image_size(out_dir)
@@ -371,7 +371,7 @@ def _already_complete(
     沒有這個檢查的話，拍攝迴圈一次都不會執行，後面要顯示最後一幀的變數
     就從未被指派，會以UnboundLocalError結束。
 
-    expected_size有給的話會先核對既有影像的尺寸，對不上直接拒絕——
+    expected_size有給的話會先核對既有影像的尺寸，對不上直接拒絕，
     只數張數的話，換過解析度卻沒清資料夾就會沿用到舊影像。
     """
     if expected_size is not None:
@@ -714,7 +714,7 @@ def capture_stereo_charuco(
     width: int | None = None,
     height: int | None = None,
 ) -> None:
-    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時使用這個函式——
+    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時使用這個函式。
     不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存檔。
     """
     left_out.mkdir(parents=True, exist_ok=True)
@@ -911,7 +911,7 @@ def main() -> None:
     stereo_p.add_argument(
         "--charuco",
         action="store_true",
-        help="用ChArUco板取代一般棋盤格——雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時使用",
+        help="用ChArUco板取代一般棋盤格，適用於雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時使用",
     )
     stereo_p.add_argument("--squares-x", type=int, default=10, help="ChArUco板橫向方格數")
     stereo_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")

@@ -129,7 +129,7 @@ def _run_live(args) -> None:
     if log is not None:
         print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
-    print("要看的是平均值，不是單幀——單幀誤差與判定門檻同量級", flush=True)
+    print("要看的是平均值，不是單幀。單幀誤差與判定門檻同量級", flush=True)
 
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
@@ -249,7 +249,7 @@ def _print_line(text: str) -> None:
     """原地更新一行，裁到終端機的實際寬度。
 
     這一行放不下時終端機會折行，而 CR 只退到最後一行的開頭，畫面就變成
-    一串接不起來的殘句。要按顯示寬度裁——中文一個字佔兩欄，用字元數裁的話
+    一串接不起來的殘句。要按顯示寬度裁，因為中文一個字佔兩欄，用字元數裁的話
     留下來的字數雖然對，佔用的欄數是兩倍，照樣會折行。被略過的那些幀
     印的是中文原因，正好是最長、最容易超出的一種。
     """
@@ -258,7 +258,7 @@ def _print_line(text: str) -> None:
 
 
 def _angle_text(window: RollingAngle, instant: float | None) -> str:
-    """平均值擺前面，單幀值放在括號裡——要看的是平均。"""
+    """平均值擺前面，單幀值放在括號裡，要看的是平均。"""
     mean = window.mean
     error = window.standard_error
     if mean is None:

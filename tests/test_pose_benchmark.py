@@ -66,7 +66,7 @@ def test_compare_precision_rmse_raises_on_length_mismatch():
 
 
 def test_measure_latency_raises_when_frames_not_more_than_warmup():
-    """影格數不足會讓timings是空的，np.mean(空陣列)回傳nan——寧可直接拋出例外也不要印出nan。"""
+    """影格數不足會讓timings是空的，np.mean(空陣列)回傳nan，寧可直接拋出例外也不要印出nan。"""
     engine = FakeEngine(make_base_points())
     with pytest.raises(ValueError):
         measure_latency(engine, [_DUMMY_FRAME] * 3, warmup=3)

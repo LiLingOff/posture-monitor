@@ -112,7 +112,7 @@ def test_points_at_the_group_when_permissions_are_missing(linux, monkeypatch):
 
 
 def test_falls_back_to_root_only_checks_when_nothing_local_explains_it(linux, monkeypatch):
-    """查得到的都正常時，才把剩下的列成待確認——而不是一開始就丟一張清單。"""
+    """查得到的都正常時，才把剩下的列成待確認，而不是一開始就丟一張清單。"""
     monkeypatch.setattr(linux.Path, "exists", lambda self: True)
     monkeypatch.setattr(linux.os, "access", lambda *a: True)
     monkeypatch.setattr(linux, "_own_processes_holding", lambda node: [])
