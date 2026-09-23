@@ -282,6 +282,33 @@ def format_measurement(
     return "\n".join(lines)
 
 
+def unusable_reason(measurement: PostureMeasurement) -> str | None:
+    """這一幀能不能拿來用；不能的話回傳一句話說明原因，可以就回傳 None。
+
+    實機上約每十幀就有一兩幀是偵測失誤，而失誤的結果不會是明顯的錯誤，
+    是一組看起來正常的數字。2026-09-23 那次錄到的例子：深度 −291mm
+    （點在相機後方）、方位角 89°（模組整場沒動過）、距離 74mm。
+
+    最後那個最危險：誤差公式只看距離，距離愈近算出來的誤差愈小，
+    所以那一幀印出的是「誤差 ±0.1°」——資料最壞的時候，誤差數字最好看。
+    這種幀一定要在進入平均之前擋掉，靠數值大小是擋不住的。
+    """
+    depth = measurement.reference_depth_mm
+    low, high = _PLAUSIBLE_DEPTH_MM
+    if depth is None:
+        return "沒有可用的耳朵或肩膀深度"
+    if not (low <= depth <= high):
+        return f"深度 {depth:.0f}mm 落在桌前坐姿的合理範圍外（{low:.0f}~{high:.0f}mm）"
+
+    worst = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    if worst is not None and worst[1] > _MAX_VERTICAL_DISPARITY_PX:
+        return f"{worst[0]} 的垂直視差 {worst[1]:.1f}px，左右配對錯了"
+
+    if measurement.shared_count < 4:
+        return f"左右只有 {measurement.shared_count} 個共同關鍵點"
+    return None
+
+
 def _worst_disparity(
     measurement: PostureMeasurement, names: tuple[str, ...] | None = None
 ) -> tuple[str, float] | None:

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -20,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from calibration.capture import (_open_camera,  # noqa: E402
                                  describe_camera_open_failure, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
-from geometry.pipeline import format_measurement, measure_posture  # noqa: E402
+from geometry.pipeline import (format_measurement,  # noqa: E402
+                               measure_posture, unusable_reason)
+from geometry.smoothing import RollingAngle  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
 
@@ -114,34 +117,85 @@ def _run_live(args) -> None:
         raise RuntimeError("讀取相機影格失敗")
     print(f"載入模型（{args.precision} / {args.device}）", flush=True)
     engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
-    print("開始量測，Ctrl-C 結束", flush=True)
+    print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
+    print("要看的是平均值，不是單幀——單幀誤差與判定門檻同量級", flush=True)
+
+    ca_window = RollingAngle(args.window)
+    sym_window = RollingAngle(args.window)
+    rejected = 0
     try:
         while True:
             try:
                 measurement, _, _ = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
-                print(f"\r{exc}", end="", flush=True)
+                _print_line(str(exc))
                 continue
-            ca = measurement.theta_ca_deg
-            sym = measurement.theta_sym_deg
-            distance = measurement.reference_depth_mm
-            precision = measurement.theta_ca_precision_deg
-            azimuth = measurement.camera_azimuth_deg
-            # 距離、方位角與誤差一起印。找架設位置時要看的就是這三個：
-            # 方位角推大誤差會降，推到 θ_sym 算不出來就是遠側肩膀被擋住，該退回來。
-            print(
-                f"\rθ_CA {'  —  ' if ca is None else f'{ca:+6.1f}°'}"
-                f"   θ_sym {'  —  ' if sym is None else f'{sym:+6.1f}°'}"
-                f"   距離 {'—' if distance is None else f'{distance:4.0f}mm'}"
-                f"   方位 {'—' if azimuth is None else f'{azimuth:3.0f}°'}"
-                f"   誤差 {'—' if precision is None else f'±{precision:4.1f}°'}"
-                f"   共同點 {measurement.shared_count:2d}   ",
-                end="", flush=True,
-            )
+
+            reason = unusable_reason(measurement)
+            if reason is not None:
+                # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
+                rejected += 1
+                _print_line(_live_line(ca_window, sym_window, measurement, rejected, reason))
+                continue
+            if measurement.theta_ca_deg is not None:
+                ca_window.add(measurement.theta_ca_deg)
+            if measurement.theta_sym_deg is not None:
+                sym_window.add(measurement.theta_sym_deg)
+            _print_line(_live_line(ca_window, sym_window, measurement, rejected, None))
     except KeyboardInterrupt:
         print()
+        _print_summary(ca_window, sym_window, rejected)
     finally:
         cap.release()
+
+
+def _print_line(text: str) -> None:
+    """原地更新一行，並裁到終端機寬度。
+
+    加了欄位之後這一行超出終端機寬度，換行之後 \\r 只退到該行開頭，
+    畫面就變成一串接不起來的殘句。
+    """
+    width = shutil.get_terminal_size(fallback=(100, 24)).columns - 1
+    print(f"\r{text[:width]:<{width}}", end="", flush=True)
+
+
+def _angle_text(window: RollingAngle, instant: float | None) -> str:
+    """平均值擺前面，單幀值放在括號裡——要看的是平均。"""
+    mean = window.mean
+    error = window.standard_error
+    if mean is None:
+        return "   —  "
+    shown = f"{mean:+5.1f}" + (f"±{error:.1f}" if error is not None else "     ")
+    return f"{shown}(單幀{instant:+5.1f})" if instant is not None else f"{shown}(單幀  — )"
+
+
+def _live_line(
+    ca_window: RollingAngle, sym_window: RollingAngle, measurement, rejected: int, reason
+) -> str:
+    if reason is not None:
+        return f"略過這一幀：{reason}（已略過 {rejected} 幀）"
+    distance = measurement.reference_depth_mm
+    azimuth = measurement.camera_azimuth_deg
+    return (
+        f"θ_CA {_angle_text(ca_window, measurement.theta_ca_deg)}"
+        f"  θ_sym {_angle_text(sym_window, measurement.theta_sym_deg)}"
+        f"  {distance:4.0f}mm {azimuth:2.0f}°"
+        f"  {ca_window.count:2d}/{ca_window.window}幀"
+        + (f"  略過{rejected}" if rejected else "")
+    )
+
+
+def _print_summary(ca_window: RollingAngle, sym_window: RollingAngle, rejected: int) -> None:
+    """結束時把整段的統計印出來，這才是可以記錄下來的數字。"""
+    for name, window in (("θ_CA ", ca_window), ("θ_sym", sym_window)):
+        if window.mean is None:
+            print(f"{name}  沒有可用的量測")
+            continue
+        spread = f"，單幀標準差 ±{window.std:.1f}°" if window.std is not None else ""
+        error = f" ± {window.standard_error:.1f}°" if window.standard_error is not None else ""
+        print(f"{name}  {window.mean:+.2f}°{error}（{window.count} 幀{spread}）")
+    if rejected:
+        print(f"略過 {rejected} 幀偵測失誤")
 
 
 def main() -> None:
@@ -175,6 +229,9 @@ def main() -> None:
                             "主要瓶頸），代價是推論變慢；384或512值得一試")
         p.add_argument("--no-subpixel", action="store_true",
                        help="關掉熱圖峰值的次像素精修，用來量化它的影響")
+        p.add_argument("--window", type=int, default=30,
+                       help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
+                            "平均N幀把雜訊降到1/√N；30幀約5秒")
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")

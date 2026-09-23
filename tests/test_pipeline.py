@@ -362,3 +362,56 @@ def test_worst_disparity_with_an_empty_selection_returns_nothing():
     m = measure_posture(_calib(), left, right)
     assert _worst_disparity(m, ()) is None
     assert _worst_disparity(m) is not None
+
+
+def _at_depth(scale: float):
+    pose = {k: np.array([v[0], v[1], v[2] * scale]) for k, v in _seated_pose().items()}
+    return _project(pose)
+
+
+def test_rejects_the_frame_that_reports_the_best_error_for_the_worst_data():
+    """2026-09-23 實機錄到距離 74mm 配誤差 ±0.1°。
+
+    誤差公式只看距離，距離愈近算出來愈小，所以偵測失誤跑到近處時，
+    印出來的誤差數字反而最好看。這種幀一定要在進入平均前擋掉——
+    靠數值大小是擋不住的，因為它的數值全部落在正常範圍。
+    """
+    from geometry.pipeline import unusable_reason
+
+    left, right = _at_depth(74.0 / 600.0)
+    m = measure_posture(_calib(), left, right)
+
+    assert m.theta_ca_precision_deg < 1.0, "誤差確實看起來很漂亮"
+    reason = unusable_reason(m)
+    assert reason is not None and "深度" in reason
+
+
+def test_rejects_points_triangulated_behind_the_camera():
+    """深度 −291mm：實機錄到的另一種失誤，θ_CA 跟著印出 −169°。"""
+    from geometry.pipeline import unusable_reason
+
+    left, right = _project(_seated_pose())
+    swapped = right.points.copy()
+    for name in ("right_ear", "right_shoulder", "left_shoulder", "left_ear"):
+        swapped[COCO18_KEYPOINT_NAMES.index(name), 0] += 400.0
+    m = measure_posture(_calib(), left, PersonKeypoints(swapped, right.confidences))
+
+    assert unusable_reason(m) is not None
+
+
+def test_accepts_an_ordinary_seated_frame():
+    from geometry.pipeline import unusable_reason
+
+    left, right = _project(_seated_pose())
+    assert unusable_reason(measure_posture(_calib(), left, right)) is None
+
+
+def test_rejection_reason_names_what_was_wrong():
+    """略過的理由要講得出來，否則使用者只會看到幀數一直被吃掉。"""
+    from geometry.pipeline import unusable_reason
+
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[COCO18_KEYPOINT_NAMES.index("right_shoulder"), 1] += 30.0
+    reason = unusable_reason(measure_posture(_calib(), left, PersonKeypoints(broken, right.confidences)))
+    assert reason is not None and "right_shoulder" in reason
