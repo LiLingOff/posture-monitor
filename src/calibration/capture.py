@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,33 +15,99 @@ from .chessboard import ChessboardSpec, find_corners
 _MIN_SHARED_CHARUCO_CORNERS = 6
 
 
+def _video_nodes() -> list[str]:
+    """目前存在的 /dev/videoN，依編號排序。"""
+    nodes = []
+    for path in Path("/dev").glob("video*"):
+        suffix = path.name[len("video"):]
+        if suffix.isdigit():
+            nodes.append((int(suffix), path.name))
+    return [name for _, name in sorted(nodes)]
+
+
+def _own_processes_holding(node: Path) -> list[str]:
+    """本使用者有哪些程序開著這個裝置，回傳 "pid 名稱" 的清單。
+
+    掃 /proc 而不是呼叫 fuser，因為 fuser 不一定裝得到，而且這段是在錯誤處理
+    路徑上跑的，不該再依賴外部指令。別的使用者的程序看不到（需要 root），
+    所以查不到不代表沒有人佔著——訊息裡要講清楚這件事。
+    """
+    holders = []
+    try:
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                for fd in (proc / "fd").iterdir():
+                    if fd.resolve() == node:
+                        name = (proc / "comm").read_text().strip()
+                        holders.append(f"pid {proc.name} ({name})")
+                        break
+            except OSError:
+                continue  # 程序結束了，或是別的使用者的
+    except OSError:
+        return []
+    return holders
+
+
 def describe_camera_open_failure(index: int) -> str:
-    """相機開不起來時該去看什麼。
+    """相機開不起來時，實際去查一遍再回報。
 
-    這件事在同一台機器上時好時壞，所以值得把診斷步驟寫進訊息裡而不是只說開不了。
-    Jetson 上遇過兩個原因，兩個都與程式無關，單看「無法開啟相機」查不出來：
+    這件事在同一台機器上時好時壞，光給一份檢查清單沒有用——清單上的每一項
+    使用者都得自己跑一次，而其中兩項程式當場就查得到。所以這裡直接看
+    /dev/videoN 在不在、權限夠不夠、本使用者有沒有別的程序開著它，
+    把查得到的講成事實，查不到的才留成待確認項目。
 
-    1. PhotonVision 服務在背景執行，開機自動啟動，會獨佔相機。
-       裝置還在、v4l2-ctl 也列得出來，就是開不了。
-    2. 一顆 UVC 雙目模組佔用兩個 /dev/videoN，只有編號較小的那個能取像；
-       重新插拔之後編號可能整組移位，原本的 index 就指到取不了像的那個節點。
+    Jetson 上已知的成因：PhotonVision 服務獨佔相機；重新插拔後 /dev/videoN
+    的編號整組移位（一顆 UVC 雙目模組佔兩個節點，只有編號小的那個能取像）；
+    前一次執行剛結束，核心還沒把 USB 介面放掉。
     """
     if not sys.platform.startswith("linux"):
         return (
             f"無法開啟相機 index={index}。確認裝置已接上，"
             f"並用 python -m src.calibration.capture probe --camera {index} 查詢可用模式"
         )
-    return (
-        f"無法開啟相機 index={index}。裝置存在卻開不了，多半是下列三者之一：\n"
-        f"  1. 有其他程式佔住相機。Jetson 上最常見的是 PhotonVision，它開機會自動啟動：\n"
-        f"       sudo fuser -v /dev/video{index}\n"
-        f"       sudo systemctl stop photonvision\n"
-        f"  2. 裝置節點編號變了。重新插拔之後編號會整組移位，\n"
-        f"     而一顆雙目模組佔用兩個節點、只有編號較小的那個能取像：\n"
-        f"       v4l2-ctl --list-devices\n"
-        f"  3. 使用者不在 video 群組：\n"
-        f"       groups | grep video    沒有的話 sudo usermod -aG video $USER 再重新登入"
+
+    node = Path(f"/dev/video{index}")
+    lines = [f"無法開啟相機 index={index}。當場查到的狀況："]
+
+    if not node.exists():
+        available = _video_nodes()
+        lines.append(f"  /dev/video{index} 不存在。")
+        if available:
+            lines.append(f"  目前存在的是 {'、'.join(available)}。")
+            lines.append(
+                "  重新插拔之後編號會整組移位。一顆雙目模組佔用兩個節點，"
+                "只有編號較小的那個能取像，所以要試的是上面編號最小的那個："
+            )
+            lines.append(f"       python posture.py live --camera {available[0][len('video'):]} ...")
+        else:
+            lines.append("  一個 /dev/video* 都沒有——裝置沒接上，或 USB 沒認到。用 dmesg | tail -30 看看。")
+        return "\n".join(lines)
+
+    lines.append(f"  /dev/video{index} 存在。")
+    if not os.access(node, os.R_OK | os.W_OK):
+        lines.append("  但沒有讀寫權限。使用者要加入 video 群組：")
+        lines.append("       sudo usermod -aG video $USER    加完要重新登入才生效")
+        return "\n".join(lines)
+    lines.append("  讀寫權限正常。")
+
+    holders = _own_processes_holding(node)
+    if holders:
+        lines.append(f"  有程序正開著它：{'、'.join(holders)}。先把它結束掉。")
+        return "\n".join(lines)
+
+    lines.append("  本使用者的程序沒有開著它，但別的使用者的看不到（需要 root）。接著查：")
+    for command, why in (
+        (f"sudo fuser -v /dev/video{index}", "誰佔著它"),
+        ("dmesg | tail -30", "USB 有沒有斷開重連"),
+    ):
+        lines.append(f"       {command:<34}{why}")
+    lines.append(
+        "  如果剛結束上一次執行就立刻重跑，核心可能還沒把 USB 介面放掉，"
+        "等一兩秒再試。"
     )
+    return "\n".join(lines)
 
 
 def describe_stereo_open_failure(

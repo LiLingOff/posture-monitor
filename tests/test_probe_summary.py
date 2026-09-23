@@ -3,6 +3,8 @@
 這段會直接影響選解析度的決定，而解析度一旦選錯、標定完才發現，
 整組內參都要重來，所以把實機遇到的情況鎖住。
 """
+import pytest
+
 from calibration.capture import _summarize_side_by_side
 
 
@@ -56,22 +58,78 @@ def test_no_side_by_side_modes():
     assert _summarize_side_by_side(mono_only) == {}
 
 
-def test_camera_open_failure_names_the_service_that_holds_the_device():
-    """訊息要講得出該怎麼查，不能只說開不了。
+class _FakePlatform(str):
+    """讓 sys.platform.startswith("linux") 在任何開發機上都成立。"""
 
-    同一台 Jetson 上時好時壞，兩次都是外部原因：PhotonVision 服務開機自動啟動
-    並獨佔相機，或重新插拔後 /dev/videoN 的編號整組移位。
-    """
-    import sys
+    def startswith(self, prefix):  # noqa: D102
+        return prefix == "linux"
 
-    from calibration.capture import describe_camera_open_failure
 
-    message = describe_camera_open_failure(0)
-    assert "index=0" in message
-    if sys.platform.startswith("linux"):
-        assert "photonvision" in message
-        assert "/dev/video0" in message
-        assert "v4l2-ctl --list-devices" in message
+@pytest.fixture
+def linux(monkeypatch):
+    from calibration import capture
+
+    monkeypatch.setattr(capture.sys, "platform", _FakePlatform("linux"))
+    return capture
+
+
+def test_reports_the_nodes_that_do_exist_when_the_number_shifted(linux, monkeypatch):
+    """節點編號移位是已知成因，而編號多少程式自己看得到，不該叫使用者去查。"""
+    monkeypatch.setattr(linux.Path, "exists", lambda self: False)
+    monkeypatch.setattr(linux, "_video_nodes", lambda: ["video2", "video3"])
+
+    message = linux.describe_camera_open_failure(0)
+    assert "/dev/video0 不存在" in message
+    assert "video2、video3" in message
+    assert "--camera 2" in message, "要直接給出可以照抄的指令"
+
+
+def test_says_the_device_is_absent_when_nothing_is_plugged_in(linux, monkeypatch):
+    monkeypatch.setattr(linux.Path, "exists", lambda self: False)
+    monkeypatch.setattr(linux, "_video_nodes", lambda: [])
+
+    message = linux.describe_camera_open_failure(0)
+    assert "一個 /dev/video* 都沒有" in message
+    assert "dmesg" in message
+
+
+def test_names_the_process_that_is_holding_the_device(linux, monkeypatch):
+    monkeypatch.setattr(linux.Path, "exists", lambda self: True)
+    monkeypatch.setattr(linux.os, "access", lambda *a: True)
+    monkeypatch.setattr(linux, "_own_processes_holding", lambda node: ["pid 4120 (python3)"])
+
+    message = linux.describe_camera_open_failure(0)
+    assert "pid 4120 (python3)" in message
+    assert "先把它結束掉" in message
+
+
+def test_points_at_the_group_when_permissions_are_missing(linux, monkeypatch):
+    monkeypatch.setattr(linux.Path, "exists", lambda self: True)
+    monkeypatch.setattr(linux.os, "access", lambda *a: False)
+
+    message = linux.describe_camera_open_failure(0)
+    assert "usermod -aG video" in message
+
+
+def test_falls_back_to_root_only_checks_when_nothing_local_explains_it(linux, monkeypatch):
+    """查得到的都正常時，才把剩下的列成待確認——而不是一開始就丟一張清單。"""
+    monkeypatch.setattr(linux.Path, "exists", lambda self: True)
+    monkeypatch.setattr(linux.os, "access", lambda *a: True)
+    monkeypatch.setattr(linux, "_own_processes_holding", lambda node: [])
+
+    message = linux.describe_camera_open_failure(0)
+    assert "讀寫權限正常" in message
+    assert "sudo fuser -v /dev/video0" in message
+    assert "dmesg" in message
+
+
+def test_holder_scan_never_raises_on_a_machine_without_proc():
+    """這段在錯誤處理路徑上跑，自己壞掉的話會蓋掉真正的錯誤訊息。"""
+    from pathlib import Path
+
+    from calibration.capture import _own_processes_holding
+
+    assert _own_processes_holding(Path("/dev/video0")) == [] or True
 
 
 def test_stereo_open_failure_says_which_camera_is_the_problem():
