@@ -52,7 +52,7 @@ def signed_angle_in_plane(
     _check_not_degenerate(vector, "輸入向量")
     v = vector - np.dot(vector, normal_unit) * normal_unit
     # 向量幾乎垂直於該平面時，投影後趨近0，這時的角度沒有意義；
-    # 無聲地回傳0度會被誤讀成完全沒有偏移，也就是最理想的姿勢
+    # 這時回傳0度會被讀成完全沒有偏移，也就是最理想的姿勢
     _check_not_degenerate(v, "向量投影到平面後")
 
     ref = reference_axis - np.dot(reference_axis, normal_unit) * normal_unit

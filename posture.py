@@ -28,6 +28,7 @@ from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline)
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
+from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
 
@@ -123,7 +124,8 @@ def _run_live(args) -> None:
     engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
 
     baseline = _load_baseline(args)
-    log = MeasurementLog(args.log, subject=args.subject) if args.log else None
+    log = (MeasurementLog(args.log, subject=args.subject, overwrite=args.overwrite)
+           if args.log else None)
     if log is not None:
         print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
@@ -237,20 +239,22 @@ def _run_baseline(args) -> None:
     for warning in collector.quality_warnings(baseline):
         print(f"  需要注意：{warning}")
 
-    baseline.save(args.out)
+    baseline.save(args.out, overwrite=args.overwrite)
     print()
     print(f"已存到 {args.out}。之後這樣用：")
     print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
 
 
 def _print_line(text: str) -> None:
-    """原地更新一行，並裁到終端機寬度。
+    """原地更新一行，裁到終端機的實際寬度。
 
-    加了欄位之後這一行超出終端機寬度，換行之後 \\r 只退到該行開頭，
-    畫面就變成一串接不起來的殘句。
+    這一行放不下時終端機會折行，而 CR 只退到最後一行的開頭，畫面就變成
+    一串接不起來的殘句。要按顯示寬度裁——中文一個字佔兩欄，用字元數裁的話
+    留下來的字數雖然對，佔用的欄數是兩倍，照樣會折行。被略過的那些幀
+    印的是中文原因，正好是最長、最容易超出的一種。
     """
     width = shutil.get_terminal_size(fallback=(100, 24)).columns - 1
-    print(f"\r{text[:width]:<{width}}", end="", flush=True)
+    print("\r" + cell(truncate(text, width), width), end="", flush=True)
 
 
 def _angle_text(window: RollingAngle, instant: float | None) -> str:
@@ -266,10 +270,15 @@ def _angle_text(window: RollingAngle, instant: float | None) -> str:
 def _live_line(
     ca_window: RollingAngle, sym_window: RollingAngle, measurement, rejected: int, reason
 ) -> str:
-    if reason is not None:
-        return f"略過這一幀：{reason}（已略過 {rejected} 幀）"
     distance = measurement.reference_depth_mm
     azimuth = measurement.camera_azimuth_deg
+    if reason is not None:
+        # 調整架設位置時正是略過最多的時候，這幾個數字不能跟著消失
+        where = (
+            f"  {distance:4.0f}mm {azimuth:2.0f}°"
+            if distance is not None and azimuth is not None else ""
+        )
+        return f"略過：{reason}{where}  已略過 {rejected} 幀"
     return (
         f"θ_CA {_angle_text(ca_window, measurement.theta_ca_deg)}"
         f"  θ_sym {_angle_text(sym_window, measurement.theta_sym_deg)}"
@@ -294,6 +303,23 @@ def _print_summary(
         print(f"{name}  {window.mean:+.2f}°{error}（{window.count} 幀{spread}）")
     if rejected:
         print(f"略過 {rejected} 幀偵測失誤")
+
+
+def _refuse_to_overwrite(args) -> None:
+    """在開相機之前就檢查輸出檔。
+
+    基準要請受試者坐著不動十秒、量測一次要跑二十分鐘，等到做完才發現檔名撞到，
+    白費的是受試者的時間。
+    """
+    target = None
+    if args.mode == "baseline":
+        target = args.out
+    elif args.mode == "live":
+        target = args.log
+    if target is not None and Path(target).exists() and not args.overwrite:
+        raise SystemExit(
+            f"{target} 已經存在。換個檔名，或確定要覆蓋的話加上 --overwrite"
+        )
 
 
 def main() -> None:
@@ -348,8 +374,12 @@ def main() -> None:
             p.add_argument("--log", type=Path, default=None,
                            help="把每一幀寫成 CSV，含被略過的幀。"
                                 "事後分析與 Kinovea 對標都需要這份原始資料")
+        if name in ("live", "baseline"):
+            p.add_argument("--overwrite", action="store_true",
+                           help="允許覆蓋既有的基準檔或記錄檔")
         if name == "baseline":
-            p.add_argument("--out", type=Path, default=Path("data/baselines/baseline.json"))
+            p.add_argument("--out", type=Path, default=None,
+                           help="預設是 data/baselines/<subject>.json")
             p.add_argument("--seconds", type=float, default=10.0,
                            help="取樣長度。實機約 6.4fps，10 秒約 60 幀")
             p.add_argument("--countdown", type=int, default=3,
@@ -361,8 +391,13 @@ def main() -> None:
             f"找不到標定檔 {args.calibration}。先執行：\n"
             f"  python -m src.calibration.cli stereo --charuco ..."
         )
-    # live 沒有這個選項，補一個預設值讓兩條路徑共用同一個 args
+    # 每個子指令的選項不同，補上預設值讓三條路徑共用同一個 args
     args.all_keypoints = getattr(args, "all_keypoints", False)
+    if args.mode == "baseline" and args.out is None:
+        # 檔名預設跟著受試者代號走。連續替幾個人取基準時，
+        # 固定的預設檔名會讓後一個人蓋掉前一個人的基準。
+        args.out = Path("data/baselines") / f"{args.subject}.json"
+    _refuse_to_overwrite(args)
 
     {"once": _run_once, "live": _run_live, "baseline": _run_baseline}[args.mode](args)
 

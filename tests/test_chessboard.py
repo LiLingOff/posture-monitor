@@ -36,7 +36,7 @@ def test_find_corners_returns_none_on_blank_image():
 
 
 def test_load_gray_images_accepts_uppercase_and_jpeg(tmp_path):
-    """手機匯出常是.JPG/.jpeg，被無聲略過的話只會看到「影像過少」，很難聯想原因。"""
+    """手機匯出常是.JPG/.jpeg，被略過的話只會看到「影像過少」，很難聯想原因。"""
     img = np.full((48, 64, 3), 128, dtype=np.uint8)
     for name in ("a.png", "b.PNG", "c.jpg", "d.JPG", "e.jpeg", "f.bmp"):
         cv2.imwrite(str(tmp_path / name), img)

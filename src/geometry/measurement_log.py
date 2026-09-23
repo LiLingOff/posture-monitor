@@ -47,8 +47,13 @@ class MeasurementLog:
     因為相機斷線而中斷，累積的話那些資料就全沒了。
     """
 
-    def __init__(self, path: Path, subject: str = ""):
+    def __init__(self, path: Path, subject: str = "", overwrite: bool = False):
         self._path = Path(path)
+        if self._path.exists() and not overwrite:
+            raise FileExistsError(
+                f"{self._path} 已經存在。一次量測要跑二十分鐘，蓋掉就沒了——"
+                f"換個檔名，或確定要覆蓋的話加上 --overwrite"
+            )
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)

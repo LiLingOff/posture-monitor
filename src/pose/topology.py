@@ -36,7 +36,7 @@ COCO18_KEYPOINT_NAMES: tuple[str, ...] = (
 
 # 模型原始碼裡的簡寫名稱，順序必須與上面逐一對應。
 # engine載入時會把這份清單跟modules.pose.Pose.kpt_names比對，
-# 上游改版調動順序就會直接報錯，而不是無聲錯位。
+# 上游改版調動順序時會直接報錯，不會拖到角度算出來才發現。
 UPSTREAM_KEYPOINT_NAMES: tuple[str, ...] = (
     "nose",
     "neck",

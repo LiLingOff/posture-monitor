@@ -123,7 +123,7 @@ def test_round_trips_through_a_file(tmp_path):
 
 
 def test_rejects_a_baseline_file_missing_fields(tmp_path):
-    """欄位少了就是舊版檔案，靜默沿用會讓判定基準悄悄錯掉。"""
+    """欄位少了就是舊版檔案，沿用的話，判定基準會錯而且看不出來。"""
     path = tmp_path / "old.json"
     path.write_text('{"subject": "A", "theta_ca_deg": 5.0}', encoding="utf-8")
     with pytest.raises(ValueError, match="缺少欄位"):
@@ -134,3 +134,22 @@ def test_describe_names_the_conditions_it_was_taken_under():
     text = _collect(10.0).finish("chenyue", 10.0).describe()
     for expected in ("chenyue", "θ_CA", "距離", "方位角"):
         assert expected in text
+
+
+def test_refuses_to_overwrite_an_existing_baseline(tmp_path):
+    """連續替幾位受試者取基準時很容易忘記換檔名。
+
+    蓋掉的話前一位的判定基準就沒了，而且不會有任何跡象——
+    檔案還在，內容卻換成了另一個人的。
+    """
+    path = tmp_path / "b.json"
+    first = _collect(5.0).finish("A", 10.0)
+    first.save(path)
+
+    second = _collect(18.0).finish("B", 10.0)
+    with pytest.raises(FileExistsError, match="overwrite"):
+        second.save(path)
+    assert PostureBaseline.load(path).subject == "A"
+
+    second.save(path, overwrite=True)
+    assert PostureBaseline.load(path).subject == "B"

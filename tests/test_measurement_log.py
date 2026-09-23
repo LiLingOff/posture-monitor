@@ -104,3 +104,18 @@ def test_subject_is_written_as_a_comment_line(tmp_path):
     with MeasurementLog(path, subject="chenyue") as log:
         log.write(_measurement())
     assert path.read_text(encoding="utf-8").startswith("# subject=chenyue")
+
+
+def test_refuses_to_overwrite_an_existing_session(tmp_path):
+    """一次量測要跑二十分鐘，重跑指令就蓋掉的話那段資料就沒了。"""
+    path = tmp_path / "s.csv"
+    with MeasurementLog(path) as log:
+        log.write(_measurement())
+
+    with pytest.raises(FileExistsError, match="overwrite"):
+        MeasurementLog(path)
+    assert len(_rows(path)) == 1, "既有的資料要原封不動"
+
+    with MeasurementLog(path, overwrite=True) as log:
+        log.write(_measurement())
+    assert len(_rows(path)) == 1

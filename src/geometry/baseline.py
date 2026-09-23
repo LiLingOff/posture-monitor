@@ -24,6 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .pipeline import unusable_reason
+
 # 低於這個幀數就不給出基準。10 秒在實機的 6.4fps 下約 60 幀，
 # 20 幀是大幅放寬後的下限，再少的話平均本身就不可信。
 _MINIMUM_FRAMES = 20
@@ -59,8 +61,14 @@ class PostureBaseline:
             None if theta_sym is None else theta_sym - self.theta_sym_deg,
         )
 
-    def save(self, path: Path) -> None:
+    def save(self, path: Path, overwrite: bool = False) -> None:
         path = Path(path)
+        if path.exists() and not overwrite:
+            raise FileExistsError(
+                f"{path} 已經存在。連續替幾位受試者取基準時很容易忘記換檔名，"
+                f"蓋掉的話前一位的判定基準就沒了——換個檔名，"
+                f"或確定要覆蓋的話加上 --overwrite"
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -108,8 +116,6 @@ class BaselineCollector:
 
     def add(self, measurement) -> str | None:
         """收下一幀。無法使用時回傳原因字串並計入 rejected。"""
-        from .pipeline import unusable_reason
-
         reason = unusable_reason(measurement)
         if reason is not None:
             self.rejected += 1

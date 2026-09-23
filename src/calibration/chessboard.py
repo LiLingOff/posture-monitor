@@ -32,7 +32,7 @@ def find_corners(
 
     fast_check對應cv2.CALIB_CB_FAST_CHECK：它是為即時預覽設計的提早退出啟發式，
     畫面裡沒有棋盤格時可以大幅省時，代價是對比不足或輕微失焦的影像可能誤判成沒有。
-    拍攝迴圈要即時回饋所以開啟；離線標定沒有速度壓力，關掉以免無聲丟掉可用的影像。
+    拍攝迴圈要即時回饋所以開啟；離線標定沒有速度壓力，關掉以免漏掉本來可用的影像。
     """
     flags = _FIND_FLAGS + (cv2.CALIB_CB_FAST_CHECK if fast_check else 0)
     found, corners = cv2.findChessboardCorners(gray, (spec.cols, spec.rows), flags)
@@ -43,7 +43,7 @@ def find_corners(
     return corners
 
 
-# 副檔名一律轉小寫比對：手機匯出的.JPG、.jpeg被無聲略過的話，
+# 副檔名一律轉小寫比對：手機匯出的.JPG、.jpeg被略過的話，
 # 使用者只會看到「影像過少」，很難聯想到是副檔名沒對上。
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 

@@ -45,7 +45,7 @@ def triangulate_points(
         points_3d = (points_4d[:3] / points_4d[3]).T
 
     # 齊次座標第4維趨近0代表兩條視線幾乎平行、交點在無窮遠（左右對應點幾乎重合時會這樣）。
-    # 這種結果是inf或極大值，不處理會混入角度計算變成看似合理的數字，統一標記為NaN。
+    # 這種結果是inf或極大值，不處理的話會混進角度計算，統一標記為NaN。
     points_3d[~np.isfinite(points_3d).all(axis=1)] = np.nan
 
     result[valid] = points_3d
@@ -67,7 +67,7 @@ def rectified_vertical_disparity(
     stereoRectify的目的就是讓對極線變成水平線，所以校正後同一個點在左右影像的
     y座標應該幾乎相同。這個差值偏大，代表標定不準或左右配對錯誤——
     而三角測量不會因此報錯，它只會把兩條不相交的視線取最近點，
-    照樣吐出一個看似合理的3D座標。
+    照樣給出一個數量級正常的3D座標。
 
     這是少數能用真實資料（不是標定板）檢驗標定品質的指標。
     """

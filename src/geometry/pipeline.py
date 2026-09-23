@@ -5,12 +5,11 @@
 
 除了角度本身，還會一併回報幾項在真實資料上才看得出來的品質指標：
 校正後的垂直視差、深度範圍、左右共同偵測到幾個關鍵點。
-標定不準或左右配對錯誤時，三角測量不會報錯，只會安靜地給出看似合理的座標，
+標定不準或左右配對錯誤時，三角測量不會報錯，給出的座標數量級也正常，
 所以這些指標是唯一的線索。
 """
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -21,6 +20,7 @@ from pose.topology import COCO18_KEYPOINT_NAMES
 
 from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
 from .posture_angles import anatomical_axes, theta_ca, theta_sym
+from .terminal import cell as _cell
 from .triangulation import rectified_vertical_disparity
 
 # 桌前坐姿的合理深度範圍。超出這個範圍多半是配對錯誤或標定尺度不對，
@@ -185,17 +185,6 @@ def measure_posture(
     return measurement
 
 
-def _display_width(text: str) -> int:
-    """終端機顯示寬度。中日韓字元佔兩欄，但 len() 只算一個。"""
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-
-
-def _cell(text: str, width: int, align: str = "left") -> str:
-    """照顯示寬度補空白。直接用 f-string 的 :<16 會讓中文欄位短掉一半。"""
-    pad = " " * max(0, width - _display_width(text))
-    return text + pad if align == "left" else pad + text
-
-
 def format_measurement(
     measurement: PostureMeasurement,
     left: PersonKeypoints,
@@ -336,7 +325,7 @@ def _implausible_depths(measurement: PostureMeasurement) -> list[tuple[str, floa
 
 
 def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
-    """回報真實資料上看得出來的異常。這些都不會讓程式出錯，只會讓結果悄悄變錯。
+    """回報真實資料上看得出來的異常。這些都不會讓程式出錯，只會讓結果變錯。
 
     異常要分成兩類來看。落在角度用到的那四個點上，角度本身就不能信；
     落在手腕、腳踝這些點上，多半是自底向上的關聯把左右兩張影像的同一個肢體

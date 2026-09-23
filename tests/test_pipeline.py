@@ -88,7 +88,7 @@ def test_flags_mismatched_correspondences():
     """左右配對到不同部位時垂直視差會變大。
 
     三角測量不會因此報錯——它只會取兩條不相交視線的最近點，
-    照樣給出一個看似合理的3D座標，所以這是唯一的線索。
+    照樣給出一個數量級正常的3D座標，所以這是唯一的線索。
     """
     left, right = _project(_seated_pose())
     shifted = right.points.copy()
@@ -217,7 +217,7 @@ def test_reference_depth_falls_back_to_the_median_when_ears_and_shoulders_are_mi
 
 def test_report_columns_line_up_when_labels_are_chinese():
     """中文標題佔兩欄，用 f-string 的 :<16 會把表頭排短，欄位對不齊。"""
-    from geometry.pipeline import _display_width
+    from geometry.terminal import display_width as _display_width
 
     left, right = _project(_seated_pose())
     report = format_measurement(measure_posture(_calib(), left, right), left, right)

@@ -172,8 +172,8 @@ def _warn_if_not_side_by_side(frame: np.ndarray, vertical_split: bool) -> None:
     """合併畫面的長寬比不符合左右並排特徵時發出提醒。
 
     左右並排的畫面寬高比通常>=2（例如2560x720是3.6）；單眼是4:3或16:9，
-    比例落在1.3~1.8。把單眼畫面切成兩半不會出現錯誤訊息，只會無聲地產生
-    兩塊不重疊的裁切區域，直到標定取得不到足夠共同角點才會發現。
+    比例落在1.3~1.8。把單眼畫面切成兩半不會出現錯誤訊息，得到的是
+    兩塊不重疊的裁切區域，要等到標定湊不出足夠的共同角點才會發現。
     """
     h, w = frame.shape[:2]
     # 單眼畫面的寬高比通常是4:3(1.33)或16:9(1.78)，合併後其中一個方向變成兩倍：
@@ -325,7 +325,7 @@ def _next_frame_index(*out_dirs: Path) -> int:
     """回傳下一個可用的檔名編號：現有檔名的最大編號加一。
 
     用檔案數量當編號會在編號不連續時撞名。刪掉沒對焦的那張再重跑補拍是很自然的操作，
-    此時數量比最大編號小，新檔就會無聲蓋掉既有影像，而且印出的張數會比實際檔案數多。
+    此時數量比最大編號小，新檔會蓋掉既有影像，而且印出的張數比實際檔案數多。
     雙目要左右一起看，確保同一個編號在兩邊都還沒被用掉。
     """
     max_index = 0
@@ -351,7 +351,7 @@ def _reject_mismatched_existing_images(out_dir: Path, expected: tuple[int, int])
 
     換過解析度之後資料夾裡還留著舊影像是很容易發生的事，而張數檢查只數數量、
     看不出這件事——工具會說「已有N張，跳過拍攝」，接著標定就在錯誤解析度的影像上
-    算出一組內參。內參綁定於解析度，用錯了不會有任何徵兆。
+    算出一組內參。內參綁定於解析度，用錯了不會有任何外顯症狀。
     """
     found = _existing_image_size(out_dir)
     if found is None or found == expected:
@@ -372,7 +372,7 @@ def _already_complete(
     就從未被指派，會以UnboundLocalError結束。
 
     expected_size有給的話會先核對既有影像的尺寸，對不上直接拒絕——
-    只數張數的話，換過解析度卻沒清資料夾就會無聲沿用舊影像。
+    只數張數的話，換過解析度卻沒清資料夾就會沿用到舊影像。
     """
     if expected_size is not None:
         _reject_mismatched_existing_images(out_dir, expected_size)

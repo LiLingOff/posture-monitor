@@ -100,7 +100,7 @@ class LightweightOpenPoseEngine:
         """核對模型自己的關鍵點順序與pose/topology.py是否一致。
 
         兩邊順序不同的話所有關鍵點會整組錯位，而且不會有任何錯誤訊息——
-        耳朵的座標被當成肩膀，角度照樣算得出看似合理的數值。
+        耳朵的座標被當成肩膀，算出來的角度仍然落在正常範圍。
         這次從trt_pose換過來，順序本來就變了（neck從索引17移到索引1），
         所以這個核對比先前更有必要。
         """
@@ -111,7 +111,7 @@ class LightweightOpenPoseEngine:
             return
         raise ValueError(
             f"{self._paths.repo_dir} 的 modules/pose.py 關鍵點順序與 pose/topology.py 不一致，"
-            f"索引會整組錯位且不會有任何徵兆。\n"
+            f"索引會整組錯位，而且不會有任何外顯症狀。\n"
             f"  模型        : {list(names)}\n"
             f"  topology.py : {list(UPSTREAM_KEYPOINT_NAMES)}\n"
             f"請同步更新 pose/topology.py 的兩個tuple並重跑 tests/test_pose_topology.py"

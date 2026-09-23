@@ -163,7 +163,7 @@ def test_capture_does_not_overwrite_when_numbering_has_gaps(tmp_path, monkeypatc
     """編號不連續時補拍不該蓋掉既有影像。
 
     拍完發現某張沒對焦、刪掉再重跑是很自然的操作。用檔案數量當索引的話
-    新檔會撞到既有檔名，無聲蓋掉一張，而且印出的張數會比實際檔案數多。
+    新檔會撞到既有檔名、蓋掉一張，而且印出的張數比實際檔案數多。
     """
     out_dir = tmp_path / "front"
     out_dir.mkdir()
@@ -240,7 +240,7 @@ def test_rejects_existing_images_from_a_different_resolution(tmp_path, forbid_ca
     實際遇到的狀況：早期在沒有 --width/--height 的版本下拍了20組，驅動給的是
     640x480 單眼畫面被切成兩半。之後改用 2560x720 重拍，程式卻只數張數，
     回報「已有20張，跳過拍攝」，然後標定就在錯誤解析度的影像上算出一組內參。
-    內參綁定於解析度，用錯不會有任何徵兆。
+    內參綁定於解析度，用錯不會有任何外顯症狀。
     """
     left_out, right_out = tmp_path / "l", tmp_path / "r"
     left_out.mkdir()
