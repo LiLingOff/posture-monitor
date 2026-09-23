@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-181個測試，全部使用合成資料，不需要相機或GPU。
+183個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似——標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -83,7 +83,7 @@ python -m pytest tests/ -v
 | 看得到板子但沒有標記疊上去 | 加上 `--legacy-pattern` |
 | **`stereo left`／`stereo right` 顯示不同場景** | 取得的畫面是單眼影像被切成兩半。用 `--width/--height` 指定並排模式的解析度（見下節） |
 | 共同角點數量一直不足 | 先確認上一項；再把板子移向兩鏡頭視野的重疊區，或調低 `--min-shared-corners` |
-| `can't open camera by index` | Linux上先用 `v4l2-ctl --list-devices` 查詢index（未安裝先執行 `sudo apt install v4l-utils`）；並確認 `groups` 含有 `video`，若無則執行 `sudo usermod -aG video $USER` 後重新登入 |
+| `can't open camera by index` | 程式會印出三個查法，照著做即可。最常見的是 **PhotonVision 服務佔住相機**（開機自動啟動）：`sudo systemctl stop photonvision`。其次是重新插拔後 `/dev/videoN` 編號整組移位，用 `v4l2-ctl --list-devices` 重查（未安裝先 `sudo apt install v4l-utils`）|
 
 ### 雙目模組必須指定解析度
 

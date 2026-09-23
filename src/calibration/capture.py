@@ -14,6 +14,49 @@ from .chessboard import ChessboardSpec, find_corners
 _MIN_SHARED_CHARUCO_CORNERS = 6
 
 
+def describe_camera_open_failure(index: int) -> str:
+    """相機開不起來時該去看什麼。
+
+    這件事在同一台機器上時好時壞，所以值得把診斷步驟寫進訊息裡而不是只說開不了。
+    Jetson 上遇過兩個原因，兩個都與程式無關，單看「無法開啟相機」查不出來：
+
+    1. PhotonVision 服務在背景執行，開機自動啟動，會獨佔相機。
+       裝置還在、v4l2-ctl 也列得出來，就是開不了。
+    2. 一顆 UVC 雙目模組佔用兩個 /dev/videoN，只有編號較小的那個能取像；
+       重新插拔之後編號可能整組移位，原本的 index 就指到取不了像的那個節點。
+    """
+    if not sys.platform.startswith("linux"):
+        return (
+            f"無法開啟相機 index={index}。確認裝置已接上，"
+            f"並用 python -m src.calibration.capture probe --camera {index} 查詢可用模式"
+        )
+    return (
+        f"無法開啟相機 index={index}。裝置存在卻開不了，多半是下列三者之一：\n"
+        f"  1. 有其他程式佔住相機。Jetson 上最常見的是 PhotonVision，它開機會自動啟動：\n"
+        f"       sudo fuser -v /dev/video{index}\n"
+        f"       sudo systemctl stop photonvision\n"
+        f"  2. 裝置節點編號變了。重新插拔之後編號會整組移位，\n"
+        f"     而一顆雙目模組佔用兩個節點、只有編號較小的那個能取像：\n"
+        f"       v4l2-ctl --list-devices\n"
+        f"  3. 使用者不在 video 群組：\n"
+        f"       groups | grep video    沒有的話 sudo usermod -aG video $USER 再重新登入"
+    )
+
+
+def describe_stereo_open_failure(
+    left: tuple[int, bool], right: tuple[int, bool]
+) -> str:
+    """兩顆獨立相機的版本，指出是哪一顆開不了。
+
+    原本只印出兩個 index，看不出問題在哪一顆。兩顆都開不了通常是共通原因
+    （服務佔用、權限），只有一顆代表那顆的節點編號或接線有問題。
+    """
+    failed = [index for index, opened in (left, right) if not opened]
+    which = "、".join(f"index={i}" for i in failed)
+    both = "兩顆都開不了，多半是共通原因" if len(failed) == 2 else "另一顆是正常的"
+    return f"雙目相機開不起來：{which}（{both}）\n" + describe_camera_open_failure(failed[0])
+
+
 def _open_camera(
     index: int, width: int | None = None, height: int | None = None
 ) -> cv2.VideoCapture:
@@ -139,7 +182,7 @@ def probe_resolutions(camera_index: int, fps_frames: int = 12) -> None:
         # 每次重新開啟，避免某些驅動在模式間切換時停住
         cap = _open_camera(camera_index)
         if not cap.isOpened():
-            print(f"無法開啟相機 index={camera_index}")
+            print(describe_camera_open_failure(camera_index))
             return
         try:
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -320,7 +363,7 @@ def capture_mono(
 
     cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+        raise RuntimeError(describe_camera_open_failure(camera_index))
 
     saved = len(list(out_dir.glob("*.png")))
     next_index = _next_frame_index(out_dir)
@@ -372,7 +415,9 @@ def capture_stereo(
     cap_l = _open_camera(left_index, width, height)
     cap_r = _open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
-        raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
+        raise RuntimeError(describe_stereo_open_failure(
+            (left_index, cap_l.isOpened()), (right_index, cap_r.isOpened())
+        ))
 
     saved = len(list(left_out.glob("*.png")))
     next_index = _next_frame_index(left_out, right_out)
@@ -447,7 +492,7 @@ def capture_stereo_single_device(
 
     cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+        raise RuntimeError(describe_camera_open_failure(camera_index))
 
     def split(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return split_merged_frame(frame, vertical_split, swap_lr)
@@ -530,7 +575,7 @@ def capture_mono_charuco(
     board = board_spec.build_board()
     cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+        raise RuntimeError(describe_camera_open_failure(camera_index))
 
     saved = len(list(out_dir.glob("*.png")))
     next_index = _next_frame_index(out_dir)
@@ -614,7 +659,9 @@ def capture_stereo_charuco(
     cap_l = _open_camera(left_index, width, height)
     cap_r = _open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
-        raise RuntimeError(f"無法開啟雙目相機 index=({left_index}, {right_index})")
+        raise RuntimeError(describe_stereo_open_failure(
+            (left_index, cap_l.isOpened()), (right_index, cap_r.isOpened())
+        ))
 
     saved = len(list(left_out.glob("*.png")))
     next_index = _next_frame_index(left_out, right_out)
@@ -686,7 +733,7 @@ def capture_stereo_charuco_single_device(
     board = board_spec.build_board()
     cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+        raise RuntimeError(describe_camera_open_failure(camera_index))
 
     def split(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return split_merged_frame(frame, vertical_split, swap_lr)

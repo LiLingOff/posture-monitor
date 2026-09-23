@@ -54,3 +54,34 @@ def test_order_of_results_does_not_matter():
 def test_no_side_by_side_modes():
     mono_only = [(640, 480, 30.0, True), (1280, 720, 30.0, True)]
     assert _summarize_side_by_side(mono_only) == {}
+
+
+def test_camera_open_failure_names_the_service_that_holds_the_device():
+    """訊息要講得出該怎麼查，不能只說開不了。
+
+    同一台 Jetson 上時好時壞，兩次都是外部原因：PhotonVision 服務開機自動啟動
+    並獨佔相機，或重新插拔後 /dev/videoN 的編號整組移位。
+    """
+    import sys
+
+    from calibration.capture import describe_camera_open_failure
+
+    message = describe_camera_open_failure(0)
+    assert "index=0" in message
+    if sys.platform.startswith("linux"):
+        assert "photonvision" in message
+        assert "/dev/video0" in message
+        assert "v4l2-ctl --list-devices" in message
+
+
+def test_stereo_open_failure_says_which_camera_is_the_problem():
+    from calibration.capture import describe_stereo_open_failure
+
+    only_right = describe_stereo_open_failure((1, True), (2, False))
+    assert "index=2" in only_right
+    assert "index=1" not in only_right
+    assert "另一顆是正常的" in only_right
+
+    neither = describe_stereo_open_failure((1, False), (2, False))
+    assert "index=1" in neither and "index=2" in neither
+    assert "兩顆都開不了" in neither

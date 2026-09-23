@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ..calibration.capture import _open_camera, split_merged_frame
+from ..calibration.capture import (_open_camera, describe_camera_open_failure,
+                                   split_merged_frame)
 from .benchmark import compare_precision_rmse, measure_latency, measure_sequential_multi_camera
 from .engine import LightweightOpenPoseModelPaths
 
@@ -15,7 +16,7 @@ def _grab_frames(
 ) -> list[np.ndarray]:
     cap = _open_camera(camera_index, width, height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={camera_index}")
+        raise RuntimeError(describe_camera_open_failure(camera_index))
     frames = []
     try:
         while len(frames) < count:

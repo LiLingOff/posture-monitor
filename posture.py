@@ -17,7 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from calibration.capture import _open_camera, split_merged_frame  # noqa: E402
+from calibration.capture import (_open_camera,  # noqa: E402
+                                 describe_camera_open_failure, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import format_measurement, measure_posture  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
@@ -76,7 +77,7 @@ def _run_once(args) -> None:
     engine = _build_engine(args)
     cap = _open_camera(args.camera, args.width, args.height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={args.camera}")
+        raise RuntimeError(describe_camera_open_failure(args.camera))
     try:
         _step(f"等自動曝光穩定，丟掉前 {args.discard} 張")
         _discard_frames(cap, args.discard)
@@ -105,7 +106,7 @@ def _run_live(args) -> None:
     engine = _build_engine(args)
     cap = _open_camera(args.camera, args.width, args.height)
     if not cap.isOpened():
-        raise RuntimeError(f"無法開啟相機 index={args.camera}")
+        raise RuntimeError(describe_camera_open_failure(args.camera))
 
     _discard_frames(cap, args.discard)
     ok, frame = cap.read()
