@@ -22,7 +22,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calibration.capture import (_open_camera,  # noqa: E402
-                                 describe_camera_open_failure, split_merged_frame)
+                                 describe_camera_open_failure, find_camera_index,
+                                 split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
@@ -60,6 +61,17 @@ def _match(calib, left_detections, right_detections) -> PersonMatch:
         return match_person_pair(calib, left_detections, right_detections)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+def _open_selected_camera(args):
+    """開啟相機。--camera auto 時先自動挑一個讀得出畫面的節點。"""
+    if args.camera == "auto":
+        args.camera, how = find_camera_index(args.width, args.height)
+        _step(how)
+    cap = _open_camera(args.camera, args.width, args.height)
+    if not cap.isOpened():
+        raise RuntimeError(describe_camera_open_failure(args.camera))
+    return cap
 
 
 def _grab_pair(cap, args):
@@ -131,9 +143,7 @@ def _run_once(args) -> None:
           f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
 
     engine = _build_engine(args)
-    cap = _open_camera(args.camera, args.width, args.height)
-    if not cap.isOpened():
-        raise RuntimeError(describe_camera_open_failure(args.camera))
+    cap = _open_selected_camera(args)
     try:
         _step(f"等自動曝光穩定，丟掉前 {args.discard} 張")
         _discard_frames(cap, args.discard)
@@ -172,9 +182,7 @@ def _run_once(args) -> None:
 def _run_live(args) -> None:
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
-    cap = _open_camera(args.camera, args.width, args.height)
-    if not cap.isOpened():
-        raise RuntimeError(describe_camera_open_failure(args.camera))
+    cap = _open_selected_camera(args)
 
     _discard_frames(cap, args.discard)
     ok, frame = cap.read()
@@ -266,9 +274,7 @@ def _run_baseline(args) -> None:
     """請受試者坐正保持不動，取這段時間的平均當作他的零點。"""
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
-    cap = _open_camera(args.camera, args.width, args.height)
-    if not cap.isOpened():
-        raise RuntimeError(describe_camera_open_failure(args.camera))
+    cap = _open_selected_camera(args)
 
     collector = BaselineCollector()
     try:
@@ -410,7 +416,9 @@ def main() -> None:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--calibration", type=Path,
                        default=Path("data/calibration_output/stereo.npz"))
-        p.add_argument("--camera", type=int, default=0)
+        p.add_argument("--camera", default="auto",
+                       help="相機 index，或 auto 自動挑。節點編號會因為重新插拔或"
+                            "重開機而移位，auto 會逐一試到讀得出畫面為止")
         p.add_argument("--width", type=int, default=None,
                        help="必須與標定時的解析度一致")
         p.add_argument("--height", type=int, default=None)
@@ -472,6 +480,11 @@ def main() -> None:
         )
     # 每個子指令的選項不同，補上預設值讓三條路徑共用同一個 args
     args.all_keypoints = getattr(args, "all_keypoints", False)
+    if args.camera != "auto":
+        try:
+            args.camera = int(args.camera)
+        except ValueError:
+            raise SystemExit(f"--camera 要填數字或 auto，收到 {args.camera!r}")
     if args.mode == "baseline" and args.out is None:
         # 檔名預設跟著受試者代號走。連續替幾個人取基準時，
         # 固定的預設檔名會讓後一個人蓋掉前一個人的基準。

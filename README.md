@@ -29,7 +29,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-226個測試，全部使用合成資料，不需要相機或GPU。
+264個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似：標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -84,7 +84,7 @@ python -m pytest tests/ -v
 | 看得到板子但沒有標記疊上去 | 加上 `--legacy-pattern` |
 | **`stereo left`／`stereo right` 顯示不同場景** | 取得的畫面是單眼影像被切成兩半。用 `--width/--height` 指定並排模式的解析度（見下節） |
 | 共同角點數量一直不足 | 先確認上一項；再把板子移向兩鏡頭視野的重疊區，或調低 `--min-shared-corners` |
-| `can't open camera by index` | 程式會當場去查 `/dev/videoN` 在不在、權限夠不夠、本使用者有沒有別的程序開著它，把查到的直接寫在錯誤訊息裡。三者都正常時才需要 root 權限的檢查（`sudo fuser -v`、`dmesg`）。Jetson 上已知的成因是 PhotonVision 服務獨佔相機、重新插拔後節點編號移位，以及上一次執行剛結束、核心還沒放掉 USB 介面 |
+| `can't open camera by index` | `posture.py` 的 `--camera` 預設是 `auto`，會逐一試到讀得出畫面為止，所以節點編號移位不必手動改。仍然失敗時，程式會當場去查 `/dev/videoN` 在不在、權限夠不夠、本使用者有沒有別的程序開著它，把查到的直接寫在錯誤訊息裡。三者都正常時才需要 root 權限的檢查（`sudo fuser -v`、`dmesg`）。Jetson 上已知的成因是 PhotonVision 服務獨佔相機、重新插拔後節點編號移位，以及上一次執行剛結束、核心還沒放掉 USB 介面 |
 
 ### 雙目模組必須指定解析度
 

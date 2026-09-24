@@ -144,3 +144,65 @@ def test_stereo_open_failure_says_which_camera_is_the_problem():
     neither = describe_stereo_open_failure((1, False), (2, False))
     assert "index=1" in neither and "index=2" in neither
     assert "兩顆都開不了" in neither
+
+
+def _fake_probe(results: dict):
+    """results 把 index 對應到（讀得到畫面嗎, 尺寸）。"""
+    return lambda index: results.get(index, (False, None))
+
+
+def test_skips_the_node_that_opens_but_never_delivers_a_frame():
+    """一顆 UVC 雙目模組佔兩個 /dev/videoN，只有一個讀得出畫面。
+
+    所以「開得起來」不算數，要真的讀到一幀。
+    """
+    from calibration.capture import find_camera_index
+
+    index, how = find_camera_index(
+        2560, 720,
+        probe=_fake_probe({1: (False, None), 2: (True, (2560, 720))}),
+        candidates=[1, 2],
+    )
+    assert index == 2
+    assert "2560x720" in how
+
+
+def test_prefers_the_node_that_gives_the_resolution_that_was_asked_for():
+    """尺寸不符時畫面多半是單眼或裁切過的，切成兩半會得到兩塊不重疊的區域。"""
+    from calibration.capture import find_camera_index
+
+    index, _ = find_camera_index(
+        2560, 720,
+        probe=_fake_probe({0: (True, (640, 480)), 1: (True, (2560, 720))}),
+        candidates=[0, 1],
+    )
+    assert index == 1
+
+
+def test_falls_back_to_anything_readable_when_nothing_matches():
+    from calibration.capture import find_camera_index
+
+    index, how = find_camera_index(
+        2560, 720,
+        probe=_fake_probe({3: (True, (640, 480))}),
+        candidates=[3],
+    )
+    assert index == 3
+    assert "不是要求的" in how
+
+
+def test_takes_the_lowest_readable_node_when_no_size_was_requested():
+    from calibration.capture import find_camera_index
+
+    index, _ = find_camera_index(
+        probe=_fake_probe({1: (True, (640, 480)), 2: (True, (640, 480))}),
+        candidates=[1, 2],
+    )
+    assert index == 1
+
+
+def test_reports_every_node_it_tried_when_none_work():
+    from calibration.capture import find_camera_index
+
+    with pytest.raises(RuntimeError, match="1、2、3"):
+        find_camera_index(probe=_fake_probe({}), candidates=[1, 2, 3])

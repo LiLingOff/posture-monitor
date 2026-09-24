@@ -50,6 +50,68 @@ def _own_processes_holding(node: Path) -> list[str]:
     return holders
 
 
+def find_camera_index(
+    width: int | None = None,
+    height: int | None = None,
+    probe=None,
+    candidates: list[int] | None = None,
+) -> tuple[int, str]:
+    """自動挑一個能用的相機 index，回傳（index, 怎麼挑的）。
+
+    存在的理由是節點編號會移位：重新插拔或重開機之後 video0/1 可能變成
+    video1/2，而每次都要先失敗一次才知道該改成哪個。帶受試者來量測時，
+    浪費的是他的時間。
+
+    挑選分兩層。一顆 UVC 雙目模組佔用兩個 /dev/videoN，其中一個開得起來卻
+    讀不出畫面，所以「開得起來」不算數，要真的讀到一幀。另外，要求的解析度
+    沒拿到時畫面多半是單眼或裁切過的，切成兩半會得到兩塊不重疊的區域，
+    所以尺寸對得上的優先，兩者都沒有才退而求其次。
+
+    probe 與 candidates 可以注入，讓挑選邏輯本身不接相機也測得到。
+    """
+    if candidates is None:
+        candidates = [int(name[len("video"):]) for name in _video_nodes()] or [0]
+    if probe is None:
+        probe = _probe_camera(width, height)
+
+    wanted = (width, height) if width and height else None
+    readable: list[tuple[int, tuple[int, int] | None]] = []
+    for index in candidates:
+        ok, size = probe(index)
+        if not ok:
+            continue
+        if wanted and size == wanted:
+            return index, f"自動挑到 index={index}，讀得到 {size[0]}x{size[1]}"
+        readable.append((index, size))
+
+    if not readable:
+        listed = "、".join(str(i) for i in candidates)
+        raise RuntimeError(
+            f"試過的每一個相機節點（{listed}）都讀不到畫面。\n"
+            + describe_camera_open_failure(candidates[0])
+        )
+
+    index, size = readable[0]
+    got = f"{size[0]}x{size[1]}" if size else "未知尺寸"
+    return index, f"自動挑到 index={index}，讀得到畫面但尺寸是 {got}，不是要求的"
+
+
+def _probe_camera(width: int | None, height: int | None):
+    """真的去開一次相機並讀一幀，回傳（成功嗎, 實際尺寸）。"""
+    def probe(index: int) -> tuple[bool, tuple[int, int] | None]:
+        cap = _open_camera(index, width, height)
+        try:
+            if not cap.isOpened():
+                return False, None
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return False, None
+            return True, (frame.shape[1], frame.shape[0])
+        finally:
+            cap.release()
+    return probe
+
+
 def describe_camera_open_failure(index: int) -> str:
     """相機開不起來時，實際去查一遍再回報。
 
