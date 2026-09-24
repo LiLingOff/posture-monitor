@@ -43,6 +43,11 @@ _THETA_CA_THRESHOLD_DEG = 10.0
 # 放進來的話它配對錯誤就會誤報成「角度不可信」。
 # 改用 theta_ca(side="left") 時要連同這裡一起調整。
 _ANGLE_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder")
+# 關鍵點落在離畫面邊緣這麼近的位置時，多半不是偵測結果而是被邊界夾住的值：
+# 真正的位置在畫面外，模型只能回報它能表示的最接近的點。
+# 2026-09-24 實機遇到頭頂出界，鼻子與雙眼的 y 都是 0.0，換算出來的3D座標
+# 讓眼睛落在頸部上方 400mm。數值本身沒有異常，靠範圍檢查抓不到。
+_FRAME_EDGE_MARGIN_PX = 2.0
 
 
 @dataclass
@@ -55,6 +60,7 @@ class PostureMeasurement:
     theta_ca_precision_deg: float | None = None
     reference_depth_mm: float | None = None
     camera_azimuth_deg: float | None = None
+    edge_keypoints: list[str] = field(default_factory=list)
     angle_errors: list[str] = field(default_factory=list)
 
     @property
@@ -146,6 +152,27 @@ def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float:
     return float(np.degrees(np.arccos(np.clip(cos_alpha, 0.0, 1.0))))
 
 
+def keypoints_at_frame_edge(
+    left: PersonKeypoints,
+    right: PersonKeypoints,
+    image_size: tuple[int, int],
+    margin_px: float = _FRAME_EDGE_MARGIN_PX,
+) -> list[str]:
+    """哪些關鍵點貼在畫面邊緣上，也就是它的真實位置很可能在畫面外。"""
+    width, height = image_size
+    found: list[str] = []
+    for i, name in enumerate(COCO18_KEYPOINT_NAMES):
+        for points in (left.points, right.points):
+            x, y = points[i]
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            if (x <= margin_px or x >= width - 1 - margin_px
+                    or y <= margin_px or y >= height - 1 - margin_px):
+                found.append(name)
+                break
+    return found
+
+
 def measure_posture(
     calib: StereoCalibrationResult,
     left: PersonKeypoints,
@@ -163,6 +190,7 @@ def measure_posture(
         shared_count=shared,
     )
 
+    measurement.edge_keypoints = keypoints_at_frame_edge(left, right, calib.image_size)
     measurement.reference_depth_mm = reference_depth_mm(keypoints_3d)
     measurement.camera_azimuth_deg = camera_azimuth_deg(keypoints_3d)
     if measurement.reference_depth_mm is not None:
@@ -220,9 +248,11 @@ def format_measurement(
         rt = "—" if np.isnan(rp).any() else f"({rp[0]:7.1f},{rp[1]:7.1f})"
         p3t = "—" if np.isnan(p3).any() else f"[{p3[0]:8.1f},{p3[1]:8.1f},{p3[2]:8.1f}]"
         dyt = "—" if not np.isfinite(dy) else f"{dy:6.2f}"
+        # 貼邊的點要標出來，否則它看起來跟一個正常的座標沒有兩樣
+        mark = "  貼邊" if name in measurement.edge_keypoints else ""
         lines.append(
             f"{_cell(name, 16)} {_cell(lt, 17, 'right')} {_cell(rt, 17, 'right')}"
-            f" {_cell(p3t, 28, 'right')} {_cell(dyt, 7, 'right')}"
+            f" {_cell(p3t, 28, 'right')} {_cell(dyt, 7, 'right')}{mark}"
         )
 
     lines.append("")
@@ -289,6 +319,10 @@ def unusable_reason(measurement: PostureMeasurement) -> str | None:
     if not (low <= depth <= high):
         return f"深度 {depth:.0f}mm 落在桌前坐姿的合理範圍外（{low:.0f}~{high:.0f}mm）"
 
+    at_edge = [n for n in measurement.edge_keypoints if n in _ANGLE_KEYPOINTS]
+    if at_edge:
+        return f"角度用到的 {'、'.join(at_edge)} 貼在畫面邊緣，真實位置在畫面外"
+
     worst = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
     if worst is not None and worst[1] > _MAX_VERTICAL_DISPARITY_PX:
         return f"{worst[0]} 的垂直視差 {worst[1]:.1f}px，左右配對錯了"
@@ -347,6 +381,16 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
             f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f} px（應 <{_MAX_VERTICAL_DISPARITY_PX}），"
             f"這個點左右配對錯了。角度用到的點都在門檻內，所以不影響這一次的角度，"
             f"但它會汙染深度範圍這類整體指標"
+        )
+
+    if measurement.edge_keypoints:
+        used = [n for n in measurement.edge_keypoints if n in _ANGLE_KEYPOINTS]
+        listed = "、".join(measurement.edge_keypoints[:5])
+        more = f" 等 {len(measurement.edge_keypoints)} 個點" if len(measurement.edge_keypoints) > 5 else ""
+        warnings.append(
+            f"{listed}{more} 貼在畫面邊緣，那是被邊界夾住的值而不是偵測結果，"
+            f"真實位置在畫面外。把相機轉向這些部位所在的方向。"
+            + ("角度用到的點也在裡面，這一幀的角度不可信" if used else "角度沒有用到這些點")
         )
 
     bad_depths = _implausible_depths(measurement)

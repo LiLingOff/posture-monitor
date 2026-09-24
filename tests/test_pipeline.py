@@ -415,3 +415,79 @@ def test_rejection_reason_names_what_was_wrong():
     broken[COCO18_KEYPOINT_NAMES.index("right_shoulder"), 1] += 30.0
     reason = unusable_reason(measure_posture(_calib(), left, PersonKeypoints(broken, right.confidences)))
     assert reason is not None and "right_shoulder" in reason
+
+
+def _real_run_2026_09_24():
+    """2026-09-24 實機那一幀的原始像素座標，頭頂出界。
+
+    鼻子與雙眼的 y 是 0.0，那是被畫面上緣夾住的值而不是偵測結果，
+    換算出來的3D座標讓眼睛落在頸部上方 400mm。
+    """
+    observed = {
+        "nose":           ((778.5, 28.5), (719.8, 0.0)),
+        "neck":           ((682.4, 262.1), (627.2, 250.7)),
+        "right_shoulder": ((563.0, 239.5), (504.8, 229.0)),
+        "left_shoulder":  ((795.3, 288.2), (746.7, 276.2)),
+        "right_eye":      ((746.5, 0.0), (693.7, 0.0)),
+        "left_eye":       ((781.0, 0.0), (731.2, 0.0)),
+        "right_ear":      ((647.7, 35.2), (589.4, 26.9)),
+    }
+    lp = np.full((NUM_KEYPOINTS, 2), np.nan, np.float32)
+    rp = np.full((NUM_KEYPOINTS, 2), np.nan, np.float32)
+    conf = np.zeros(NUM_KEYPOINTS, np.float32)
+    for name, (l, r) in observed.items():
+        i = COCO18_KEYPOINT_NAMES.index(name)
+        lp[i], rp[i], conf[i] = l, r, 0.9
+    return PersonKeypoints(lp, conf), PersonKeypoints(rp, conf.copy())
+
+
+def test_detects_the_keypoints_clamped_to_the_frame_edge():
+    """y=0.0 不是偵測結果，是模型被畫面邊界夾住的值，真實位置在畫面外。
+
+    這種座標的數值完全正常，範圍檢查與視差檢查都抓不到它。
+    """
+    from geometry.pipeline import keypoints_at_frame_edge
+
+    left, right = _real_run_2026_09_24()
+    at_edge = keypoints_at_frame_edge(left, right, (1280, 720))
+
+    assert set(at_edge) == {"nose", "right_eye", "left_eye"}
+    assert "right_ear" not in at_edge, "y=27px 還在畫面內，是真的偵測到"
+    assert "right_shoulder" not in at_edge
+
+
+def test_an_angle_keypoint_at_the_edge_makes_the_frame_unusable():
+    """耳朵離上緣只有 27px。受試者坐直一點就出界，而 θ_CA 靠它。"""
+    from geometry.pipeline import unusable_reason
+
+    left, right = _real_run_2026_09_24()
+    clipped = left.points.copy()
+    clipped[COCO18_KEYPOINT_NAMES.index("right_ear"), 1] = 0.0
+    m = measure_posture(_calib_720(), PersonKeypoints(clipped, left.confidences), right)
+
+    reason = unusable_reason(m)
+    assert reason is not None and "right_ear" in reason and "畫面邊緣" in reason
+
+
+def test_edge_points_the_angles_do_not_use_are_reported_but_not_fatal():
+    """鼻子與眼睛出界不影響 θ_CA 與 θ_sym，但還是要講出來。
+
+    這裡不檢查垂直視差，因為合成標定重現不出實機的校正轉換，
+    同一組像素座標換算出來的視差跟實機對不上。要驗的是貼邊這件事。
+    """
+    left, right = _real_run_2026_09_24()
+    m = measure_posture(_calib_720(), left, right)
+
+    warning = next(w for w in plausibility_warnings(m) if "貼在畫面邊緣" in w)
+    assert "nose" in warning
+    assert "角度沒有用到這些點" in warning
+    assert "不可信" not in warning
+    assert "貼邊" in format_measurement(m, left, right), "表格要標出來"
+
+
+def _calib_720():
+    calib = make_synthetic_stereo_calibration(
+        np.array([[568.0, 0.0, 640.0], [0.0, 568.0, 360.0], [0.0, 0.0, 1.0]]), 60.0
+    )
+    calib.image_size = (1280, 720)
+    return calib
