@@ -766,3 +766,20 @@ def test_reports_the_distance_of_the_person_it_chose():
     match = match_person_pair(_calib(), [near_l], [near_r])
     assert match.distance_mm == pytest.approx(650.0, rel=0.1)
     assert match.rejected_farther == 0
+
+
+def test_azimuth_is_none_on_a_frame_that_is_otherwise_usable():
+    """2026-09-24 實機在這裡當掉：live 直接格式化方位角，而它是 None。
+
+    一邊肩膀沒偵測到時，深度與 θ_CA 都還算得出來，那一幀不會被擋掉，
+    但方位角量不到。成功路徑上沒有防呆。
+    """
+    from geometry.pipeline import unusable_reason
+
+    left, right = _without(("left_shoulder",))
+    m = measure_posture(_calib(), left, right)
+
+    assert m.camera_azimuth_deg is None
+    assert m.theta_ca_deg is not None
+    assert m.reference_depth_mm is not None
+    assert unusable_reason(m) is None, "這一幀會進入成功路徑"

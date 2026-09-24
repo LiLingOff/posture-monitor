@@ -227,7 +227,9 @@ def _run_live(args) -> None:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
 
-            _print_line(_live_line(ca_window, sym_window, measurement, rejected, reason))
+            _print_line(_live_line(
+                ca_window, sym_window, measurement, corrected, rejected, reason
+            ))
             if log is not None:
                 log.write(
                     measurement, reject_reason=reason, corrected=corrected,
@@ -348,22 +350,33 @@ def _angle_text(window: RollingAngle, instant: float | None) -> str:
     return f"{shown}(單幀{instant:+5.1f})" if instant is not None else f"{shown}(單幀  — )"
 
 
-def _live_line(
-    ca_window: RollingAngle, sym_window: RollingAngle, measurement, rejected: int, reason
-) -> str:
+def _where(measurement) -> str:
+    """距離與方位角。方位角要雙肩才量得到，所以它常常是 None。
+
+    一邊肩膀沒偵測到時，深度與 θ_CA 仍然算得出來，那一幀不會被擋掉，
+    但方位角是 None。直接格式化會在那一幀當掉。
+    """
     distance = measurement.reference_depth_mm
     azimuth = measurement.camera_azimuth_deg
+    return (
+        ("  ——mm" if distance is None else f"  {distance:4.0f}mm")
+        + (" ——°" if azimuth is None else f" {azimuth:2.0f}°")
+    )
+
+
+def _live_line(
+    ca_window: RollingAngle, sym_window: RollingAngle, measurement,
+    corrected, rejected: int, reason,
+) -> str:
     if reason is not None:
         # 調整架設位置時正是略過最多的時候，這幾個數字不能跟著消失
-        where = (
-            f"  {distance:4.0f}mm {azimuth:2.0f}°"
-            if distance is not None and azimuth is not None else ""
-        )
-        return f"略過：{reason}{where}  已略過 {rejected} 幀"
+        return f"略過：{reason}{_where(measurement)}  已略過 {rejected} 幀"
+    # 括號裡放的是扣掉基準之後的單幀值。放原始角度的話它跟前面的平均差了一個
+    # 基準的量，看起來像兩個不相干的數字。
     return (
-        f"θ_CA {_angle_text(ca_window, measurement.theta_ca_deg)}"
-        f"  θ_sym {_angle_text(sym_window, measurement.theta_sym_deg)}"
-        f"  {distance:4.0f}mm {azimuth:2.0f}°"
+        f"θ_CA {_angle_text(ca_window, corrected[0])}"
+        f"  θ_sym {_angle_text(sym_window, corrected[1])}"
+        f"{_where(measurement)}"
         f"  {ca_window.count:2d}/{ca_window.window}幀"
         + (f"  略過{rejected}" if rejected else "")
     )
