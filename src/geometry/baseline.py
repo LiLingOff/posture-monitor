@@ -18,6 +18,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +36,11 @@ _MINIMUM_FRAMES = 20
 _BASELINE_ERROR_WARNING_DEG = 2.0
 # 實測散佈超過理論值這個倍數，代表受試者在取基準的過程中動了。
 _MOVEMENT_FACTOR = 1.8
+
+
+def _without_numbers(reason: str) -> str:
+    """把訊息裡的數字換成佔位符，讓同一類原因歸成一類。"""
+    return re.sub(r"-?\d+(\.\d+)?", "N", reason)
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,8 @@ class BaselineCollector:
         self._distance: list[float] = []
         self._azimuth: list[float] = []
         self._precision: list[float] = []
+        self._reasons: Counter[str] = Counter()
+        self._reason_examples: dict[str, str] = {}
         self.rejected = 0
 
     @property
@@ -117,12 +126,19 @@ class BaselineCollector:
     def add(self, measurement) -> str | None:
         """收下一幀。無法使用時回傳原因字串並計入 rejected。"""
         reason = unusable_reason(measurement)
+        if reason is None and (
+            measurement.theta_ca_deg is None or measurement.theta_sym_deg is None
+        ):
+            reason = "有角度算不出來"
         if reason is not None:
             self.rejected += 1
+            # 數字換成佔位符再計數，否則「深度 54mm」「深度 61mm」會被當成兩種原因，
+            # 而「每一幀都因為同一件事被擋掉」正是最該講出來的訊息。
+            # 佔位符只當分組用的鍵，顯示時要拿原句，不然使用者看到的是「深度 Nmm」。
+            key = _without_numbers(reason)
+            self._reasons[key] += 1
+            self._reason_examples.setdefault(key, reason)
             return reason
-        if measurement.theta_ca_deg is None or measurement.theta_sym_deg is None:
-            self.rejected += 1
-            return "這一幀有角度算不出來"
 
         self._ca.append(measurement.theta_ca_deg)
         self._sym.append(measurement.theta_sym_deg)
@@ -132,11 +148,22 @@ class BaselineCollector:
             self._precision.append(measurement.theta_ca_precision_deg)
         return None
 
+    @property
+    def main_rejection(self) -> tuple[str, int] | None:
+        """最常見的略過原因與次數。全部因為同一件事被擋掉時，那件事就是問題本身。
+
+        回傳的是第一次遇到這個原因時的原句，數字保留著，方便直接看量級。
+        """
+        if not self._reasons:
+            return None
+        key, count = self._reasons.most_common(1)[0]
+        return self._reason_examples[key], count
+
     def finish(self, subject: str, duration_s: float) -> PostureBaseline:
         if self.count < self._minimum:
             raise ValueError(
                 f"只收到 {self.count} 幀有效資料（至少要 {self._minimum} 幀），"
-                f"略過了 {self.rejected} 幀。確認受試者在畫面內、光線足夠，再取一次"
+                f"略過了 {self.rejected} 幀。\n{self._diagnose()}"
             )
         ca = np.asarray(self._ca)
         sym = np.asarray(self._sym)
@@ -155,6 +182,25 @@ class BaselineCollector:
             distance_mm=float(np.mean(self._distance)),
             azimuth_deg=float(np.mean(self._azimuth)),
         )
+
+    def _diagnose(self) -> str:
+        """把略過的原因整理成一句能往下查的話，而不是一句通用的提醒。"""
+        top = self.main_rejection
+        if top is None:
+            return "一幀都沒收到，確認受試者在畫面內、光線足夠。"
+        reason, count = top
+        lines = [f"略過的原因幾乎都是同一個（{count}/{self.rejected} 幀）：{reason}"]
+        if "深度" in reason:
+            lines.append(
+                "深度是從視差回推的，落在合理範圍外代表左右兩眼對到了不同的位置，"
+                "不是受試者真的坐在那個距離。用 "
+                "python posture.py once --all-keypoints 看左右像素座標差多少。"
+            )
+        elif "垂直視差" in reason:
+            lines.append("對極線校正後左右的 y 應該幾乎相同，差太多代表標定不準或左右配對錯誤。")
+        elif "共同關鍵點" in reason:
+            lines.append("左右能同時看到的部位太少，多半是遮擋或其中一眼的畫面有問題。")
+        return "\n".join(lines)
 
     def quality_warnings(self, baseline: PostureBaseline) -> list[str]:
         """這份基準有沒有問題。取基準時沒發現的話，之後每一次判定都帶著它。"""

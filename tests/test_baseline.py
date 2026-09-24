@@ -153,3 +153,50 @@ def test_refuses_to_overwrite_an_existing_baseline(tmp_path):
 
     second.save(path, overwrite=True)
     assert PostureBaseline.load(path).subject == "B"
+
+
+def _reject_all(reason_depth_mm: float, frames: int = 12):
+    """做出一批全部因為同一個原因被擋掉的量測。"""
+    collector = BaselineCollector()
+    calib = _calib()
+    for i in range(frames):
+        left, right = _pose(12.0, jitter_px=0.5, seed=i)
+        moved = right.points.copy()
+        moved[:, 0] -= 600.0   # 右眼整組往左移，視差變到不可能的大小
+        collector.add(measure_posture(calib, left, PersonKeypoints(moved, right.confidences)))
+    return collector
+
+
+def test_failure_names_the_reason_the_frames_were_actually_dropped():
+    """2026-09-24 實機：12 幀全部因為深度 54mm 被擋掉。
+
+    當時的訊息說「確認受試者在畫面內、光線足夠」，但人明明偵測到了，
+    是深度不合理被擋的。通用的提醒會把人指向錯的方向。
+    """
+    collector = _reject_all(54.0)
+    assert collector.count == 0 and collector.rejected == 12
+
+    with pytest.raises(ValueError) as exc:
+        collector.finish("test", 5.0)
+    message = str(exc.value)
+    assert "12/12" in message, "要說出幾乎全部是同一個原因"
+    assert "深度" in message
+    assert "54" in message or "mm" in message, "顯示的是原句，數字要留著"
+    assert "Nmm" not in message, "佔位符只該當分組的鍵，不該出現在訊息裡"
+    assert "--all-keypoints" in message, "要給出下一步能查的指令"
+    assert "光線" not in message, "人有偵測到，不該再叫人去查光線"
+
+
+def test_groups_rejections_that_differ_only_in_their_numbers():
+    """「深度 54mm」和「深度 61mm」是同一個問題，不該被算成兩種。"""
+    from geometry.baseline import _without_numbers
+
+    assert _without_numbers("深度 54mm 落在合理範圍外（200~3000mm）") == \
+        _without_numbers("深度 -61mm 落在合理範圍外（200~3000mm）")
+
+
+def test_says_so_when_nothing_was_captured_at_all():
+    """一幀都沒進來是另一回事，那時才該查畫面與光線。"""
+    collector = BaselineCollector()
+    with pytest.raises(ValueError, match="光線"):
+        collector.finish("test", 5.0)
