@@ -25,10 +25,11 @@ from calibration.capture import (_open_camera,  # noqa: E402
                                  describe_camera_open_failure, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
+                               estimate_theta_ca_precision_deg,
                                format_measurement, match_person_pair,
                                measure_posture, unusable_reason)
 from geometry.baseline import (BaselineCollector,  # noqa: E402
-                               PostureBaseline)
+                               PostureBaseline, baseline_quality_warnings)
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.terminal import cell, truncate  # noqa: E402
@@ -179,7 +180,7 @@ def _run_live(args) -> None:
     print(f"載入模型（{args.precision} / {args.device}）", flush=True)
     engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
 
-    baseline = _load_baseline(args)
+    baseline = _load_baseline(args, calib)
     log = (MeasurementLog(args.log, subject=args.subject, overwrite=args.overwrite)
            if args.log else None)
     if log is not None:
@@ -233,7 +234,7 @@ def _run_live(args) -> None:
         cap.release()
 
 
-def _load_baseline(args) -> PostureBaseline | None:
+def _load_baseline(args, calib) -> PostureBaseline | None:
     if not args.baseline:
         print("沒有指定個人基準，印出的是原始角度。", flush=True)
         print("判定門檻套在原始角度上會因人而異，正式量測前先跑一次 "
@@ -241,6 +242,12 @@ def _load_baseline(args) -> PostureBaseline | None:
         return None
     baseline = PostureBaseline.load(args.baseline)
     print(baseline.describe(), flush=True)
+    # 取基準當下看過一次就過去了，載入時要再講一次：這個偏移會進到之後每一次判定。
+    expected = estimate_theta_ca_precision_deg(
+        calib, baseline.distance_mm, baseline.azimuth_deg
+    ) if baseline.distance_mm > 0 else None
+    for warning in baseline_quality_warnings(baseline, expected):
+        print(f"  需要注意：{warning}", flush=True)
     print("以下的角度都已扣除這個基準，也就是相對這個人端正坐姿的偏移量", flush=True)
     return baseline
 

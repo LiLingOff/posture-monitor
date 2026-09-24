@@ -252,3 +252,44 @@ def test_baseline_warning_carries_the_same_advice():
     warning = next(w for w in collector.quality_warnings(far) if "θ_CA 基準的誤差" in w)
     assert "距離是主因" in warning
     assert "往側面移" not in warning
+
+
+def _poor_baseline(**overrides):
+    base = _collect(12.0).finish("A", 10.0)
+    return PostureBaseline(**{**asdict(base), **overrides})
+
+
+def test_a_poor_baseline_still_warns_when_it_is_loaded_back(tmp_path):
+    """取基準當下看過一次就過去了，但這個偏移會進到之後每一次判定。
+
+    存檔之後不再提醒的話，一份明知不好的基準會默默污染整場量測。
+    """
+    from geometry.baseline import baseline_quality_warnings
+
+    poor = _poor_baseline(distance_mm=1384.0, azimuth_deg=28.0,
+                          theta_ca_standard_error_deg=5.7, theta_ca_std_deg=36.2)
+    path = tmp_path / "poor.json"
+    poor.save(path)
+
+    reloaded = PostureBaseline.load(path)
+    warnings = baseline_quality_warnings(reloaded)
+    assert any("θ_CA 基準的誤差" in w for w in warnings)
+    assert any("距離是主因" in w for w in warnings)
+
+
+def test_a_good_baseline_loads_without_complaint():
+    from geometry.baseline import baseline_quality_warnings
+
+    good = _poor_baseline(distance_mm=680.0, azimuth_deg=40.0,
+                          theta_ca_standard_error_deg=0.9, theta_ca_std_deg=5.7)
+    assert baseline_quality_warnings(good, expected_single_frame_error_deg=6.0) == []
+
+
+def test_movement_check_needs_the_expected_noise_to_compare_against():
+    """沒有理論值時不能判斷散佈大是雜訊還是受試者在動，那就不要猜。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    wobbly = _poor_baseline(distance_mm=680.0, azimuth_deg=40.0,
+                            theta_ca_standard_error_deg=0.9, theta_ca_std_deg=30.0)
+    assert baseline_quality_warnings(wobbly, None) == []
+    assert any("動了" in w for w in baseline_quality_warnings(wobbly, 6.0))

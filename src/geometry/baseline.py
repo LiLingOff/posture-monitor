@@ -101,6 +101,37 @@ class PostureBaseline:
         )
 
 
+def baseline_quality_warnings(
+    baseline: PostureBaseline, expected_single_frame_error_deg: float | None = None
+) -> list[str]:
+    """這份基準有沒有問題。
+
+    寫成獨立函式而不是收集器的方法，因為**載入時也要檢查**。取基準當下看過一次
+    就過去了，而這個偏移會固定留在之後每一次判定裡；存檔之後不再提醒的話，
+    一份明知不好的基準會默默污染整場量測。
+
+    expected_single_frame_error_deg 是這個距離與方位下該有的量測雜訊。
+    實測散佈遠大於它，多出來的那部分只可能來自受試者本人。
+    """
+    warnings: list[str] = []
+    if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
+        warnings.append(
+            f"θ_CA 基準的誤差是 ±{baseline.theta_ca_standard_error_deg:.1f}°"
+            f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，平均 {baseline.frames} 幀）。"
+            f"這個偏移會固定留在之後每一次判定裡，相對 10° 的門檻已經可觀。"
+            + precision_advice(baseline.distance_mm, baseline.azimuth_deg)
+            + "延長取樣時間只能開根號地改善，先處理上面那一項。"
+        )
+    if (expected_single_frame_error_deg is not None
+            and baseline.theta_ca_std_deg > _MOVEMENT_FACTOR * expected_single_frame_error_deg):
+        warnings.append(
+            f"θ_CA 的散佈 ±{baseline.theta_ca_std_deg:.1f}° 明顯大於這個距離"
+            f"該有的量測雜訊 ±{expected_single_frame_error_deg:.1f}°，"
+            f"受試者在取基準的過程中應該動了。請他保持不動再取一次"
+        )
+    return warnings
+
+
 class BaselineCollector:
     """把一段時間內的量測收集起來，算出這個人的零點。
 
@@ -204,25 +235,8 @@ class BaselineCollector:
 
     def quality_warnings(self, baseline: PostureBaseline) -> list[str]:
         """這份基準有沒有問題。取基準時沒發現的話，之後每一次判定都帶著它。"""
-        warnings: list[str] = []
-        if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
-            warnings.append(
-                f"θ_CA 基準的誤差是 ±{baseline.theta_ca_standard_error_deg:.1f}°"
-                f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，平均 {baseline.frames} 幀）。"
-                f"這個偏移會固定留在之後每一次判定裡，相對 10° 的門檻已經可觀。"
-                + precision_advice(baseline.distance_mm, baseline.azimuth_deg)
-                + "延長取樣時間只能開根號地改善，先處理上面那一項。"
-            )
-
-        # 理論值算的是量測雜訊。實測散佈遠大於它，多的那部分只可能來自受試者本人。
-        if self._precision:
-            expected = float(np.mean(self._precision))
-            if baseline.theta_ca_std_deg > _MOVEMENT_FACTOR * expected:
-                warnings.append(
-                    f"θ_CA 的散佈 ±{baseline.theta_ca_std_deg:.1f}° 明顯大於這個距離"
-                    f"該有的量測雜訊 ±{expected:.1f}°，受試者在取基準的過程中應該動了。"
-                    f"請他保持不動再取一次"
-                )
+        expected = float(np.mean(self._precision)) if self._precision else None
+        warnings = baseline_quality_warnings(baseline, expected)
         if self.rejected > self.count:
             warnings.append(
                 f"略過的幀（{self.rejected}）比收下的（{self.count}）還多，"
