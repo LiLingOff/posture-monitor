@@ -27,8 +27,17 @@ from .triangulation import rectified_vertical_disparity
 # 桌前坐姿的合理深度範圍。超出這個範圍多半是配對錯誤或標定尺度不對，
 # 而不是受試者真的坐到三公尺外。
 _PLAUSIBLE_DEPTH_MM = (200.0, 3000.0)
-# 校正後對極線應該是水平的，左右y座標差超過這個值代表標定或配對有問題。
+# 校正後對極線應該是水平的，所以左右的 y 差反映兩件不同的事，門檻也要分開。
+#
+# 標定品質：標定夠準時，正常幀的角度關鍵點落在 1~2.5px。超過 3px 值得回頭看標定，
+# 這是拿來評估一整組設定的，不是拿來篩選單幀的。
 _MAX_VERTICAL_DISPARITY_PX = 3.0
+# 配對錯誤：左右眼對到不同部位時差的是十幾到數十 px。實測的分布有明顯斷層，
+# 正常幀最多 2.5px，確定配錯的是 13.5、26.1、36.5px，中間是空的。
+# 門檻取在斷層裡。拿 3px 來擋單幀的話，48 幀會擋掉 43 幀，
+# 擋掉的絕大多數只是雜訊——每個座標約 1px，相減後 √2 倍，再加上標定的殘餘偏差。
+# 這個值是依實測分布訂的，取得更多資料後應該回頭校準。
+_MISPAIRED_DISPARITY_PX = 8.0
 # 關鍵點定位的殘餘誤差。次像素精修把量化壓到0.2px以下，剩下的是模型本身的抖動，
 # 1px是保守估計，用來換算角度精度。
 _KEYPOINT_NOISE_PX = 1.0
@@ -405,7 +414,7 @@ def unusable_reason(measurement: PostureMeasurement) -> str | None:
         return f"角度用到的 {'、'.join(at_edge)} 貼在畫面邊緣，真實位置在畫面外"
 
     worst = _worst_disparity(measurement, angle_keypoints(measurement.theta_ca_side))
-    if worst is not None and worst[1] > _MAX_VERTICAL_DISPARITY_PX:
+    if worst is not None and worst[1] > _MISPAIRED_DISPARITY_PX:
         return f"{worst[0]} 的垂直視差 {worst[1]:.1f}px，左右配對錯了"
 
     if measurement.shared_count < 4:
@@ -451,16 +460,21 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
 
     worst_angle = _worst_disparity(measurement, angle_keypoints(measurement.theta_ca_side))
     worst_all = _worst_disparity(measurement)
-    if worst_angle is not None and worst_angle[1] > _MAX_VERTICAL_DISPARITY_PX:
+    if worst_angle is not None and worst_angle[1] > _MISPAIRED_DISPARITY_PX:
+        warnings.append(
+            f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f} px，"
+            f"這個點左右配對到了不同位置。這一幀的角度不可信"
+        )
+    elif worst_angle is not None and worst_angle[1] > _MAX_VERTICAL_DISPARITY_PX:
         warnings.append(
             f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f} px"
-            f"（應 <{_MAX_VERTICAL_DISPARITY_PX}）。對極線校正後左右的 y 應該幾乎相同，"
-            f"差這麼多代表標定不夠準，或這個點左右配對到了不同位置。角度不可信"
+            f"（標定夠準的話應 <{_MAX_VERTICAL_DISPARITY_PX}）。這個幅度還在雜訊範圍內，"
+            f"這一幀照常使用，但持續偏高的話該回頭檢查標定"
         )
-    elif worst_all is not None and worst_all[1] > _MAX_VERTICAL_DISPARITY_PX:
+    elif worst_all is not None and worst_all[1] > _MISPAIRED_DISPARITY_PX:
         warnings.append(
-            f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f} px（應 <{_MAX_VERTICAL_DISPARITY_PX}），"
-            f"這個點左右配對錯了。角度用到的點都在門檻內，所以不影響這一次的角度，"
+            f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f} px，這個點左右配對錯了。"
+            f"角度用到的點都正常，所以不影響這一次的角度，"
             f"但它會汙染深度範圍這類整體指標"
         )
 

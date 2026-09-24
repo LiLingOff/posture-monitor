@@ -69,10 +69,11 @@ def _grab_pair(cap, args):
 
 
 def _measure_once(engine, calib, cap, args):
-    left_frame, right_frame = _grab_pair(cap, args)
-    match = _match(calib, engine.infer(left_frame), engine.infer(right_frame))
+    """回傳（量測, 配對, 原始左右畫面）。畫面留著給 --save-frames 用。"""
+    frames = _grab_pair(cap, args)
+    match = _match(calib, engine.infer(frames[0]), engine.infer(frames[1]))
     measurement = measure_posture(calib, match.left, match.right, args.min_confidence)
-    return measurement, match
+    return measurement, match, frames
 
 
 def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=None) -> Path:
@@ -189,10 +190,11 @@ def _run_live(args) -> None:
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
     rejected = 0
+    saved_a_rejected_frame = False
     try:
         while True:
             try:
-                measurement, _ = _measure_once(engine, calib, cap, args)
+                measurement, match, frames = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
                 _print_line(str(exc))
                 if log is not None:
@@ -209,6 +211,9 @@ def _run_live(args) -> None:
             else:
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
+                if args.save_frames and not saved_a_rejected_frame:
+                    _save_frames(*frames, args.save_frames, match.left, match.right)
+                    saved_a_rejected_frame = True
 
             _print_line(_live_line(ca_window, sym_window, measurement, rejected, reason))
             if log is not None:
@@ -272,13 +277,18 @@ def _run_baseline(args) -> None:
         print("\r開始取樣，請保持不動        ", flush=True)
 
         start = time.perf_counter()
+        saved_a_rejected_frame = False
         while (elapsed := time.perf_counter() - start) < args.seconds:
             try:
-                measurement, _ = _measure_once(engine, calib, cap, args)
+                measurement, match, frames = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
                 _print_line(str(exc))
                 continue
             reason = collector.add(measurement)
+            # 存第一張被略過的畫面。全部被略過時，那正是唯一想看的東西。
+            if reason and args.save_frames and not saved_a_rejected_frame:
+                _save_frames(*frames, args.save_frames, match.left, match.right)
+                saved_a_rejected_frame = True
             _print_line(
                 f"剩下 {args.seconds - elapsed:4.1f} 秒   已收 {collector.count:3d} 幀"
                 + (f"   略過 {collector.rejected}" if collector.rejected else "")
@@ -413,15 +423,16 @@ def main() -> None:
                             "主要瓶頸），代價是推論變慢；384或512值得一試")
         p.add_argument("--no-subpixel", action="store_true",
                        help="關掉熱圖峰值的次像素精修，用來量化它的影響")
+        p.add_argument("--save-frames", type=Path, default=None,
+                       help="把左右兩眼的畫面存成 png，偵測到的關鍵點疊上去。"
+                            "診斷訊息說不出相機到底看到什麼，這個看得出來。"
+                            "baseline 與 live 存的是第一張被略過的畫面")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
                             "平均N幀把雜訊降到1/√N；30幀約5秒")
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
-            p.add_argument("--save-frames", type=Path, default=None,
-                           help="把左右兩眼的畫面存成 png，偵測到的關鍵點疊上去。"
-                                "診斷訊息說不出相機到底看到什麼，這個看得出來")
         if name in ("live", "baseline"):
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")

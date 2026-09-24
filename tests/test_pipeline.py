@@ -663,3 +663,50 @@ def test_no_precision_warning_when_the_depth_is_already_impossible():
     warnings = plausibility_warnings(m)
     assert any("合理區間" in w for w in warnings), "深度這一條要留著"
     assert not any("單幀誤差" in w for w in warnings), "誤差那一條是衍生的，不該再報"
+
+
+def _with_disparity(name: str, shift_px: float):
+    left, right = _project(_seated_pose())
+    moved = right.points.copy()
+    moved[COCO18_KEYPOINT_NAMES.index(name), 1] += shift_px
+    return left, PersonKeypoints(moved, right.confidences.copy())
+
+
+def test_a_few_pixels_of_vertical_disparity_is_noise_not_a_mispairing():
+    """2026-09-24：用 3px 擋單幀，48 幀擋掉 43 幀。
+
+    關鍵點雜訊每個座標約 1px，相減後 √2 倍，再加上標定的殘餘偏差，
+    正常幀就會偶爾落在 3~5px。3px 是評估標定品質的標準，不是逐幀的通行證。
+    """
+    from geometry.pipeline import unusable_reason
+
+    left, right = _with_disparity("right_shoulder", 4.0)
+    m = measure_posture(_calib(), left, right)
+
+    worst = m.max_abs_vertical_disparity_px
+    assert 3.0 < worst < 8.0
+    assert unusable_reason(m) is None, "這個幅度還在雜訊範圍，不該擋掉"
+
+    warning = next(w for w in plausibility_warnings(m) if "垂直視差" in w)
+    assert "照常使用" in warning
+    assert "不可信" not in warning
+
+
+def test_tens_of_pixels_is_a_mispairing_and_does_make_it_unusable():
+    """實測確定配錯的是 13.5、26.1、36.5px，跟正常幀的 2.5px 之間是空的。"""
+    from geometry.pipeline import unusable_reason
+
+    left, right = _with_disparity("right_shoulder", 14.0)
+    m = measure_posture(_calib(), left, right)
+
+    reason = unusable_reason(m)
+    assert reason is not None and "right_shoulder" in reason
+    assert any("不可信" in w for w in plausibility_warnings(m))
+
+
+def test_the_two_thresholds_do_not_overlap():
+    """一個是標定品質、一個是配對錯誤，中間要留得下雜訊。"""
+    from geometry.pipeline import (_MAX_VERTICAL_DISPARITY_PX,
+                                   _MISPAIRED_DISPARITY_PX)
+
+    assert _MAX_VERTICAL_DISPARITY_PX < _MISPAIRED_DISPARITY_PX
