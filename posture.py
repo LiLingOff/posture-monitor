@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from calibration.capture import (_open_camera,  # noqa: E402
                                  describe_camera_open_failure, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
-from geometry.pipeline import (format_measurement,  # noqa: E402
+from geometry.pipeline import (PersonMatch,  # noqa: E402
+                               format_measurement, match_person_pair,
                                measure_posture, unusable_reason)
 from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline)
@@ -43,13 +44,18 @@ def _build_engine(args) -> LightweightOpenPoseEngine:
     )
 
 
-def _first_person(detections, side: str):
-    if not detections:
+def _match(calib, left_detections, right_detections) -> PersonMatch:
+    """挑出左右兩眼看到的同一個人。兩邊各取第一個是不對的，見 match_person_pair。"""
+    if not left_detections or not right_detections:
+        missing = "左" if not left_detections else "右"
         raise RuntimeError(
-            f"{side}眼沒有偵測到人。確認受試者在畫面內、光線足夠，"
+            f"{missing}眼沒有偵測到人。確認受試者在畫面內、光線足夠，"
             f"並檢查左右畫面是不是同一個場景"
         )
-    return detections[0]
+    try:
+        return match_person_pair(calib, left_detections, right_detections)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _grab_pair(cap, args):
@@ -61,9 +67,20 @@ def _grab_pair(cap, args):
 
 def _measure_once(engine, calib, cap, args):
     left_frame, right_frame = _grab_pair(cap, args)
-    left = _first_person(engine.infer(left_frame), "左")
-    right = _first_person(engine.infer(right_frame), "右")
-    return measure_posture(calib, left, right, args.min_confidence), left, right
+    match = _match(calib, engine.infer(left_frame), engine.infer(right_frame))
+    measurement = measure_posture(calib, match.left, match.right, args.min_confidence)
+    return measurement, match
+
+
+def _describe_match(match: PersonMatch) -> str:
+    """偵測到幾個人、挑中的那一對對得多齊。配錯人是深度離譜的頭號成因。"""
+    line = (
+        f"偵測到的人數     左眼 {match.left_count}   右眼 {match.right_count}"
+        f"   挑中的一對垂直視差中位數 {match.median_vertical_disparity_px:.2f} px"
+    )
+    if match.was_ambiguous:
+        line += f"\n（有 {match.rejected_pairs} 種其他配法被排除；畫面裡不只一個偵測結果）"
+    return line + "\n"
 
 
 def _step(message: str) -> None:
@@ -99,14 +116,16 @@ def _run_once(args) -> None:
         engine.warmup(left_frame)
         _step("開始推論")
 
-        left = _first_person(engine.infer(left_frame), "左")
-        right = _first_person(engine.infer(right_frame), "右")
-        measurement = measure_posture(calib, left, right, args.min_confidence)
+        match = _match(calib, engine.infer(left_frame), engine.infer(right_frame))
+        measurement = measure_posture(calib, match.left, match.right, args.min_confidence)
     finally:
         cap.release()
 
     print()
-    print(format_measurement(measurement, left, right, show_all_keypoints=args.all_keypoints))
+    print(_describe_match(match))
+    print(format_measurement(
+        measurement, match.left, match.right, show_all_keypoints=args.all_keypoints
+    ))
 
 
 def _run_live(args) -> None:
@@ -137,7 +156,7 @@ def _run_live(args) -> None:
     try:
         while True:
             try:
-                measurement, _, _ = _measure_once(engine, calib, cap, args)
+                measurement, _ = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
                 _print_line(str(exc))
                 if log is not None:
@@ -219,7 +238,7 @@ def _run_baseline(args) -> None:
         start = time.perf_counter()
         while (elapsed := time.perf_counter() - start) < args.seconds:
             try:
-                measurement, _, _ = _measure_once(engine, calib, cap, args)
+                measurement, _ = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
                 _print_line(str(exc))
                 continue

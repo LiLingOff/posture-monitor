@@ -173,6 +173,72 @@ def keypoints_at_frame_edge(
     return found
 
 
+@dataclass(frozen=True)
+class PersonMatch:
+    """左右兩眼各自的偵測結果裡，被判定為同一個人的那一對。"""
+
+    left: PersonKeypoints
+    right: PersonKeypoints
+    left_count: int
+    right_count: int
+    median_vertical_disparity_px: float
+    rejected_pairs: int
+
+    @property
+    def was_ambiguous(self) -> bool:
+        """有超過一種配對可以選，代表至少一眼偵測到不只一個人。"""
+        return self.rejected_pairs > 0
+
+
+def match_person_pair(
+    calib: StereoCalibrationResult,
+    left_detections: list[PersonKeypoints],
+    right_detections: list[PersonKeypoints],
+) -> PersonMatch:
+    """從左右兩眼的偵測結果裡挑出同一個人。
+
+    不能兩邊各自取第一個。自底向上的模型是把散落的關鍵點組裝成人，
+    回傳的順序取決於組裝過程，兩張影像不保證一致。畫面裡只要多一個誤判
+    （椅背、反光、另一個人的一部分），左眼的第一個和右眼的第一個就可能
+    是不同的對象，而三角測量不會因此報錯，只會給出一個深度離譜的結果。
+    2026-09-24 實機連續 20 幀都算出深度 100mm，那需要 341px 的視差，
+    而單眼畫面才 1280px 寬。
+
+    判準用校正後的垂直視差：stereoRectify 的目的就是讓對應點的 y 幾乎相同，
+    所以真正成對的那組會有最小的 |Δy| 中位數，錯配的那組沒有理由對齊。
+    取中位數而非平均，是因為個別關鍵點配錯不該推翻整個人的配對。
+    """
+    if not left_detections or not right_detections:
+        raise ValueError(
+            f"左眼偵測到 {len(left_detections)} 個人、右眼 {len(right_detections)} 個，"
+            f"至少要兩邊各一個才能配對"
+        )
+
+    best: tuple[float, PersonKeypoints, PersonKeypoints] | None = None
+    for left in left_detections:
+        for right in right_detections:
+            disparity = rectified_vertical_disparity(calib, left.points, right.points)
+            disparity = np.abs(disparity[np.isfinite(disparity)])
+            if disparity.size == 0:
+                continue
+            score = float(np.median(disparity))
+            if best is None or score < best[0]:
+                best = (score, left, right)
+
+    if best is None:
+        raise ValueError("左右兩眼沒有任何共同偵測到的關鍵點，無法配對")
+
+    total_pairs = len(left_detections) * len(right_detections)
+    return PersonMatch(
+        left=best[1],
+        right=best[2],
+        left_count=len(left_detections),
+        right_count=len(right_detections),
+        median_vertical_disparity_px=best[0],
+        rejected_pairs=total_pairs - 1,
+    )
+
+
 def measure_posture(
     calib: StereoCalibrationResult,
     left: PersonKeypoints,

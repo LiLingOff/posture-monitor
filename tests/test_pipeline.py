@@ -491,3 +491,68 @@ def _calib_720():
     )
     calib.image_size = (1280, 720)
     return calib
+
+
+def _shift(person: PersonKeypoints, dx: float, dy: float) -> PersonKeypoints:
+    points = person.points.copy()
+    points[:, 0] += dx
+    points[:, 1] += dy
+    return PersonKeypoints(points, person.confidences.copy())
+
+
+def test_picks_the_pair_that_lines_up_on_the_epipolar_lines():
+    """兩眼各取第一個是不對的：自底向上的組裝順序兩張影像不保證一致。
+
+    2026-09-24 實機連續 20 幀算出深度 100mm，那需要 341px 的視差，
+    而單眼畫面才 1280px 寬。三角測量不會因此報錯。
+    """
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    # 右眼的偵測清單裡，真正對應的那個排在第二個
+    impostor = _shift(right, dx=250.0, dy=40.0)
+    match = match_person_pair(_calib(), [left], [impostor, right])
+
+    assert match.left is left
+    assert match.right is right, "挑的是 y 對得齊的那個，不是排在前面的那個"
+    assert match.median_vertical_disparity_px < 1.0
+    assert match.was_ambiguous and match.rejected_pairs == 1
+
+
+def test_matching_survives_the_impostor_being_in_either_eye():
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    impostor_left = _shift(left, dx=-300.0, dy=60.0)
+    match = match_person_pair(_calib(), [impostor_left, left], [right])
+    assert match.left is left and match.right is right
+
+
+def test_a_single_detection_each_side_is_not_flagged_as_ambiguous():
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    match = match_person_pair(_calib(), [left], [right])
+    assert not match.was_ambiguous
+    assert match.left_count == 1 and match.right_count == 1
+
+
+def test_matching_needs_a_detection_on_both_sides():
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    with pytest.raises(ValueError, match="至少要兩邊各一個"):
+        match_person_pair(_calib(), [left], [])
+
+
+def test_median_ignores_one_badly_paired_keypoint():
+    """個別關鍵點配錯不該推翻整個人的配對，所以取中位數而非平均。"""
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[COCO18_KEYPOINT_NAMES.index("left_ear"), 1] += 400.0
+    match = match_person_pair(
+        _calib(), [left], [PersonKeypoints(broken, right.confidences)]
+    )
+    assert match.median_vertical_disparity_px < 1.0
