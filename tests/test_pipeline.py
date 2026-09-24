@@ -615,3 +615,51 @@ def test_both_ears_missing_reports_both_reasons():
     error = next(e for e in m.angle_errors if e.startswith("theta_ca"))
     assert "right_ear" in error and "left_ear" in error
     assert m.theta_sym_deg is not None, "θ_sym 只要雙肩，不受影響"
+
+
+def test_azimuth_is_none_when_the_shoulders_are_not_both_there():
+    """量不到就說量不到。回傳 0 會跟「量到 0 度，模組正對受試者」長得一模一樣，
+
+    而程式會據此建議把模組往側面移。2026-09-24 實機只剩一個共同關鍵點時，
+    報告印出「相機方位角 0°」並照著建議搬模組，那個 0 完全不是量出來的。
+    """
+    from geometry.pipeline import camera_azimuth_deg
+
+    left, right = _without(("left_shoulder",))
+    m = measure_posture(_calib(), left, right)
+    assert camera_azimuth_deg(m.keypoints_3d) is None
+    assert m.camera_azimuth_deg is None
+    assert "量不到" in format_measurement(m, left, right)
+
+    full = measure_posture(_calib(), *_project(_seated_pose()))
+    assert full.camera_azimuth_deg == pytest.approx(0.0, abs=0.5)
+
+
+def test_no_mounting_advice_when_the_azimuth_was_not_measured():
+    left, right = _without(("left_shoulder",))
+    far = {k: np.array([v[0], v[1], v[2] * 2.2]) for k, v in _seated_pose().items()}
+    lp, rp = _project(far)
+    lp.points[COCO18_KEYPOINT_NAMES.index("left_shoulder")] = np.nan
+    rp.points[COCO18_KEYPOINT_NAMES.index("left_shoulder")] = np.nan
+    m = measure_posture(_calib(), lp, rp)
+
+    warning = next((w for w in plausibility_warnings(m) if "單幀誤差" in w), None)
+    if warning is not None:
+        assert "往側面移" not in warning, "方位角沒量到就不能建議往哪邊移"
+        assert "方位角量不到" in warning
+
+
+def test_no_precision_warning_when_the_depth_is_already_impossible():
+    """深度不合理時，換算出來的誤差只是同一個原因的衍生結果。
+
+    2026-09-24 實機那一幀深度 -694mm，報告同時印出深度警告與
+    「誤差約 ±inf°，把模組往側面移」。後者把真正的線索淹掉了。
+    """
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[:, 0] += 500.0
+    m = measure_posture(_calib(), left, PersonKeypoints(broken, right.confidences))
+
+    warnings = plausibility_warnings(m)
+    assert any("合理區間" in w for w in warnings), "深度這一條要留著"
+    assert not any("單幀誤差" in w for w in warnings), "誤差那一條是衍生的，不該再報"

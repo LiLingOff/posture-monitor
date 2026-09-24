@@ -17,6 +17,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calibration.capture import (_open_camera,  # noqa: E402
@@ -32,6 +34,7 @@ from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
+from pose.topology import COCO18_KEYPOINT_NAMES  # noqa: E402
 
 
 def _build_engine(args) -> LightweightOpenPoseEngine:
@@ -70,6 +73,29 @@ def _measure_once(engine, calib, cap, args):
     match = _match(calib, engine.infer(left_frame), engine.infer(right_frame))
     measurement = measure_posture(calib, match.left, match.right, args.min_confidence)
     return measurement, match
+
+
+def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=None) -> Path:
+    """把左右兩眼的畫面存下來，偵測到的關鍵點疊上去。
+
+    診斷訊息說得出「左右配對錯誤」，但說不出相機到底看到什麼。人在不在畫面裡、
+    頭有沒有被切掉、畫面裡還有什麼被當成人，這些看一眼就知道，
+    用座標猜要來回好幾輪。
+    """
+    import cv2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, frame, kp in (("left", left_frame, left_kp), ("right", right_frame, right_kp)):
+        canvas = frame.copy()
+        if kp is not None:
+            for i, (x, y) in enumerate(kp.points):
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    continue
+                cv2.circle(canvas, (int(x), int(y)), 4, (0, 255, 0), -1)
+                cv2.putText(canvas, COCO18_KEYPOINT_NAMES[i], (int(x) + 6, int(y) - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
+        cv2.imwrite(str(out_dir / f"{name}.png"), canvas)
+    return out_dir
 
 
 def _describe_match(match: PersonMatch) -> str:
@@ -116,7 +142,17 @@ def _run_once(args) -> None:
         engine.warmup(left_frame)
         _step("開始推論")
 
-        match = _match(calib, engine.infer(left_frame), engine.infer(right_frame))
+        left_detections = engine.infer(left_frame)
+        right_detections = engine.infer(right_frame)
+        if args.save_frames:
+            # 配對失敗時也要存得下來，所以先存原始畫面，配對成功再補上關鍵點
+            _save_frames(left_frame, right_frame, args.save_frames,
+                         left_detections[0] if left_detections else None,
+                         right_detections[0] if right_detections else None)
+            _step(f"畫面已存到 {args.save_frames}")
+        match = _match(calib, left_detections, right_detections)
+        if args.save_frames:
+            _save_frames(left_frame, right_frame, args.save_frames, match.left, match.right)
         measurement = measure_posture(calib, match.left, match.right, args.min_confidence)
     finally:
         cap.release()
@@ -383,6 +419,9 @@ def main() -> None:
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
+            p.add_argument("--save-frames", type=Path, default=None,
+                           help="把左右兩眼的畫面存成 png，偵測到的關鍵點疊上去。"
+                                "診斷訊息說不出相機到底看到什麼，這個看得出來")
         if name in ("live", "baseline"):
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")

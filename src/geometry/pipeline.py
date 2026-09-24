@@ -140,14 +140,16 @@ def estimate_theta_ca_precision_deg(
     return float(np.degrees(np.sqrt(2) * sigma_forward / _EAR_SHOULDER_MM))
 
 
-def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float:
+def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float | None:
     """雙目模組相對受試者正面的方位角（0~90度）。0是正面、90是正側面。
 
-    由雙肩連線與相機 X 軸的夾角算出。雙肩取不到時回傳 0，
-    也就是當成正面。那是 θ_CA 精度最差的情況，估計誤差時取保守值。
+    由雙肩連線與相機 X 軸的夾角算出，所以雙肩取不到就量不到，回傳 None。
+    不回傳 0：那會讓退回值長得跟「量到 0 度，模組正對著受試者」一模一樣，
+    而程式會據此建議把模組往側面移。建議一個根本沒量到的東西比不建議更糟。
     """
-    # 雙肩取不到時 anatomical_axes 會退回相機的 X 軸，算出來剛好是 0 度，
-    # 不需要另外判斷。取絕對值是因為左右兩側對精度的影響相同。
+    if keypoints_3d.get("left_shoulder") is None or keypoints_3d.get("right_shoulder") is None:
+        return None
+    # 取絕對值是因為左右兩側對精度的影響相同。
     lateral, _ = anatomical_axes(keypoints_3d)
     cos_alpha = abs(float(np.dot(lateral, np.array([1.0, 0.0, 0.0]))))
     return float(np.degrees(np.arccos(np.clip(cos_alpha, 0.0, 1.0))))
@@ -266,8 +268,9 @@ def measure_posture(
     measurement.reference_depth_mm = reference_depth_mm(keypoints_3d)
     measurement.camera_azimuth_deg = camera_azimuth_deg(keypoints_3d)
     if measurement.reference_depth_mm is not None:
+        # 方位角量不到時用 0，那是 θ_CA 精度最差的情況，估計誤差取保守值。
         measurement.theta_ca_precision_deg = estimate_theta_ca_precision_deg(
-            calib, measurement.reference_depth_mm, measurement.camera_azimuth_deg
+            calib, measurement.reference_depth_mm, measurement.camera_azimuth_deg or 0.0
         )
 
     # 缺關鍵點或資料退化都會拋例外。一個角度算不出來不該影響另一個，
@@ -345,11 +348,12 @@ def format_measurement(
         _cell("  角度用到的點", 17)
         + ("—" if worst_angle is None else f"{worst_angle[1]:.2f} px（{worst_angle[0]}）")
     )
-    if measurement.camera_azimuth_deg is not None:
-        lines.append(
-            _cell("相機方位角", 17)
-            + f"{measurement.camera_azimuth_deg:.0f}°（0 是正面、90 是正側面）"
-        )
+    lines.append(
+        _cell("相機方位角", 17)
+        + (f"{measurement.camera_azimuth_deg:.0f}°（0 是正面、90 是正側面）"
+           if measurement.camera_azimuth_deg is not None
+           else "量不到（雙肩沒有同時偵測到）")
+    )
     if measurement.theta_ca_precision_deg is not None:
         lines.append(
             _cell("θ_CA 單幀誤差", 17)
@@ -486,17 +490,26 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
         )
 
     precision = measurement.theta_ca_precision_deg
-    if precision is not None and precision > _THETA_CA_THRESHOLD_DEG:
-        distance = measurement.reference_depth_mm or 0.0
-        azimuth = measurement.camera_azimuth_deg or 0.0
-        advice = (
-            "深度誤差隨距離的平方成長，坐近一點會有幫助"
-            if azimuth > 60.0
-            else "把雙目模組往側面移比坐近更有效：正面時「往前伸」完全落在深度軸上，"
-            "側面則落在影像平面上，兩者精度差了 Z/B 倍"
-        )
+    distance = measurement.reference_depth_mm
+    azimuth = measurement.camera_azimuth_deg
+    # 深度本身就不合理時，換算出來的誤差只是同一個原因的衍生結果。
+    # 上面已經講過深度了，再報一次誤差只會把真正的線索淹掉。
+    depth_is_sane = distance is not None and _PLAUSIBLE_DEPTH_MM[0] <= distance <= _PLAUSIBLE_DEPTH_MM[1]
+    if precision is not None and precision > _THETA_CA_THRESHOLD_DEG and depth_is_sane:
+        where = f"距離 {distance:.0f} mm"
+        if azimuth is None:
+            # 方位角沒量到，就不能拿它來建議該往哪邊移
+            advice = "深度誤差隨距離的平方成長，坐近一點會有幫助"
+            where += "（方位角量不到，雙肩沒有同時偵測到）"
+        elif azimuth > 60.0:
+            advice = "深度誤差隨距離的平方成長，坐近一點會有幫助"
+            where += f"、方位角 {azimuth:.0f}°"
+        else:
+            advice = ("把雙目模組往側面移比坐近更有效：正面時「往前伸」完全落在深度軸上，"
+                      "側面則落在影像平面上，兩者精度差了 Z/B 倍")
+            where += f"、方位角 {azimuth:.0f}°"
         warnings.append(
-            f"距離 {distance:.0f} mm、方位角 {azimuth:.0f}°，θ_CA 單幀誤差約 ±{precision:.1f}°，"
+            f"{where}，θ_CA 單幀誤差約 ±{precision:.1f}°，"
             f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。{advice}"
         )
 
