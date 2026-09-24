@@ -104,9 +104,12 @@ def _describe_match(match: PersonMatch) -> str:
     """偵測到幾個人、挑中的那一對對得多齊。配錯人是深度離譜的頭號成因。"""
     line = (
         f"偵測到的人數     左眼 {match.left_count}   右眼 {match.right_count}"
-        f"   挑中的一對垂直視差中位數 {match.median_vertical_disparity_px:.2f} px"
+        f"   挑中的一位距離 {match.distance_mm:.0f} mm"
+        f"，垂直視差中位數 {match.median_vertical_disparity_px:.2f} px"
     )
-    if match.was_ambiguous:
+    if match.rejected_farther:
+        line += f"\n（排除了 {match.rejected_farther} 位更遠的人，背景有人經過時會用到這一條）"
+    elif match.was_ambiguous:
         line += f"\n（有 {match.rejected_pairs} 種其他配法被排除；畫面裡不只一個偵測結果）"
     return line + "\n"
 

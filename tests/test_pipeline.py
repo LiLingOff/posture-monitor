@@ -710,3 +710,59 @@ def test_the_two_thresholds_do_not_overlap():
                                    _MISPAIRED_DISPARITY_PX)
 
     assert _MAX_VERTICAL_DISPARITY_PX < _MISPAIRED_DISPARITY_PX
+
+
+def _person_at(depth_mm: float):
+    pose = {k: np.array([v[0], v[1], v[2] * depth_mm / 600.0])
+            for k, v in _seated_pose().items()}
+    return _project(pose)
+
+
+def test_picks_the_nearest_person_when_someone_walks_past_behind():
+    """2026-09-24 實機：受試者坐在 700mm，基準卻量到 1384mm 與 1796mm。
+
+    後面有人經過。垂直視差擋得住「左眼的 A 配到右眼的 B」，但兩個人各自都能
+    配得很齊，它分不出該追哪一個，背景那位甚至可能對得更好。
+    """
+    from geometry.pipeline import match_person_pair
+
+    near_l, near_r = _person_at(650.0)
+    far_l, far_r = _person_at(1500.0)
+    match = match_person_pair(_calib(), [far_l, near_l], [far_r, near_r])
+
+    assert match.distance_mm == pytest.approx(650.0, rel=0.1)
+    assert match.rejected_farther == 1
+    assert match.left is near_l and match.right is near_r
+
+
+def test_order_of_the_detections_does_not_matter():
+    from geometry.pipeline import match_person_pair
+
+    near_l, near_r = _person_at(650.0)
+    far_l, far_r = _person_at(1500.0)
+    for lefts, rights in (([near_l, far_l], [near_r, far_r]),
+                          ([far_l, near_l], [near_r, far_r])):
+        match = match_person_pair(_calib(), lefts, rights)
+        assert match.distance_mm == pytest.approx(650.0, rel=0.1)
+
+
+def test_distance_never_overrides_the_disparity_check():
+    """一個對不齊的組合就算算出來很近也不能選，那個「近」本來就是錯的。"""
+    from geometry.pipeline import match_person_pair
+
+    left, right = _person_at(900.0)
+    # 右眼整組橫移，配出來的深度會很近，但對極線完全對不齊
+    bogus = PersonKeypoints(right.points + np.array([300.0, 90.0]), right.confidences.copy())
+    match = match_person_pair(_calib(), [left], [bogus, right])
+
+    assert match.right is right
+    assert match.median_vertical_disparity_px < 1.0
+
+
+def test_reports_the_distance_of_the_person_it_chose():
+    from geometry.pipeline import match_person_pair
+
+    near_l, near_r = _person_at(650.0)
+    match = match_person_pair(_calib(), [near_l], [near_r])
+    assert match.distance_mm == pytest.approx(650.0, rel=0.1)
+    assert match.rejected_farther == 0

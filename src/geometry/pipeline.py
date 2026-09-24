@@ -22,7 +22,7 @@ from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
 from .posture_angles import (anatomical_axes, theta_ca_on_available_side,
                              theta_sym)
 from .terminal import cell as _cell
-from .triangulation import rectified_vertical_disparity
+from .triangulation import rectified_vertical_disparity, triangulate_points
 
 # 桌前坐姿的合理深度範圍。超出這個範圍多半是配對錯誤或標定尺度不對，
 # 而不是受試者真的坐到三公尺外。
@@ -231,7 +231,9 @@ class PersonMatch:
     left_count: int
     right_count: int
     median_vertical_disparity_px: float
+    distance_mm: float
     rejected_pairs: int
+    rejected_farther: int = 0
 
     @property
     def was_ambiguous(self) -> bool:
@@ -253,9 +255,16 @@ def match_person_pair(
     2026-09-24 實機連續 20 幀都算出深度 100mm，那需要 341px 的視差，
     而單眼畫面才 1280px 寬。
 
-    判準用校正後的垂直視差：stereoRectify 的目的就是讓對應點的 y 幾乎相同，
-    所以真正成對的那組會有最小的 |Δy| 中位數，錯配的那組沒有理由對齊。
-    取中位數而非平均，是因為個別關鍵點配錯不該推翻整個人的配對。
+    兩道篩選，處理的是兩件不同的事。
+
+    第一道是校正後的垂直視差：stereoRectify 的目的就是讓對應點的 y 幾乎相同，
+    所以真正成對的那組會對齊，錯配的沒有理由對齊。取中位數而非平均，
+    是因為個別關鍵點配錯不該推翻整個人的配對。
+
+    第二道是距離。畫面裡有兩個人時，兩個人各自都能配得很齊，垂直視差分不出
+    該追哪一個，背景那位甚至可能對得更好。2026-09-24 實機就是這樣：受試者坐在
+    700mm 附近，量出來卻是 1384mm 與 1796mm，那是後面經過的人。
+    桌前坐姿監測的對象永遠是最靠近相機的那位，所以在對得齊的組合裡取最近的。
     """
     if not left_detections or not right_detections:
         raise ValueError(
@@ -263,28 +272,37 @@ def match_person_pair(
             f"至少要兩邊各一個才能配對"
         )
 
-    best: tuple[float, PersonKeypoints, PersonKeypoints] | None = None
+    candidates: list[tuple[float, float, PersonKeypoints, PersonKeypoints]] = []
     for left in left_detections:
         for right in right_detections:
             disparity = rectified_vertical_disparity(calib, left.points, right.points)
-            disparity = np.abs(disparity[np.isfinite(disparity)])
-            if disparity.size == 0:
+            finite = np.abs(disparity[np.isfinite(disparity)])
+            if finite.size == 0:
                 continue
-            score = float(np.median(disparity))
-            if best is None or score < best[0]:
-                best = (score, left, right)
+            depths = triangulate_points(calib, left.points, right.points)[:, 2]
+            depths = depths[np.isfinite(depths)]
+            distance = float(np.median(depths)) if depths.size else float("inf")
+            candidates.append((float(np.median(finite)), distance, left, right))
 
-    if best is None:
+    if not candidates:
         raise ValueError("左右兩眼沒有任何共同偵測到的關鍵點，無法配對")
 
-    total_pairs = len(left_detections) * len(right_detections)
+    # 第一道：垂直視差。擋掉左眼的 A 配到右眼的 B，那種組合在對極線上對不齊。
+    consistent = [c for c in candidates if c[0] <= _MISPAIRED_DISPARITY_PX]
+    # 第二道：距離。兩個人各自都能配得很齊，視差分不出該追哪一個，
+    # 而背景那個人甚至可能對得更好。桌前坐姿監測的對象是最靠近相機的那位。
+    chosen = min(consistent, key=lambda c: c[1]) if consistent else min(candidates)
+    farther = sum(1 for c in consistent if c[1] > chosen[1])
+
     return PersonMatch(
-        left=best[1],
-        right=best[2],
+        left=chosen[2],
+        right=chosen[3],
         left_count=len(left_detections),
         right_count=len(right_detections),
-        median_vertical_disparity_px=best[0],
-        rejected_pairs=total_pairs - 1,
+        median_vertical_disparity_px=chosen[0],
+        distance_mm=chosen[1],
+        rejected_pairs=len(candidates) - 1,
+        rejected_farther=farther,
     )
 
 
