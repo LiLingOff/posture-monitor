@@ -164,21 +164,15 @@ def precision_advice(distance_mm: float | None, azimuth_deg: float | None) -> st
     先前這段建議寫死成「把模組往側面移」，在已經 50° 的情況下指錯了方向。
     """
     if distance_mm is None or distance_mm <= 0:
-        return "距離量不到，先確認受試者完整在畫面內。"
+        return "距離量不到，先確認受試者完整在畫面內"
     if distance_mm > _COMFORTABLE_DISTANCE_MM * 1.3:
         factor = (distance_mm / _COMFORTABLE_DISTANCE_MM) ** 2
-        return (
-            f"距離是主因。深度誤差隨距離平方成長，坐到 {_COMFORTABLE_DISTANCE_MM:.0f} mm "
-            f"左右可以把誤差降到約 1/{factor:.1f}。"
-        )
+        return f"坐到 {_COMFORTABLE_DISTANCE_MM:.0f}mm 可降到約 1/{factor:.1f}（誤差隨距離平方成長）"
     if azimuth_deg is None:
-        return "方位角量不到（雙肩沒有同時偵測到），先讓兩邊肩膀都進畫面。"
+        return "方位角量不到，先讓兩邊肩膀都進畫面"
     if azimuth_deg < 60.0:
-        return (
-            f"距離已經夠近，剩下方位角。現在 {azimuth_deg:.0f}°，"
-            f"往側面移到 60~75° 還有一倍以上的改善，上限由遠側肩膀什麼時候被擋住決定。"
-        )
-    return "距離與方位角都已經接近這組硬體的極限，剩下的靠拉長平均視窗。"
+        return f"距離夠近了。方位角 {azimuth_deg:.0f}°，往側面移到 60~75° 可再降一半以上"
+    return "距離與方位角都接近硬體極限，只剩拉長平均視窗"
 
 
 def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float | None:
@@ -512,20 +506,19 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
     worst_all = _worst_disparity(measurement)
     if worst_angle is not None and worst_angle[1] > _MISPAIRED_DISPARITY_PX:
         warnings.append(
-            f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f} px，"
-            f"這個點左右配對到了不同位置。這一幀的角度不可信"
+            f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f}px，"
+            f"左右配對錯了，這一幀的角度不可信"
         )
     elif worst_angle is not None and worst_angle[1] > _MAX_VERTICAL_DISPARITY_PX:
         warnings.append(
-            f"角度用到的 {worst_angle[0]} 垂直視差 {worst_angle[1]:.1f} px"
-            f"（標定夠準的話應 <{_MAX_VERTICAL_DISPARITY_PX}）。這個幅度還在雜訊範圍內，"
-            f"這一幀照常使用，但持續偏高的話該回頭檢查標定"
+            f"{worst_angle[0]} 垂直視差 {worst_angle[1]:.1f}px"
+            f"（標定目標 <{_MAX_VERTICAL_DISPARITY_PX}）。還在雜訊範圍，這一幀照常使用；"
+            f"持續偏高再回頭看標定"
         )
     elif worst_all is not None and worst_all[1] > _MISPAIRED_DISPARITY_PX:
         warnings.append(
-            f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f} px，這個點左右配對錯了。"
-            f"角度用到的點都正常，所以不影響這一次的角度，"
-            f"但它會汙染深度範圍這類整體指標"
+            f"{worst_all[0]} 垂直視差 {worst_all[1]:.1f}px，左右配對錯了。"
+            f"角度用到的點正常，但深度範圍這類整體指標會被它拉走"
         )
 
     if measurement.edge_keypoints:
@@ -533,25 +526,22 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
         listed = "、".join(measurement.edge_keypoints[:5])
         more = f" 等 {len(measurement.edge_keypoints)} 個點" if len(measurement.edge_keypoints) > 5 else ""
         warnings.append(
-            f"{listed}{more} 貼在畫面邊緣，那是被邊界夾住的值而不是偵測結果，"
-            f"真實位置在畫面外。把相機轉向這些部位所在的方向。"
-            + ("角度用到的點也在裡面，這一幀的角度不可信" if used else "角度沒有用到這些點")
+            f"{listed}{more} 貼在畫面邊緣，真實位置在畫面外。把相機轉向那個方向。"
+            + ("角度用到的點也在裡面，這一幀不可信" if used else "角度沒有用到這些點")
         )
 
     bad_depths = _implausible_depths(measurement)
     if bad_depths:
         low, high = _PLAUSIBLE_DEPTH_MM
         listed = "、".join(f"{name} {z:.0f}mm" for name, z in bad_depths[:4])
-        more = f" 等 {len(bad_depths)} 個點" if len(bad_depths) > 4 else ""
+        more = f" 等 {len(bad_depths)} 個點的" if len(bad_depths) > 4 else ""
         reason = (
-            "深度為負代表算出來的點在相機後方，只可能是左右配對錯誤"
+            "負深度代表點在相機後方，只可能是左右配對錯誤"
             if any(z < 0 for _, z in bad_depths)
-            else "整體偏掉通常是標定時的 --square-size-mm 填錯造成尺度不對"
+            else "整體偏掉通常是標定的 --square-size-mm 填錯"
         )
-        warnings.append(
-            f"{listed}{more} 的深度超出桌前坐姿的合理區間"
-            f"（{low:.0f}~{high:.0f} mm）。{reason}"
-        )
+        tail = "深度超出" if more else " 深度超出"
+        warnings.append(f"{listed}{more}{tail} {low:.0f}~{high:.0f}mm 的合理區間。{reason}")
 
     precision = measurement.theta_ca_precision_deg
     distance = measurement.reference_depth_mm
@@ -563,14 +553,13 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
         where = f"距離 {distance:.0f} mm"
         where += "（方位角量不到）" if azimuth is None else f"、方位角 {azimuth:.0f}°"
         warnings.append(
-            f"{where}，θ_CA 單幀誤差約 ±{precision:.1f}°，"
-            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。"
+            f"{where}，θ_CA 單幀誤差 ±{precision:.1f}°，超過 "
+            f"{_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻本身，這一幀沒有參考價值。"
             + precision_advice(distance, azimuth)
         )
 
     if measurement.shared_count < 4:
         warnings.append(
-            f"左右只有 {measurement.shared_count} 個共同關鍵點，樣本太少，"
-            f"算出來的角度參考價值有限"
+            f"左右只有 {measurement.shared_count} 個共同關鍵點，樣本太少"
         )
     return warnings

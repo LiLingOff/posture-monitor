@@ -116,18 +116,17 @@ def baseline_quality_warnings(
     warnings: list[str] = []
     if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
         warnings.append(
-            f"θ_CA 基準的誤差是 ±{baseline.theta_ca_standard_error_deg:.1f}°"
-            f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，平均 {baseline.frames} 幀）。"
-            f"這個偏移會固定留在之後每一次判定裡，相對 10° 的門檻已經可觀。"
+            f"基準誤差 ±{baseline.theta_ca_standard_error_deg:.1f}°"
+            f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，{baseline.frames} 幀），"
+            f"這個偏移會留在之後每一次判定裡。"
             + precision_advice(baseline.distance_mm, baseline.azimuth_deg)
-            + "延長取樣時間只能開根號地改善，先處理上面那一項。"
         )
     if (expected_single_frame_error_deg is not None
             and baseline.theta_ca_std_deg > _MOVEMENT_FACTOR * expected_single_frame_error_deg):
         warnings.append(
-            f"θ_CA 的散佈 ±{baseline.theta_ca_std_deg:.1f}° 明顯大於這個距離"
-            f"該有的量測雜訊 ±{expected_single_frame_error_deg:.1f}°，"
-            f"受試者在取基準的過程中應該動了。請他保持不動再取一次"
+            f"θ_CA 散佈 ±{baseline.theta_ca_std_deg:.1f}°，"
+            f"這個位置該有的是 ±{expected_single_frame_error_deg:.1f}°。"
+            f"受試者動了，請保持不動再取一次"
         )
     return warnings
 
@@ -239,7 +238,7 @@ class BaselineCollector:
         warnings = baseline_quality_warnings(baseline, expected)
         if self.rejected > self.count:
             warnings.append(
-                f"略過的幀（{self.rejected}）比收下的（{self.count}）還多，"
-                f"偵測本身就不穩定，這份基準的代表性有限"
+                f"略過 {self.rejected} 幀比收下的 {self.count} 還多，偵測不穩定，"
+                f"這份基準的代表性有限"
             )
         return warnings

@@ -214,7 +214,7 @@ def test_advice_points_at_distance_when_distance_is_the_problem():
     from geometry.pipeline import precision_advice
 
     advice = precision_advice(1796.0, 50.0)
-    assert "距離是主因" in advice
+    assert "坐到 700mm" in advice
     assert "往側面移" not in advice
     assert "1/6" in advice, "要給出具體的改善倍數"
 
@@ -224,7 +224,7 @@ def test_advice_points_at_azimuth_once_the_distance_is_fine():
 
     advice = precision_advice(650.0, 15.0)
     assert "方位角" in advice and "往側面移" in advice
-    assert "距離是主因" not in advice
+    assert "坐到" not in advice
 
 
 def test_advice_admits_when_there_is_nothing_left_to_move():
@@ -249,8 +249,8 @@ def test_baseline_warning_carries_the_same_advice():
                              "distance_mm": 1796.0, "azimuth_deg": 50.0,
                              "theta_ca_standard_error_deg": 3.8,
                              "theta_ca_std_deg": 23.5})
-    warning = next(w for w in collector.quality_warnings(far) if "θ_CA 基準的誤差" in w)
-    assert "距離是主因" in warning
+    warning = next(w for w in collector.quality_warnings(far) if "基準誤差" in w)
+    assert "坐到 700mm" in warning
     assert "往側面移" not in warning
 
 
@@ -273,8 +273,8 @@ def test_a_poor_baseline_still_warns_when_it_is_loaded_back(tmp_path):
 
     reloaded = PostureBaseline.load(path)
     warnings = baseline_quality_warnings(reloaded)
-    assert any("θ_CA 基準的誤差" in w for w in warnings)
-    assert any("距離是主因" in w for w in warnings)
+    assert any("基準誤差" in w for w in warnings)
+    assert any("坐到 700mm" in w for w in warnings)
 
 
 def test_a_good_baseline_loads_without_complaint():

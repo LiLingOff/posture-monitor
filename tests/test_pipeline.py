@@ -105,7 +105,7 @@ def test_flags_implausible_depth():
     left, right = _project(pose)
     m = measure_posture(_calib(), left, right)
     warnings = plausibility_warnings(m)
-    assert any("超出桌前坐姿的合理區間" in w for w in warnings)
+    assert any("合理區間" in w for w in warnings)
     assert any("right_shoulder" in w for w in warnings), "要指名是哪個點，否則無從查起"
 
 
@@ -250,7 +250,7 @@ def test_a_bad_limb_does_not_read_as_a_calibration_problem():
     disparity_warnings = [w for w in warnings if "垂直視差" in w]
     assert len(disparity_warnings) == 1
     assert "right_wrist" in disparity_warnings[0]
-    assert "不影響這一次的角度" in disparity_warnings[0]
+    assert "角度用到的點正常" in disparity_warnings[0]
 
 
 def test_a_bad_angle_keypoint_is_reported_as_untrustworthy():
