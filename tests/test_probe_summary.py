@@ -81,7 +81,8 @@ def test_reports_the_nodes_that_do_exist_when_the_number_shifted(linux, monkeypa
     message = linux.describe_camera_open_failure(0)
     assert "/dev/video0 不存在" in message
     assert "video2、video3" in message
-    assert "--camera 2" in message, "要直接給出可以照抄的指令"
+    assert "--camera 2" in message, "要直接說出該改成哪個編號"
+    assert "posture.py live" not in message, "訊息寫死子指令的話，跑 baseline 的人會被誤導"
 
 
 def test_says_the_device_is_absent_when_nothing_is_plugged_in(linux, monkeypatch):

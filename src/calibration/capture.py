@@ -76,11 +76,11 @@ def describe_camera_open_failure(index: int) -> str:
         lines.append(f"  /dev/video{index} 不存在。")
         if available:
             lines.append(f"  目前存在的是 {'、'.join(available)}。")
+            lowest = available[0][len("video"):]
             lines.append(
-                "  重新插拔之後編號會整組移位。一顆雙目模組佔用兩個節點，"
-                "只有編號較小的那個能取像，所以要試的是上面編號最小的那個："
+                "  重新插拔或重開機之後編號會整組移位。一顆雙目模組佔用兩個節點，"
+                f"只有編號較小的那個能取像，所以改用 --camera {lowest}"
             )
-            lines.append(f"       python posture.py live --camera {available[0][len('video'):]} ...")
         else:
             lines.append("  一個 /dev/video* 都沒有。裝置沒接上，或 USB 沒認到。用 dmesg | tail -30 看看。")
         return "\n".join(lines)
