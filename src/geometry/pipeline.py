@@ -48,6 +48,9 @@ _EAR_SHOULDER_MM = 170.0
 # 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
 # 因為那代表連平均都救不太回來，該做的是坐近一點。
 _THETA_CA_THRESHOLD_DEG = 10.0
+# 桌前坐姿夠得著的距離。σ_Z 隨距離平方成長，所以這個數字決定誤差的量級：
+# 700mm 配 50° 方位是 ±6.3°，1800mm 同一個方位是 ±41°。
+_COMFORTABLE_DISTANCE_MM = 700.0
 # θ_sym 與解剖平面永遠要雙肩，θ_CA 再加上它實際用到的那一側的耳朵。
 # 哪一側是動態的，所以用 angle_keypoints() 查而不是寫死一個常數：
 # 把兩側的耳朵都算進去的話，遠側那隻被遮住或配對錯誤就會誤報成角度不可信。
@@ -147,6 +150,35 @@ def estimate_theta_ca_precision_deg(
     alpha = np.radians(azimuth_deg)
     sigma_forward = np.hypot(np.cos(alpha) * sigma_depth, np.sin(alpha) * sigma_lateral)
     return float(np.degrees(np.sqrt(2) * sigma_forward / _EAR_SHOULDER_MM))
+
+
+def precision_advice(distance_mm: float | None, azimuth_deg: float | None) -> str:
+    """誤差太大時，該動距離還是動方位角。
+
+    兩個軸的貢獻是 cos(α)·σ_Z 與 sin(α)·σ_X，而 σ_Z/σ_X = Z/B，在這組硬體上
+    是二十到三十倍。所以除非方位角很接近 90°（那個角度遠側肩膀早被擋住），
+    深度那一項都是壓倒性的，而它隨距離**平方**成長。
+    1796mm 配 50° 方位量到的 ±41°，推到 75° 只降到 ±17°，
+    但坐到 700mm 就是 ±6.3°。
+
+    先前這段建議寫死成「把模組往側面移」，在已經 50° 的情況下指錯了方向。
+    """
+    if distance_mm is None or distance_mm <= 0:
+        return "距離量不到，先確認受試者完整在畫面內。"
+    if distance_mm > _COMFORTABLE_DISTANCE_MM * 1.3:
+        factor = (distance_mm / _COMFORTABLE_DISTANCE_MM) ** 2
+        return (
+            f"距離是主因。深度誤差隨距離平方成長，坐到 {_COMFORTABLE_DISTANCE_MM:.0f} mm "
+            f"左右可以把誤差降到約 1/{factor:.1f}。"
+        )
+    if azimuth_deg is None:
+        return "方位角量不到（雙肩沒有同時偵測到），先讓兩邊肩膀都進畫面。"
+    if azimuth_deg < 60.0:
+        return (
+            f"距離已經夠近，剩下方位角。現在 {azimuth_deg:.0f}°，"
+            f"往側面移到 60~75° 還有一倍以上的改善，上限由遠側肩膀什麼時候被擋住決定。"
+        )
+    return "距離與方位角都已經接近這組硬體的極限，剩下的靠拉長平均視窗。"
 
 
 def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float | None:
@@ -511,20 +543,11 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
     depth_is_sane = distance is not None and _PLAUSIBLE_DEPTH_MM[0] <= distance <= _PLAUSIBLE_DEPTH_MM[1]
     if precision is not None and precision > _THETA_CA_THRESHOLD_DEG and depth_is_sane:
         where = f"距離 {distance:.0f} mm"
-        if azimuth is None:
-            # 方位角沒量到，就不能拿它來建議該往哪邊移
-            advice = "深度誤差隨距離的平方成長，坐近一點會有幫助"
-            where += "（方位角量不到，雙肩沒有同時偵測到）"
-        elif azimuth > 60.0:
-            advice = "深度誤差隨距離的平方成長，坐近一點會有幫助"
-            where += f"、方位角 {azimuth:.0f}°"
-        else:
-            advice = ("把雙目模組往側面移比坐近更有效：正面時「往前伸」完全落在深度軸上，"
-                      "側面則落在影像平面上，兩者精度差了 Z/B 倍")
-            where += f"、方位角 {azimuth:.0f}°"
+        where += "（方位角量不到）" if azimuth is None else f"、方位角 {azimuth:.0f}°"
         warnings.append(
             f"{where}，θ_CA 單幀誤差約 ±{precision:.1f}°，"
-            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。{advice}"
+            f"比 {_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻還大，這一幀的角度沒有參考價值。"
+            + precision_advice(distance, azimuth)
         )
 
     if measurement.shared_count < 4:

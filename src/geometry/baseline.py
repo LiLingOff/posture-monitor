@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .pipeline import unusable_reason
+from .pipeline import precision_advice, unusable_reason
 
 # 低於這個幀數就不給出基準。10 秒在實機的 6.4fps 下約 60 幀，
 # 20 幀是大幅放寬後的下限，再少的話平均本身就不可信。
@@ -207,9 +207,11 @@ class BaselineCollector:
         warnings: list[str] = []
         if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
             warnings.append(
-                f"θ_CA 基準的誤差是 ±{baseline.theta_ca_standard_error_deg:.1f}°，"
-                f"這個偏移會留在之後每一次判定裡。延長取樣時間，"
-                f"或把雙目模組往側面移（正面是 θ_CA 精度最差的位置）"
+                f"θ_CA 基準的誤差是 ±{baseline.theta_ca_standard_error_deg:.1f}°"
+                f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，平均 {baseline.frames} 幀）。"
+                f"這個偏移會固定留在之後每一次判定裡，相對 10° 的門檻已經可觀。"
+                + precision_advice(baseline.distance_mm, baseline.azimuth_deg)
+                + "延長取樣時間只能開根號地改善，先處理上面那一項。"
             )
 
         # 理論值算的是量測雜訊。實測散佈遠大於它，多的那部分只可能來自受試者本人。

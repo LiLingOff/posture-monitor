@@ -4,6 +4,8 @@
 兩個人量到的 θ_CA 可以差十幾度。基準取錯的後果比執行期單幀算錯嚴重：
 執行期的雜訊會被平均掉，基準的偏差會固定留在之後每一次判定裡。
 """
+from dataclasses import asdict
+
 import numpy as np
 import pytest
 
@@ -200,3 +202,53 @@ def test_says_so_when_nothing_was_captured_at_all():
     collector = BaselineCollector()
     with pytest.raises(ValueError, match="光線"):
         collector.finish("test", 5.0)
+
+
+def test_advice_points_at_distance_when_distance_is_the_problem():
+    """2026-09-24：在 1796mm、方位角 50° 取到的基準，誤差 ±3.8°。
+
+    當時的建議是「把雙目模組往側面移（正面是精度最差的位置）」，
+    但模組已經在 50° 了，而且同一個距離推到 75° 只從 ±41° 降到 ±17°，
+    坐到 700mm 則是 ±6.3°。建議指錯了方向。
+    """
+    from geometry.pipeline import precision_advice
+
+    advice = precision_advice(1796.0, 50.0)
+    assert "距離是主因" in advice
+    assert "往側面移" not in advice
+    assert "1/6" in advice, "要給出具體的改善倍數"
+
+
+def test_advice_points_at_azimuth_once_the_distance_is_fine():
+    from geometry.pipeline import precision_advice
+
+    advice = precision_advice(650.0, 15.0)
+    assert "方位角" in advice and "往側面移" in advice
+    assert "距離是主因" not in advice
+
+
+def test_advice_admits_when_there_is_nothing_left_to_move():
+    from geometry.pipeline import precision_advice
+
+    advice = precision_advice(650.0, 80.0)
+    assert "極限" in advice and "平均視窗" in advice
+
+
+def test_advice_says_so_when_the_azimuth_was_not_measured():
+    from geometry.pipeline import precision_advice
+
+    assert "方位角量不到" in precision_advice(650.0, None)
+    assert "距離量不到" in precision_advice(None, 50.0)
+
+
+def test_baseline_warning_carries_the_same_advice():
+    """基準的警告與逐幀的警告用同一套判斷，不該各說各話。"""
+    collector = _collect(12.0)
+    baseline = collector.finish("A", 10.0)
+    far = PostureBaseline(**{**asdict(baseline),
+                             "distance_mm": 1796.0, "azimuth_deg": 50.0,
+                             "theta_ca_standard_error_deg": 3.8,
+                             "theta_ca_std_deg": 23.5})
+    warning = next(w for w in collector.quality_warnings(far) if "θ_CA 基準的誤差" in w)
+    assert "距離是主因" in warning
+    assert "往側面移" not in warning
