@@ -88,6 +88,28 @@ def theta_ca(keypoints_3d: PersonKeypoints3D, side: str = "right") -> float:
     return signed_angle_in_plane(ear - shoulder, _VERTICAL_AXIS, plane_normal=lateral)
 
 
+def theta_ca_on_available_side(
+    keypoints_3d: PersonKeypoints3D, preferred: str = "right"
+) -> tuple[float, str]:
+    """用看得到的那一側算 θ_CA，回傳（角度, 用的是哪一側）。
+
+    兩側完全等價：矢狀面的法向量與參考軸都不隨側別改變，所以同一個姿勢
+    左右兩側算出來的數值與正負號一模一樣，哪一側可用就用哪一側。
+
+    預設先試右側，對應前作把側面相機架在使用者右側的設定。但雙目模組架在
+    受試者左邊時，近側耳朵變成左耳，右耳會被頭擋住；沒有備援的話 θ_CA
+    整個算不出來，而那只是架設方位的差別，不是姿勢有問題。
+    """
+    other = "left" if preferred == "right" else "right"
+    reasons = []
+    for side in (preferred, other):
+        try:
+            return theta_ca(keypoints_3d, side), side
+        except ValueError as exc:
+            reasons.append(str(exc))
+    raise ValueError("兩側都算不出來。" + "；".join(reasons))
+
+
 def theta_sym(keypoints_3d: PersonKeypoints3D) -> float:
     """肩膀水平角：左右肩連線投影到冠狀面後相對水平軸的帶號夾角。
 

@@ -19,7 +19,8 @@ from pose.keypoints import PersonKeypoints
 from pose.topology import COCO18_KEYPOINT_NAMES
 
 from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
-from .posture_angles import anatomical_axes, theta_ca, theta_sym
+from .posture_angles import (anatomical_axes, theta_ca_on_available_side,
+                             theta_sym)
 from .terminal import cell as _cell
 from .triangulation import rectified_vertical_disparity
 
@@ -38,11 +39,10 @@ _EAR_SHOULDER_MM = 170.0
 # 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
 # 因為那代表連平均都救不太回來，該做的是坐近一點。
 _THETA_CA_THRESHOLD_DEG = 10.0
-# 角度實際用到的點。θ_CA 預設取右側（right_ear + right_shoulder），
-# θ_sym 與解剖平面取雙肩。left_ear 不在裡面：預設參數下沒有任何角度用到它，
-# 放進來的話它配對錯誤就會誤報成「角度不可信」。
-# 改用 theta_ca(side="left") 時要連同這裡一起調整。
-_ANGLE_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder")
+# θ_sym 與解剖平面永遠要雙肩，θ_CA 再加上它實際用到的那一側的耳朵。
+# 哪一側是動態的，所以用 angle_keypoints() 查而不是寫死一個常數：
+# 把兩側的耳朵都算進去的話，遠側那隻被遮住或配對錯誤就會誤報成角度不可信。
+_SHOULDER_KEYPOINTS = ("right_shoulder", "left_shoulder")
 # 關鍵點落在離畫面邊緣這麼近的位置時，多半不是偵測結果而是被邊界夾住的值：
 # 真正的位置在畫面外，模型只能回報它能表示的最接近的點。
 # 2026-09-24 實機遇到頭頂出界，鼻子與雙眼的 y 都是 0.0，換算出來的3D座標
@@ -60,6 +60,7 @@ class PostureMeasurement:
     theta_ca_precision_deg: float | None = None
     reference_depth_mm: float | None = None
     camera_azimuth_deg: float | None = None
+    theta_ca_side: str | None = None  # θ_CA 實際用了哪一側的耳朵
     edge_keypoints: list[str] = field(default_factory=list)
     angle_errors: list[str] = field(default_factory=list)
 
@@ -150,6 +151,11 @@ def camera_azimuth_deg(keypoints_3d: PersonKeypoints3D) -> float:
     lateral, _ = anatomical_axes(keypoints_3d)
     cos_alpha = abs(float(np.dot(lateral, np.array([1.0, 0.0, 0.0]))))
     return float(np.degrees(np.arccos(np.clip(cos_alpha, 0.0, 1.0))))
+
+
+def angle_keypoints(side: str | None = None) -> tuple[str, ...]:
+    """這一幀的角度實際用到哪些關鍵點。side 是 θ_CA 取的那一側。"""
+    return _SHOULDER_KEYPOINTS if side is None else _SHOULDER_KEYPOINTS + (f"{side}_ear",)
 
 
 def keypoints_at_frame_edge(
@@ -266,16 +272,16 @@ def measure_posture(
 
     # 缺關鍵點或資料退化都會拋例外。一個角度算不出來不該影響另一個，
     # 所以分開接，並把原因留下來給使用者看。
-    for name, fn in (("theta_ca", theta_ca), ("theta_sym", theta_sym)):
-        try:
-            value = fn(keypoints_3d)
-        except (ValueError, KeyError) as exc:
-            measurement.angle_errors.append(f"{name}: {exc}")
-            continue
-        if name == "theta_ca":
-            measurement.theta_ca_deg = value
-        else:
-            measurement.theta_sym_deg = value
+    try:
+        measurement.theta_ca_deg, measurement.theta_ca_side = (
+            theta_ca_on_available_side(keypoints_3d)
+        )
+    except (ValueError, KeyError) as exc:
+        measurement.angle_errors.append(f"theta_ca: {exc}")
+    try:
+        measurement.theta_sym_deg = theta_sym(keypoints_3d)
+    except (ValueError, KeyError) as exc:
+        measurement.angle_errors.append(f"theta_sym: {exc}")
     return measurement
 
 
@@ -334,7 +340,7 @@ def format_measurement(
         _cell("最大垂直視差", 17)
         + ("—" if worst_all is None else f"{worst_all[1]:.2f} px（{worst_all[0]}）")
     )
-    worst_angle = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    worst_angle = _worst_disparity(measurement, angle_keypoints(measurement.theta_ca_side))
     lines.append(
         _cell("  角度用到的點", 17)
         + ("—" if worst_angle is None else f"{worst_angle[1]:.2f} px（{worst_angle[0]}）")
@@ -354,7 +360,12 @@ def format_measurement(
 
     ca = measurement.theta_ca_deg
     sym = measurement.theta_sym_deg
-    lines.append(_cell("θ_CA  頸椎前傾", 17) + ("算不出來" if ca is None else f"{ca:+.2f}°"))
+    side = {"right": "右側", "left": "左側"}.get(measurement.theta_ca_side or "", "")
+    lines.append(
+        _cell("θ_CA  頸椎前傾", 17)
+        + ("算不出來" if ca is None else f"{ca:+.2f}°")
+        + (f"   （用{side}耳朵與肩膀）" if side else "")
+    )
     lines.append(_cell("θ_sym 肩膀水平", 17) + ("算不出來" if sym is None else f"{sym:+.2f}°"))
     for err in measurement.angle_errors:
         lines.append(f"  {err}")
@@ -385,11 +396,11 @@ def unusable_reason(measurement: PostureMeasurement) -> str | None:
     if not (low <= depth <= high):
         return f"深度 {depth:.0f}mm 落在桌前坐姿的合理範圍外（{low:.0f}~{high:.0f}mm）"
 
-    at_edge = [n for n in measurement.edge_keypoints if n in _ANGLE_KEYPOINTS]
+    at_edge = [n for n in measurement.edge_keypoints if n in angle_keypoints(measurement.theta_ca_side)]
     if at_edge:
         return f"角度用到的 {'、'.join(at_edge)} 貼在畫面邊緣，真實位置在畫面外"
 
-    worst = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    worst = _worst_disparity(measurement, angle_keypoints(measurement.theta_ca_side))
     if worst is not None and worst[1] > _MAX_VERTICAL_DISPARITY_PX:
         return f"{worst[0]} 的垂直視差 {worst[1]:.1f}px，左右配對錯了"
 
@@ -434,7 +445,7 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
     """
     warnings: list[str] = []
 
-    worst_angle = _worst_disparity(measurement, _ANGLE_KEYPOINTS)
+    worst_angle = _worst_disparity(measurement, angle_keypoints(measurement.theta_ca_side))
     worst_all = _worst_disparity(measurement)
     if worst_angle is not None and worst_angle[1] > _MAX_VERTICAL_DISPARITY_PX:
         warnings.append(
@@ -450,7 +461,7 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
         )
 
     if measurement.edge_keypoints:
-        used = [n for n in measurement.edge_keypoints if n in _ANGLE_KEYPOINTS]
+        used = [n for n in measurement.edge_keypoints if n in angle_keypoints(measurement.theta_ca_side)]
         listed = "、".join(measurement.edge_keypoints[:5])
         more = f" 等 {len(measurement.edge_keypoints)} 個點" if len(measurement.edge_keypoints) > 5 else ""
         warnings.append(

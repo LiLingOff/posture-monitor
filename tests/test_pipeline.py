@@ -556,3 +556,62 @@ def test_median_ignores_one_badly_paired_keypoint():
         _calib(), [left], [PersonKeypoints(broken, right.confidences)]
     )
     assert match.median_vertical_disparity_px < 1.0
+
+
+def _without(names: tuple[str, ...]):
+    left, right = _project(_seated_pose())
+    lp, rp = left.points.copy(), right.points.copy()
+    for name in names:
+        i = COCO18_KEYPOINT_NAMES.index(name)
+        lp[i] = rp[i] = np.nan
+    return (PersonKeypoints(lp, left.confidences.copy()),
+            PersonKeypoints(rp, right.confidences.copy()))
+
+
+def test_falls_back_to_the_ear_that_is_actually_visible():
+    """模組架在受試者左邊時，右耳被頭擋住。那是架設方位的差別，不是姿勢有問題。
+
+    兩側算出來的角度與正負號完全相同（矢狀面的法向量與參考軸都不隨側別改變），
+    所以退回另一側不影響判定。
+    """
+    left, right = _without(("right_ear",))
+    m = measure_posture(_calib(), left, right)
+
+    assert m.theta_ca_deg is not None, "還有左耳可以用"
+    assert m.theta_ca_side == "left"
+    assert not m.angle_errors
+
+    # 跟兩耳都在時算出來的值一致。容許值留給三角測量的數值捨入，
+    # 兩側在數學上完全等價，差的只是最後幾位。
+    both = measure_posture(_calib(), *_project(_seated_pose()))
+    assert m.theta_ca_deg == pytest.approx(both.theta_ca_deg, abs=1e-3)
+    assert both.theta_ca_side == "right", "兩側都可用時維持前作的右側慣例"
+
+
+def test_reports_which_side_it_used():
+    left, right = _without(("right_ear",))
+    m = measure_posture(_calib(), left, right)
+    assert "用左側耳朵與肩膀" in format_measurement(m, left, right)
+
+
+def test_the_unused_ear_does_not_make_the_frame_unusable():
+    """遠側耳朵被遮住或配對錯誤，不該影響用近側算出來的角度。"""
+    from geometry.pipeline import unusable_reason
+
+    left, right = _project(_seated_pose())
+    broken = right.points.copy()
+    broken[COCO18_KEYPOINT_NAMES.index("left_ear"), 1] += 50.0
+    m = measure_posture(_calib(), left, PersonKeypoints(broken, right.confidences))
+
+    assert m.theta_ca_side == "right"
+    assert unusable_reason(m) is None, "θ_CA 用的是右耳，左耳配錯不影響"
+
+
+def test_both_ears_missing_reports_both_reasons():
+    left, right = _without(("right_ear", "left_ear"))
+    m = measure_posture(_calib(), left, right)
+
+    assert m.theta_ca_deg is None and m.theta_ca_side is None
+    error = next(e for e in m.angle_errors if e.startswith("theta_ca"))
+    assert "right_ear" in error and "left_ear" in error
+    assert m.theta_sym_deg is not None, "θ_sym 只要雙肩，不受影響"
