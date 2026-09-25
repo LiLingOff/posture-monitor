@@ -47,12 +47,32 @@ def test_reports_whether_the_window_is_full():
 
 
 def test_standard_error_is_the_spread_of_the_mean_not_of_the_samples():
-    """判定要看的是平均值的誤差，不是單幀的散佈。兩者差 √N 倍。"""
-    rolling = RollingAngle(16)
+    """判定要看的是平均值的誤差，不是單幀的散佈。
+
+    資料彼此獨立時兩者差約 √N 倍。這裡放寬到 40%，因為區塊平均法是用有限個
+    區塊估出來的，本身就有取樣變異，不會剛好等於 std/√N。
+    """
+    rolling = RollingAngle(36)
     rng = np.random.default_rng(1)
-    for value in rng.normal(0.0, 8.0, 16):
+    for value in rng.normal(0.0, 8.0, 36):
         rolling.add(value)
-    assert rolling.standard_error == pytest.approx(rolling.std / 4.0, rel=1e-9)
+    assert rolling.standard_error == pytest.approx(rolling.std / 6.0, rel=0.4)
+    assert rolling.standard_error < rolling.std
+
+
+def test_a_drifting_window_reports_a_larger_error_than_std_over_root_n():
+    """相鄰幀相關時 std/√N 會低估，而 θ_CA 在實機上就是這種資料。
+
+    2026-09-24 的坐正量測，相鄰幀自相關 0.73，std/√N 把誤差低估了 2.6 倍。
+    """
+    rolling = RollingAngle(60)
+    rng = np.random.default_rng(3)
+    value = 0.0
+    for step in rng.normal(0.0, 3.0, 60):
+        value = 0.9 * value + step     # 慢慢漂，不是白雜訊
+        rolling.add(value)
+    naive = rolling.std / np.sqrt(rolling.count)
+    assert rolling.standard_error > 2.0 * naive
 
 
 def test_no_values_yet_reports_nothing_rather_than_zero():

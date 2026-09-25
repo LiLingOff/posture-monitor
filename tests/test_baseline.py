@@ -242,9 +242,9 @@ def test_advice_says_so_when_the_azimuth_was_not_measured():
 
 
 def test_baseline_warning_carries_the_same_advice():
-    """基準的警告與逐幀的警告用同一套判斷，不該各說各話。"""
-    collector = _collect(12.0)
-    baseline = collector.finish("A", 10.0)
+    """取樣夠長之後，剩下的誤差才歸因於幾何條件，這時該與逐幀的警告說同一套話。"""
+    collector = _collect(12.0, frames=200)
+    baseline = collector.finish("A", 31.0)
     far = PostureBaseline(**{**asdict(baseline),
                              "distance_mm": 1796.0, "azimuth_deg": 50.0,
                              "theta_ca_standard_error_deg": 3.8,
@@ -255,8 +255,21 @@ def test_baseline_warning_carries_the_same_advice():
 
 
 def _poor_baseline(**overrides):
-    base = _collect(12.0).finish("A", 10.0)
+    base = _collect(12.0, frames=200).finish("A", 31.0)
     return PostureBaseline(**{**asdict(base), **overrides})
+
+
+def test_a_short_baseline_is_told_to_sample_longer_not_to_move():
+    """取樣不足時，調距離與方位角沒有用，唯一有效的是拉長取樣。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    short = PostureBaseline(**{**asdict(_collect(12.0, frames=200).finish("A", 31.0)),
+                               "frames": 60, "duration_s": 10.0,
+                               "distance_mm": 1796.0, "azimuth_deg": 50.0,
+                               "theta_ca_standard_error_deg": 3.1})
+    warning = next(w for w in baseline_quality_warnings(short) if "基準誤差" in w)
+    assert "30 秒" in warning
+    assert "坐到 700mm" not in warning
 
 
 def test_a_poor_baseline_still_warns_when_it_is_loaded_back(tmp_path):

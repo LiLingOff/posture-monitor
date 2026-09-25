@@ -5,8 +5,11 @@
 而判定門檻是 10°。同一份資料的 θ_sym 標準差只有 ±2.1°，本來就堪用。
 差別在 θ_CA 靠深度、θ_sym 不靠。
 
-平均 N 幀把雜訊降到 1/√N，所以 30 幀（約 5 秒）可以把 θ_CA 壓到 ±2.1°。
+平均 N 幀把偵測雜訊降到 1/√N，所以 30 幀（約 5 秒）可以把 θ_CA 壓到 ±2.1°。
 代價是反應延遲，姿勢改變後要等一個視窗才會完全反映出來。
+
+那個 1/√N 只適用於偵測本身的雜訊。平均值的誤差另外算，因為相鄰幀不獨立，
+見 uncertainty 模組。
 
 這一層只做平均與離群值排除，判定門檻與個人基準（θ_offset）屬於執行期監測邏輯，
 不在這裡處理。
@@ -16,6 +19,8 @@ from __future__ import annotations
 from collections import deque
 
 import numpy as np
+
+from .uncertainty import standard_error as _standard_error
 
 
 class RollingAngle:
@@ -47,7 +52,7 @@ class RollingAngle:
 
     @property
     def is_full(self) -> bool:
-        """視窗填滿之前算出來的平均，降噪效果還沒到宣稱的 1/√N。"""
+        """視窗填滿之前算出來的平均，降噪效果還沒到整個視窗該有的程度。"""
         return len(self._values) == self._window
 
     @property
@@ -66,7 +71,9 @@ class RollingAngle:
 
     @property
     def standard_error(self) -> float | None:
-        """平均值本身的誤差，也就是 std/√N。判定該看的是這個數字。"""
-        if len(self._values) < 2:
-            return None
-        return float(np.std(self._values) / np.sqrt(len(self._values)))
+        """平均值本身的誤差。判定該看的是這個數字，不是 std。
+
+        不能用 std/√N。相鄰幀是相關的，那個式子在實機上低估了 2.6 倍，
+        理由與替代做法寫在 uncertainty 模組。
+        """
+        return _standard_error(self._values)

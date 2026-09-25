@@ -31,7 +31,8 @@ _COLUMNS = (
     "azimuth_deg",
     "theta_ca_precision_deg",   # 這個距離與方位下的理論單幀誤差
     "shared_keypoints",
-    "max_vertical_disparity_px",
+    "max_vertical_disparity_px",        # 所有共同關鍵點裡最差的，手腕腳踝也算進來
+    "angle_max_vertical_disparity_px",  # 只看算角度用到的那幾點，門檻擋的是這個
 )
 
 
@@ -83,8 +84,10 @@ class MeasurementLog:
     ) -> None:
         self._frame += 1
         worst = None
+        worst_angle = None
         if measurement is not None:
             worst = measurement.max_abs_vertical_disparity_px
+            worst_angle = measurement.angle_max_vertical_disparity_px
 
         self._writer.writerow([
             self._frame,
@@ -103,6 +106,7 @@ class MeasurementLog:
             _number(None if measurement is None else measurement.theta_ca_precision_deg, 2),
             "" if measurement is None else measurement.shared_count,
             _number(worst, 2),
+            _number(worst_angle, 2),
         ])
         self._file.flush()
 

@@ -402,7 +402,7 @@ def _print_summary(
 def _refuse_to_overwrite(args) -> None:
     """在開相機之前就檢查輸出檔。
 
-    基準要請受試者坐著不動十秒、量測一次要跑二十分鐘，等到做完才發現檔名撞到，
+    基準要請受試者坐著不動半分鐘、量測一次要跑二十分鐘，等到做完才發現檔名撞到，
     白費的是受試者的時間。
     """
     target = None
@@ -460,7 +460,7 @@ def main() -> None:
                             "baseline 與 live 存的是第一張被略過的畫面")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
-                            "平均N幀把雜訊降到1/√N；30幀約5秒")
+                            "平均N幀把偵測雜訊降到1/√N；30幀約5秒")
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
@@ -480,8 +480,8 @@ def main() -> None:
         if name == "baseline":
             p.add_argument("--out", type=Path, default=None,
                            help="預設是 data/baselines/<subject>.json")
-            p.add_argument("--seconds", type=float, default=10.0,
-                           help="取樣長度。實機約 6.4fps，10 秒約 60 幀")
+            p.add_argument("--seconds", type=float, default=30.0,
+                           help="取樣長度。實機約 6.4fps，30 秒約 190 幀，基準誤差約 ±2°")
             p.add_argument("--countdown", type=int, default=3,
                            help="開始前的倒數秒數，讓受試者坐定")
 

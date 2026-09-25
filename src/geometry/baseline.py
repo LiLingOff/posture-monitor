@@ -5,22 +5,26 @@
 另一個人永遠不報。前作的自適應歸零就是處理這件事，實測讓誤報率從 18.7%
 降到 4.2%。
 
-做法是請受試者坐正、目視前方、保持不動約 10 秒，取這段時間的平均當作
+做法是請受試者坐正、目視前方、保持不動一段時間，取這段時間的平均當作
 這個人的零點，之後判定的是「相對自己端正坐姿偏了多少」。
 
-取平均而非單幀，理由與執行期相同：θ_CA 的單幀雜訊在這個硬體上是 ±10° 上下，
-拿單幀當基準等於把一個 ±10° 的偏移永久寫進後續所有判定。10 秒約 60 幀，
-標準誤差降到 ±1.5° 以內。
+取平均而非單幀，理由與執行期相同：θ_CA 的單幀雜訊在這個硬體上是 ±8° 上下，
+拿單幀當基準等於把一個 ±8° 的偏移永久寫進後續所有判定。
+
+**取樣至少 30 秒。** 早先算 10 秒就夠是因為用了 std/√N，而相鄰幀並不獨立
+（見 uncertainty 模組）。實測 60 幀（約 10 秒）的基準，誤差是 ±3.1°，
+佔 2026-09-24 量到的坐正與前傾差距 18° 的六分之一；要壓到 ±2° 以內需要
+150 幀以上，在實機的 6.4fps 下是 25 到 30 秒。
 
 基準會連同距離與方位角一起存下來。這兩項不影響角度的正確性（解剖平面由雙肩
 定義），但影響精度，所以記錄下來才知道這份基準是在什麼條件下取得的。
 
 **一份基準只對當次 session 有效。** 2026-09-24 實機：同一個人、同一句指示，
-相隔九分鐘取兩次「坐正」，θ_CA 基準是 +10.04° 與 −4.17°，差 14.21°，
-而各自的標準誤差只有 ±0.95° 與 ±0.66°。差的不是量測雜訊，是兩次真的坐得不一樣。
-對照當時量到的訊號（前傾相對坐正 22.8°），基準的變異已經是訊號的六成。
-所以每個 session 開始前都要重取，`captured_at` 存下來就是為了事後看得出
-這份基準是什麼時候取的。
+相隔九分鐘取兩次「坐正」，θ_CA 基準是 +10.04° 與 −4.17°，差 14.21°。
+把相關性算進去之後兩者的誤差是 ±2.5° 與 ±1.7°，差距仍有 4.7 個標準差，
+所以這不是量測雜訊，是兩次真的坐得不一樣。對照當時量到的訊號
+（前傾相對坐正 18.0°），基準的變異已經是訊號的八成。所以每個 session
+開始前都要重取，`captured_at` 存下來就是為了事後看得出這份基準是什麼時候取的。
 """
 from __future__ import annotations
 
@@ -34,13 +38,19 @@ from pathlib import Path
 import numpy as np
 
 from .pipeline import precision_advice, unusable_reason
+from .uncertainty import lag1_autocorrelation, standard_error
 
-# 低於這個幀數就不給出基準。10 秒在實機的 6.4fps 下約 60 幀，
-# 20 幀是大幅放寬後的下限，再少的話平均本身就不可信。
-_MINIMUM_FRAMES = 20
+# 低於這個幀數就不給出基準。實務上要的是 150 幀以上（約 30 秒），
+# 40 幀是大幅放寬後的硬下限，用來擋住明顯沒在量的情況；
+# 取樣不足的提醒交給 baseline_quality_warnings，那裡給得出實際的誤差數字。
+_MINIMUM_FRAMES = 40
 # 基準的標準誤差超過這個值就提醒重做。這個偏移會進到之後每一次判定，
 # 相對 10° 的門檻，2° 已經是可觀的系統性偏差。
 _BASELINE_ERROR_WARNING_DEG = 2.0
+# 低於這個幀數時，誤差多半是取樣長度造成的，而不是距離或方位角。
+# 實測 408 幀（81 秒）的坐正基準誤差是 ±1.2°，150 幀約落在 ±2°。
+_ENOUGH_FRAMES = 150
+_RECOMMENDED_SECONDS = 30
 # 實測散佈超過理論值這個倍數，代表受試者在取基準的過程中動了。
 _MOVEMENT_FACTOR = 1.8
 
@@ -122,11 +132,17 @@ def baseline_quality_warnings(
     """
     warnings: list[str] = []
     if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
+        # 取樣夠久的話，剩下的誤差才是幾何條件造成的，才該去調距離與方位角。
+        # 取樣不夠久的時候先講取樣，因為那是唯一有效的辦法。
+        lever = (
+            f"再取一次，這次拉長到 {_RECOMMENDED_SECONDS} 秒以上"
+            if baseline.frames < _ENOUGH_FRAMES
+            else precision_advice(baseline.distance_mm, baseline.azimuth_deg)
+        )
         warnings.append(
             f"基準誤差 ±{baseline.theta_ca_standard_error_deg:.1f}°"
-            f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，{baseline.frames} 幀），"
-            f"這個偏移會留在之後每一次判定裡。"
-            + precision_advice(baseline.distance_mm, baseline.azimuth_deg)
+            f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，{baseline.frames} 幀 / "
+            f"{baseline.duration_s:.0f} 秒），這個偏移會留在之後每一次判定裡。" + lever
         )
     if (expected_single_frame_error_deg is not None
             and baseline.theta_ca_std_deg > _MOVEMENT_FACTOR * expected_single_frame_error_deg):
@@ -214,8 +230,8 @@ class BaselineCollector:
             theta_sym_deg=float(sym.mean()),
             theta_ca_std_deg=float(ca.std()),
             theta_sym_std_deg=float(sym.std()),
-            theta_ca_standard_error_deg=float(ca.std() / np.sqrt(len(ca))),
-            theta_sym_standard_error_deg=float(sym.std() / np.sqrt(len(sym))),
+            theta_ca_standard_error_deg=float(standard_error(ca)),
+            theta_sym_standard_error_deg=float(standard_error(sym)),
             distance_mm=float(np.mean(self._distance)),
             azimuth_deg=float(np.mean(self._azimuth)),
         )

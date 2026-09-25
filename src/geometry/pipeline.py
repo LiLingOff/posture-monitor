@@ -84,9 +84,20 @@ class PostureMeasurement:
 
     @property
     def max_abs_vertical_disparity_px(self) -> float | None:
+        """所有共同關鍵點裡最差的一個。
+
+        這個值經常比 _MISPAIRED_DISPARITY_PX 大很多，不代表門檻沒生效：
+        手腕、腳踝配錯不影響角度，門檻只套在 angle_max_vertical_disparity_px 上。
+        """
         d = np.abs(self.vertical_disparity_px)
         d = d[np.isfinite(d)]
         return float(d.max()) if d.size else None
+
+    @property
+    def angle_max_vertical_disparity_px(self) -> float | None:
+        """算角度實際用到的那幾點裡最差的一個。判定看的是這個。"""
+        worst = _worst_disparity(self, angle_keypoints(self.theta_ca_side))
+        return None if worst is None else worst[1]
 
 
 def reference_depth_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
@@ -450,6 +461,10 @@ def unusable_reason(measurement: PostureMeasurement) -> str | None:
     low, high = _PLAUSIBLE_DEPTH_MM
     if depth is None:
         return "沒有可用的耳朵或肩膀深度"
+    if depth < 0:
+        # 負深度代表視差反號，也就是同一個部位在右眼的 x 比左眼大。
+        # 幾何上不可能，一定是左右配對接錯，不是受試者坐在奇怪的位置。
+        return f"深度 {depth:.0f}mm 是負的，左右配對接反了"
     if not (low <= depth <= high):
         return f"深度 {depth:.0f}mm 落在桌前坐姿的合理範圍外（{low:.0f}~{high:.0f}mm）"
 
