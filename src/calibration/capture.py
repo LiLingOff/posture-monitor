@@ -776,7 +776,10 @@ def capture_stereo_charuco(
     width: int | None = None,
     height: int | None = None,
 ) -> None:
-    """雙目兩顆鏡頭各自視野重疊區域小、拍不到完整board時使用這個函式。
+    """板子只有一部分入鏡也能用的雙目拍攝。
+
+    用得上的場合是把板子推到畫面四個角落時，它必然有一部分落到至少一眼的視野外。
+    畸變係數需要這些邊角的資料，而一般棋盤格缺一角整張就作廢。
     不需要整塊board同時入鏡，只要左右畫面有足夠共同角點就能存檔。
     """
     left_out.mkdir(parents=True, exist_ok=True)
@@ -973,7 +976,7 @@ def main() -> None:
     stereo_p.add_argument(
         "--charuco",
         action="store_true",
-        help="用ChArUco板取代一般棋盤格，適用於雙目兩顆鏡頭視野重疊區域小、拍不到完整棋盤格時使用",
+        help="用ChArUco板取代一般棋盤格。板子推到畫面邊角時必然有一部分出界，而畸變係數正需要那些位置的資料",
     )
     stereo_p.add_argument("--squares-x", type=int, default=10, help="ChArUco板橫向方格數")
     stereo_p.add_argument("--squares-y", type=int, default=8, help="ChArUco板縱向方格數")
