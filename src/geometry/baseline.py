@@ -55,8 +55,13 @@ _RECOMMENDED_SECONDS = 30
 _MOVEMENT_FACTOR = 1.8
 
 
-def _without_numbers(reason: str) -> str:
-    """把訊息裡的數字換成佔位符，讓同一類原因歸成一類。"""
+def group_rejection_reason(reason: str) -> str:
+    """把訊息裡的數字換成佔位符，讓同一類原因歸成一類。
+
+    「深度 54mm」與「深度 61mm」是同一件事，分開計數會蓋掉「每一幀都因為同一個
+    原因被擋掉」這個訊息，而那正是最該講出來的。回傳值只當分組用的鍵，
+    顯示時要拿原句，不然使用者看到的是「深度 Nmm」。
+    """
     return re.sub(r"-?\d+(\.\d+)?", "N", reason)
 
 
@@ -188,7 +193,7 @@ class BaselineCollector:
             # 數字換成佔位符再計數，否則「深度 54mm」「深度 61mm」會被當成兩種原因，
             # 而「每一幀都因為同一件事被擋掉」正是最該講出來的訊息。
             # 佔位符只當分組用的鍵，顯示時要拿原句，不然使用者看到的是「深度 Nmm」。
-            key = _without_numbers(reason)
+            key = group_rejection_reason(reason)
             self._reasons[key] += 1
             self._reason_examples.setdefault(key, reason)
             return reason

@@ -432,6 +432,28 @@ python posture.py live --baseline data/baselines/chenyue.json --log data/session
 
 每寫一列就 flush，因為這個程式是用 Ctrl-C 結束的，量測期間也可能因為相機斷線而中斷。缺失值寫成空字串而不是 0，因為 0 是合法的角度值。
 
+### 分析逐幀記錄
+
+```bash
+python posture.py analyse data/sessions/0924-upright.csv data/sessions/0924-forward.csv
+```
+
+不開相機，所以在筆電上也跑得動。量測在 Jetson 上做，分析可以在別處。印出資料品質（可用率、略過原因分類）、角度統計、相鄰幀的相關性、量測條件與判定結果。給兩份以上會多印一段對照：
+
+```
+0924-upright.csv → 0924-forward.csv
+  θ_CA 差距           +18.04° ± 1.45°（12.5 個標準誤差）
+  差距 / 單幀散佈     2.3 倍
+```
+
+後面那個比值才是關鍵。只看差距與標準誤差會高估可靠度，因為分母是平均值的誤差而不是姿勢本身的變異。
+
+判定的部分，CSV 有 `posture` 欄就直接統計，沒有的話用扣除基準後的角度重播一遍。重播包含移動平均的過期處理，所以結果與當時執行 `live` 看到的一致；`--margin` 與 `--window` 可以換參數重跑，用來看誤報率對遲滯寬度有多敏感。
+
+`--segments N` 把整段切成 N 塊各自印統計。三十分鐘的量測要看的是「每五分鐘往哪走」，整段一個平均看不出來；頭尾差距單調往一個方向走，那是姿勢隨時間劣化而不是量測雜訊。
+
+`corr(θ_CA, 方位角)` 那一項是解剖平面的檢查。方位角在單一 session 內就會掃過二十幾度，角度定得對的話這個相關係數該接近 0。2026-09-24 的兩份記錄是 +0.19 與 +0.20。
+
 ### 真實資料上的品質指標
 
 標定板上的 RMS 只反映標定當下的品質。實際量測時 `measure_posture` 會另外回報三項。這三項都不會讓程式出錯，只會讓結果變錯：
@@ -489,8 +511,10 @@ src/geometry/
   baseline.py            個人基準 θ_offset 的採集、品質檢查與存取
   judgement.py           超標判定與遲滯（門檻套在扣除基準之後的角度上）
   measurement_log.py     逐幀 CSV 記錄（含被略過的幀）
+  session_analysis.py    讀回逐幀 CSV，算品質、統計、相關性與判定
+  session_report.py      把上面的結果排成可讀的報告
   terminal.py            終端機顯示寬度（中日韓字元佔兩欄）
-posture.py               端到端 CLI：once / live / baseline
+posture.py               端到端 CLI：once / live / baseline / analyse
 tests/
   synthetic.py           合成測試影像（棋盤格標定）
   charuco_synthetic.py   合成測試影像（ChArUco標定）

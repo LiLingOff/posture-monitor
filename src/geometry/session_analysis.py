@@ -1,0 +1,353 @@
+"""分析 live 留下的逐幀 CSV。
+
+這一層不碰相機，所以在任何機器上都跑得動。量測在 Jetson 上做，分析可以在別處。
+
+要看的東西分成三類：
+
+**資料的品質。** 可用率、被略過的原因分成幾類。每一幀都因為同一件事被擋掉的時候，
+那件事就是問題本身。
+
+**角度的統計。** 平均、單幀散佈、平均值的誤差。誤差不能用 `std/√N`，因為相鄰幀
+是相關的（見 uncertainty 模組），所以這裡一併把自相關與區段平均印出來：
+區段平均的散佈遠大於白雜訊的預期值，就是相關性的直接證據。
+
+**判定的結果。** CSV 有 `posture` 欄時直接統計，沒有的話（舊檔案，或當時加了
+`--no-judge`）就用扣除基準後的角度重播一遍。重播包含移動平均的過期處理，
+所以結果與當時執行 `live` 會看到的一致。
+
+重播的好處是可以換參數重跑。誤報率對 `--margin` 有多敏感，這樣才問得出來。
+"""
+from __future__ import annotations
+
+import csv
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from .baseline import group_rejection_reason
+from .judgement import Posture, PostureJudge, windows_are_stale
+from .smoothing import RollingAngle
+from .uncertainty import lag1_autocorrelation, standard_error
+
+# 區段的數量。太少看不出漂移的形狀，太多每一段的平均本身就不穩。
+_SEGMENTS = 10
+# 相關性的警告線：區段平均的散佈超過白雜訊預期值這個倍數，就值得講出來。
+_CORRELATION_FACTOR = 1.5
+
+
+@dataclass(frozen=True)
+class Column:
+    """CSV 裡一欄的統計。缺欄或整欄是空的時候不建立。"""
+
+    name: str
+    values: np.ndarray
+
+    @property
+    def mean(self) -> float:
+        return float(self.values.mean())
+
+    @property
+    def minimum(self) -> float:
+        return float(self.values.min())
+
+    @property
+    def maximum(self) -> float:
+        return float(self.values.max())
+
+    @property
+    def spread(self) -> float:
+        return float(self.values.std())
+
+
+@dataclass(frozen=True)
+class AngleSummary:
+    """一個角度在整段量測裡的統計。"""
+
+    name: str
+    values: np.ndarray
+
+    @property
+    def count(self) -> int:
+        return int(self.values.size)
+
+    @property
+    def mean(self) -> float:
+        return float(self.values.mean())
+
+    @property
+    def single_frame_std(self) -> float:
+        return float(self.values.std())
+
+    @property
+    def minimum(self) -> float:
+        return float(self.values.min())
+
+    @property
+    def maximum(self) -> float:
+        return float(self.values.max())
+
+    @property
+    def standard_error(self) -> float | None:
+        """已經把相鄰幀的相關性算進去，不是 std/√N。"""
+        return standard_error(self.values)
+
+    @property
+    def naive_standard_error(self) -> float:
+        """std/√N。只用來對照，說明低估了多少。"""
+        return float(self.values.std(ddof=1) / np.sqrt(self.values.size))
+
+    @property
+    def autocorrelation(self) -> float | None:
+        return lag1_autocorrelation(self.values)
+
+    @property
+    def segment_means(self) -> np.ndarray:
+        """切成等長的區段各自取平均。漂移的形狀看這個。"""
+        size = self.count // _SEGMENTS
+        if size < 2:
+            return np.array([])
+        trimmed = self.values[: size * _SEGMENTS].reshape(_SEGMENTS, size)
+        return trimmed.mean(axis=1)
+
+    @property
+    def white_noise_segment_spread(self) -> float | None:
+        """若相鄰幀真的獨立，區段平均該有的散佈。"""
+        size = self.count // _SEGMENTS
+        if size < 2:
+            return None
+        return self.single_frame_std / np.sqrt(size)
+
+    @property
+    def is_correlated(self) -> bool:
+        expected = self.white_noise_segment_spread
+        segments = self.segment_means
+        if expected is None or segments.size == 0 or expected == 0:
+            return False
+        return float(segments.std()) > _CORRELATION_FACTOR * expected
+
+
+@dataclass(frozen=True)
+class JudgementReplay:
+    """把判定重播一遍的結果。"""
+
+    window: int
+    margin: float
+    counts: Counter
+    transitions: int
+    first_over_frame: int | None
+    replayed: bool          # True 是重播的，False 是直接讀 CSV 的 posture 欄
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def share(self, posture: str) -> float:
+        return 0.0 if self.total == 0 else self.counts[posture] / self.total
+
+
+@dataclass
+class SessionSummary:
+    """一份逐幀記錄的完整摘要。"""
+
+    path: Path
+    subject: str | None
+    frames: int = 0
+    usable: int = 0
+    duration_s: float | None = None
+    reasons: Counter = field(default_factory=Counter)
+    reason_examples: dict[str, str] = field(default_factory=dict)
+    angles: dict[str, AngleSummary] = field(default_factory=dict)
+    columns: dict[str, Column] = field(default_factory=dict)
+    has_baseline: bool = False
+    judgement: JudgementReplay | None = None
+
+    @property
+    def rejected(self) -> int:
+        return self.frames - self.usable
+
+    @property
+    def rejection_rate(self) -> float:
+        return 0.0 if self.frames == 0 else self.rejected / self.frames
+
+
+def _number(text: str) -> float | None:
+    """空字串代表這一格沒有值。0 是合法的角度，不能拿它當缺失。"""
+    if text is None or text.strip() == "":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def read_rows(path: Path) -> tuple[list[dict], str | None]:
+    """讀出資料列與 `# subject=` 註解。
+
+    註解列用 `#` 開頭，pandas 讀得掉，csv 模組讀不掉，所以在這裡先濾。
+    """
+    text = Path(path).read_text(encoding="utf-8").splitlines()
+    subject = None
+    body = []
+    for line in text:
+        if line.startswith("#"):
+            if "subject=" in line:
+                subject = line.split("subject=", 1)[1].strip()
+            continue
+        body.append(line)
+    if not body:
+        raise ValueError(f"{path} 沒有任何資料列")
+    rows = list(csv.DictReader(body))
+    if not rows:
+        raise ValueError(f"{path} 只有標題列，沒有資料。那一次量測可能沒跑起來")
+    return rows, subject
+
+
+def _collect(rows: list[dict], column: str) -> np.ndarray:
+    """把一欄裡有值的格子收成陣列。缺欄時回傳空陣列。"""
+    if not rows or column not in rows[0]:
+        return np.array([])
+    values = [_number(r.get(column, "")) for r in rows]
+    return np.array([v for v in values if v is not None], dtype=float)
+
+
+def _replay_judgement(
+    rows: list[dict], window: int, margin: float
+) -> JudgementReplay | None:
+    """按照 live 的順序重走一遍判定，包含移動平均的過期處理。
+
+    過期處理要一起重播，否則偵測連續失敗那幾段的狀態會與當時看到的不同。
+    """
+    judge = PostureJudge(margin_factor=margin)
+    ca_window, sym_window = RollingAngle(window), RollingAngle(window)
+    counts: Counter = Counter()
+    transitions = 0
+    first_over = None
+    misses = 0
+    seen_any = False
+
+    for row in rows:
+        if row.get("usable") == "1":
+            misses = 0
+            ca = _number(row.get("theta_ca_corrected_deg", ""))
+            sym = _number(row.get("theta_sym_corrected_deg", ""))
+            if ca is not None:
+                ca_window.add(ca)
+                seen_any = True
+            if sym is not None:
+                sym_window.add(sym)
+        else:
+            misses += 1
+            if windows_are_stale(misses, window):
+                ca_window.clear()
+                sym_window.clear()
+
+        _, _, verdict = judge.update(ca_window, sym_window)
+        counts[verdict.posture.value] += 1
+        if verdict.changed:
+            transitions += 1
+            if verdict.posture is Posture.OVER and first_over is None:
+                first_over = int(_number(row.get("frame", "")) or 0)
+
+    if not seen_any:
+        return None
+    # 第一次進入未知不算狀態變化，那是起始狀態。
+    return JudgementReplay(window, margin, counts, max(0, transitions - 1),
+                           first_over, replayed=True)
+
+
+def _read_judgement(rows: list[dict]) -> JudgementReplay | None:
+    """直接讀 CSV 的 posture 欄。當時用什麼參數判的就是什麼結果。"""
+    if not rows or "posture" not in rows[0]:
+        return None
+    values = [r.get("posture", "").strip() for r in rows]
+    if not any(values):
+        return None
+    counts = Counter(v for v in values if v)
+    transitions = sum(1 for a, b in zip(values, values[1:]) if a != b and b)
+    first_over = next(
+        (int(_number(r.get("frame", "")) or 0) for r, v in zip(rows, values)
+         if v == Posture.OVER.value), None
+    )
+    return JudgementReplay(0, 0.0, counts, transitions, first_over, replayed=False)
+
+
+def analyse_session(
+    path: Path, window: int = 30, margin: float = 1.0, force_replay: bool = False
+) -> SessionSummary:
+    """讀一份逐幀 CSV，算出所有要看的數字。"""
+    rows, subject = read_rows(path)
+    summary = SessionSummary(path=Path(path), subject=subject, frames=len(rows))
+
+    for row in rows:
+        if row.get("usable") == "1":
+            summary.usable += 1
+            continue
+        reason = (row.get("reject_reason") or "").strip() or "沒有寫明原因"
+        key = group_rejection_reason(reason)
+        summary.reasons[key] += 1
+        summary.reason_examples.setdefault(key, reason)
+
+    elapsed = _collect(rows, "elapsed_s")
+    if elapsed.size:
+        summary.duration_s = float(elapsed.max())
+
+    usable_rows = [r for r in rows if r.get("usable") == "1"]
+    for label, column in (
+        ("θ_CA 原始", "theta_ca_deg"),
+        ("θ_sym 原始", "theta_sym_deg"),
+        ("θ_CA 扣基準", "theta_ca_corrected_deg"),
+        ("θ_sym 扣基準", "theta_sym_corrected_deg"),
+    ):
+        values = _collect(usable_rows, column)
+        if values.size >= 2:
+            summary.angles[label] = AngleSummary(label, values)
+
+    # 有基準的話，扣除後的值會與原始值不同。完全相同代表當時沒給 --baseline。
+    raw = summary.angles.get("θ_CA 原始")
+    corrected = summary.angles.get("θ_CA 扣基準")
+    summary.has_baseline = (
+        raw is not None and corrected is not None
+        and not np.allclose(raw.values, corrected.values)
+    )
+
+    for label, column in (
+        ("距離 mm", "distance_mm"),
+        ("方位角 °", "azimuth_deg"),
+        ("θ_CA 單幀理論誤差 °", "theta_ca_precision_deg"),
+        ("共同關鍵點", "shared_keypoints"),
+        ("垂直視差 全部 px", "max_vertical_disparity_px"),
+        ("垂直視差 角度用 px", "angle_max_vertical_disparity_px"),
+    ):
+        values = _collect(usable_rows, column)
+        values = values[np.isfinite(values)]
+        if values.size:
+            summary.columns[label] = Column(label, values)
+
+    stored = None if force_replay else _read_judgement(rows)
+    summary.judgement = stored or _replay_judgement(rows, window, margin)
+    return summary
+
+
+def correlation(a: np.ndarray, b: np.ndarray) -> float | None:
+    """兩欄之間的相關係數。長度不同或其中一欄沒有變化時回傳 None。
+
+    用來檢查角度有沒有殘餘的方位角相依性。解剖平面定得對的話這個值該接近 0。
+    """
+    if a.size != b.size or a.size < 3:
+        return None
+    if a.std() == 0 or b.std() == 0:
+        return None
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def compare(a: AngleSummary, b: AngleSummary) -> tuple[float, float | None, float | None]:
+    """兩段量測的差距、合併誤差與顯著性（幾個標準誤差）。"""
+    difference = b.mean - a.mean
+    error_a, error_b = a.standard_error, b.standard_error
+    if error_a is None or error_b is None:
+        return difference, None, None
+    combined = float(np.hypot(error_a, error_b))
+    sigma = None if combined == 0 else abs(difference) / combined
+    return difference, combined, sigma

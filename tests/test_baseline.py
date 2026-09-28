@@ -191,10 +191,10 @@ def test_failure_names_the_reason_the_frames_were_actually_dropped():
 
 def test_groups_rejections_that_differ_only_in_their_numbers():
     """「深度 54mm」和「深度 61mm」是同一個問題，不該被算成兩種。"""
-    from geometry.baseline import _without_numbers
+    from geometry.baseline import group_rejection_reason
 
-    assert _without_numbers("深度 54mm 落在合理範圍外（200~3000mm）") == \
-        _without_numbers("深度 -61mm 落在合理範圍外（200~3000mm）")
+    assert group_rejection_reason("深度 54mm 落在合理範圍外（200~3000mm）") == \
+        group_rejection_reason("深度 -61mm 落在合理範圍外（200~3000mm）")
 
 
 def test_says_so_when_nothing_was_captured_at_all():

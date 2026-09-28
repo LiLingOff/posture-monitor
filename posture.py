@@ -33,6 +33,8 @@ from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline, baseline_quality_warnings)
 from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
+from geometry.session_analysis import analyse_session  # noqa: E402
+from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
@@ -489,9 +491,40 @@ def _refuse_to_overwrite(args) -> None:
         )
 
 
+def _run_analyse(args) -> None:
+    """分析逐幀 CSV。不碰相機，所以在哪台機器上都跑得動。"""
+    summaries = []
+    for path in args.csv:
+        if not path.exists():
+            raise SystemExit(f"{path} 不存在")
+        summaries.append(analyse_session(
+            path, window=args.window, margin=args.margin, force_replay=args.replay
+        ))
+    print(format_report(summaries))
+    if args.segments > 1:
+        for summary in summaries:
+            table = segment_table(summary, args.segments)
+            if table:
+                print()
+                print(f"{summary.path.name}{table}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="端到端坐姿量測")
     sub = parser.add_subparsers(dest="mode", required=True)
+
+    # analyse 不開相機，所以那些硬體參數對它沒有意義，單獨建 parser。
+    ap = sub.add_parser("analyse", help="分析 live 留下的逐幀 CSV，不需要相機")
+    ap.add_argument("csv", type=Path, nargs="+",
+                    help="一份或多份逐幀記錄。給兩份以上會多印一段對照")
+    ap.add_argument("--window", type=int, default=30,
+                    help="重播判定時用的移動平均視窗，要與當時的 live 一致")
+    ap.add_argument("--margin", type=float, default=1.0,
+                    help="重播判定時的遲滯寬度。調這個可以看誤報率有多敏感")
+    ap.add_argument("--replay", action="store_true",
+                    help="即使 CSV 有 posture 欄也重新判一次，用來換參數比較")
+    ap.add_argument("--segments", type=int, default=0,
+                    help="把整段切成幾塊各自印統計，用來看漂移。0 是不印")
 
     modes = (
         ("once", "量測一次並印出完整診斷"),
@@ -564,6 +597,10 @@ def main() -> None:
                            help="開始前的倒數秒數，讓受試者坐定")
 
     args = parser.parse_args()
+    # analyse 只讀 CSV，標定檔與相機的檢查對它都不適用。
+    if args.mode == "analyse":
+        _run_analyse(args)
+        return
     if not args.calibration.is_file():
         raise SystemExit(
             f"找不到標定檔 {args.calibration}。先執行：\n"
@@ -582,7 +619,8 @@ def main() -> None:
         args.out = Path("data/baselines") / f"{args.subject}.json"
     _refuse_to_overwrite(args)
 
-    {"once": _run_once, "live": _run_live, "baseline": _run_baseline}[args.mode](args)
+    {"once": _run_once, "live": _run_live,
+     "baseline": _run_baseline, "analyse": _run_analyse}[args.mode](args)
 
 
 if __name__ == "__main__":
