@@ -166,8 +166,6 @@ def test_angle_precision_grows_with_the_square_of_distance():
 
 def test_warns_when_single_frame_error_exceeds_the_decision_threshold():
     """2026-09-21 實機那次坐到 1900mm，單幀誤差約 50°，遠超過 10° 的判定門檻。"""
-    from geometry.pipeline import estimate_theta_ca_precision_deg
-
     pose = {k: np.array([v[0], v[1], v[2] * 3.1]) for k, v in _seated_pose().items()}
     left, right = _project(pose)
     m = measure_posture(_calib(), left, right)
@@ -783,3 +781,36 @@ def test_azimuth_is_none_on_a_frame_that_is_otherwise_usable():
     assert m.theta_ca_deg is not None
     assert m.reference_depth_mm is not None
     assert unusable_reason(m) is None, "這一幀會進入成功路徑"
+
+
+def test_a_negative_depth_pairing_never_wins_by_being_nearest():
+    """「取最近的」不能把負深度算進來。
+
+    負深度代表水平視差反號，幾何上不可能，只可能是左右配對接反。而負數比任何
+    正的距離都小，所以「取最近的」會優先選中它。垂直視差擋不住這種組合，
+    因為反號發生在水平方向。
+    """
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    # 水平反號、垂直仍然對齊：第一道篩選放它過去
+    reversed_pair = _shift(left, dx=abs(float(
+        np.nanmedian(left.points[:, 0] - right.points[:, 0]))) * 2.0, dy=0.0)
+    match = match_person_pair(_calib(), [left], [reversed_pair, right])
+
+    assert match.right is right
+    assert match.distance_mm > 0
+
+
+def test_choosing_among_equally_bad_pairs_does_not_crash():
+    """全部都配不齊時要挑垂直視差最小的，而不是讓 Python 去比 PersonKeypoints。
+
+    兩個候選在視差與距離上都打平時，比到元組的第三個元素就會丟 TypeError。
+    """
+    from geometry.pipeline import match_person_pair
+
+    left, right = _project(_seated_pose())
+    far_a = _shift(right, dx=0.0, dy=40.0)
+    far_b = _shift(right, dx=0.0, dy=-40.0)
+    match = match_person_pair(_calib(), [left], [far_a, far_b])
+    assert match.median_vertical_disparity_px == pytest.approx(40.0, abs=1.0)

@@ -33,6 +33,7 @@ _COLUMNS = (
     "shared_keypoints",
     "max_vertical_disparity_px",        # 所有共同關鍵點裡最差的，手腕腳踝也算進來
     "angle_max_vertical_disparity_px",  # 只看算角度用到的那幾點，門檻擋的是這個
+    "posture",                          # 當下的判定：正常／超標／未知
 )
 
 
@@ -81,6 +82,7 @@ class MeasurementLog:
         ca_mean: float | None = None,
         sym_mean: float | None = None,
         ca_standard_error: float | None = None,
+        posture: str = "",
     ) -> None:
         self._frame += 1
         worst = None
@@ -107,6 +109,7 @@ class MeasurementLog:
             "" if measurement is None else measurement.shared_count,
             _number(worst, 2),
             _number(worst_angle, 2),
+            posture,
         ])
         self._file.flush()
 

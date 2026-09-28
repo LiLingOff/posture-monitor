@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from .pipeline import precision_advice, unusable_reason
-from .uncertainty import lag1_autocorrelation, standard_error
+from .uncertainty import standard_error
 
 # 低於這個幀數就不給出基準。實務上要的是 150 幀以上（約 30 秒），
 # 40 幀是大幅放寬後的硬下限，用來擋住明顯沒在量的情況；

@@ -31,6 +31,7 @@ from geometry.pipeline import (PersonMatch,  # noqa: E402
                                measure_posture, unusable_reason)
 from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline, baseline_quality_warnings)
+from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.terminal import cell, truncate  # noqa: E402
@@ -199,15 +200,21 @@ def _run_live(args) -> None:
     print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
     print("要看的是平均值，不是單幀。單幀誤差與判定門檻同量級", flush=True)
 
+    judge = _make_judge(args, baseline)
+    started_at = time.perf_counter()
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
     rejected = 0
+    consecutive_misses = 0
     saved_a_rejected_frame = False
+    transitions: list[str] = []
     try:
         while True:
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
             except RuntimeError as exc:
+                consecutive_misses += 1
+                _forget_if_stale(ca_window, sym_window, consecutive_misses)
                 _print_line(str(exc))
                 if log is not None:
                     log.write(None, reject_reason=str(exc))
@@ -216,6 +223,7 @@ def _run_live(args) -> None:
             reason = unusable_reason(measurement)
             corrected = _corrected(baseline, measurement)
             if reason is None:
+                consecutive_misses = 0
                 if corrected[0] is not None:
                     ca_window.add(corrected[0])
                 if corrected[1] is not None:
@@ -223,22 +231,36 @@ def _run_live(args) -> None:
             else:
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
+                consecutive_misses += 1
+                _forget_if_stale(ca_window, sym_window, consecutive_misses)
                 if args.save_frames and not saved_a_rejected_frame:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
 
+            verdict = None
+            if judge is not None:
+                _, _, verdict = judge.update(ca_window, sym_window)
+                if verdict.changed:
+                    line = f"{_elapsed(started_at)}  {verdict.posture.value}：{verdict.reason}"
+                    transitions.append(line)
+                    # 狀態變化印成獨立的一行，因為它會被原地更新的那一行蓋掉。
+                    _print_line("")
+                    print("\r" + line, flush=True)
+
             _print_line(_live_line(
-                ca_window, sym_window, measurement, corrected, rejected, reason
+                ca_window, sym_window, measurement, corrected, rejected, reason, verdict
             ))
             if log is not None:
                 log.write(
                     measurement, reject_reason=reason, corrected=corrected,
                     ca_mean=ca_window.mean, sym_mean=sym_window.mean,
                     ca_standard_error=ca_window.standard_error,
+                    posture="" if verdict is None else verdict.posture.value,
                 )
     except KeyboardInterrupt:
         print()
         _print_summary(ca_window, sym_window, rejected, baseline)
+        _print_transitions(transitions)
         if log is not None:
             print(f"已記錄 {log.frames_written} 幀到 {log.path}")
     finally:
@@ -366,7 +388,7 @@ def _where(measurement) -> str:
 
 def _live_line(
     ca_window: RollingAngle, sym_window: RollingAngle, measurement,
-    corrected, rejected: int, reason,
+    corrected, rejected: int, reason, verdict=None,
 ) -> str:
     if reason is not None:
         # 調整架設位置時正是略過最多的時候，這幾個數字不能跟著消失
@@ -379,7 +401,58 @@ def _live_line(
         f"{_where(measurement)}"
         f"  {ca_window.count:2d}/{ca_window.window}幀"
         + (f"  略過{rejected}" if rejected else "")
+        + ("" if verdict is None else f"  {verdict.posture.value}")
     )
+
+
+def _make_judge(args, baseline: PostureBaseline | None) -> PostureJudge | None:
+    """沒有個人基準就不判定。
+
+    門檻套在原始角度上會因人而異。2026-09-24 實測，同一個人坐正的 θ_CA 是
+    +10.04°，剛好壓在 10° 的門檻上；照著判會讓這個人正常坐著就持續報警。
+    這是本專案相對前作的主要修正之一，不該因為忘記給 --baseline 就默默失效。
+    """
+    if args.no_judge:
+        return None
+    if baseline is None:
+        print("沒有個人基準，不做超標判定。門檻套在原始角度上會因人而異", flush=True)
+        return None
+    judge = PostureJudge(margin_factor=args.margin)
+    print(f"判定門檻 θ_CA {judge.theta_ca.threshold_deg:.0f}°（只看前傾）、"
+          f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算），"
+          f"遲滯寬度 {args.margin:.1f} 倍標準誤差", flush=True)
+    return judge
+
+
+def _forget_if_stale(
+    ca_window: RollingAngle, sym_window: RollingAngle, consecutive_misses: int
+) -> None:
+    """偵測連續失敗久了就把移動平均清掉，讓狀態回到未知。
+
+    不清的話，受試者離開座位之後裝置會對著空椅子繼續回報上一個狀態。
+    """
+    if windows_are_stale(consecutive_misses, ca_window.window):
+        ca_window.clear()
+        sym_window.clear()
+
+
+def _elapsed(started_at: float) -> str:
+    seconds = time.perf_counter() - started_at
+    return f"{int(seconds) // 60:2d}:{int(seconds) % 60:02d}"
+
+
+def _print_transitions(transitions: list[str]) -> None:
+    """把狀態變化重印一次。
+
+    逐幀的那一行會被下一幀蓋掉，狀態變化夾在裡面很容易錯過，而這幾行
+    正是要記錄下來的東西。
+    """
+    if not transitions:
+        print("整段沒有狀態變化")
+        return
+    print(f"狀態變化 {len(transitions)} 次：")
+    for line in transitions:
+        print(f"  {line}")
 
 
 def _print_summary(
@@ -474,6 +547,11 @@ def main() -> None:
             p.add_argument("--log", type=Path, default=None,
                            help="把每一幀寫成 CSV，含被略過的幀。"
                                 "事後分析與 Kinovea 對標都需要這份原始資料")
+            p.add_argument("--margin", type=float, default=1.0,
+                           help="遲滯寬度，單位是標準誤差的倍數。調高會減少誤報但"
+                                "反應變慢、不動作的區間變寬")
+            p.add_argument("--no-judge", action="store_true",
+                           help="只印角度不做超標判定，用來收集原始資料")
         if name in ("live", "baseline"):
             p.add_argument("--overwrite", action="store_true",
                            help="允許覆蓋既有的基準檔或記錄檔")

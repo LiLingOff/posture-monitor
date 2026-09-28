@@ -293,10 +293,20 @@ def match_person_pair(
         raise ValueError("左右兩眼沒有任何共同偵測到的關鍵點，無法配對")
 
     # 第一道：垂直視差。擋掉左眼的 A 配到右眼的 B，那種組合在對極線上對不齊。
-    consistent = [c for c in candidates if c[0] <= _MISPAIRED_DISPARITY_PX]
+    # 同時要求深度為正。負深度代表水平視差反號，幾何上不可能，而垂直視差擋不住
+    # 這種組合，因為反號發生在水平方向。放它進來的話，第二道的「取最近的」
+    # 會優先選中它，因為負數比任何一個真實距離都小。
+    consistent = [c for c in candidates if c[0] <= _MISPAIRED_DISPARITY_PX and c[1] > 0]
     # 第二道：距離。兩個人各自都能配得很齊，視差分不出該追哪一個，
     # 而背景那個人甚至可能對得更好。桌前坐姿監測的對象是最靠近相機的那位。
-    chosen = min(consistent, key=lambda c: c[1]) if consistent else min(candidates)
+    if consistent:
+        chosen = min(consistent, key=lambda c: c[1])
+    else:
+        # 沒有一組對得齊。退而取垂直視差最小的，深度為正的優先。
+        # 這一幀大概會被 unusable_reason 擋掉，但要帶著原因往下走而不是在這裡當掉。
+        # key 要寫明白：讓 min 去比整個元組的話，兩組候選在視差與距離上打平時，
+        # 它會比到第三個元素，也就是拿 numpy 陣列做布林判斷，那會丟 ValueError。
+        chosen = min(candidates, key=lambda c: (c[1] <= 0, c[0]))
     farther = sum(1 for c in consistent if c[1] > chosen[1])
 
     return PersonMatch(
