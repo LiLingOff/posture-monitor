@@ -93,7 +93,12 @@ def find_camera_index(
 
     index, size = readable[0]
     got = f"{size[0]}x{size[1]}" if size else "未知尺寸"
-    return index, f"自動挑到 index={index}，讀得到畫面但尺寸是 {got}，不是要求的"
+    if wanted is None:
+        return index, f"自動挑到 index={index}，讀得到 {got}（沒有指定要求的解析度）"
+    return index, (
+        f"自動挑到 index={index}，但它只給得出 {got}，"
+        f"要求的是 {wanted[0]}x{wanted[1]}。沒有一個節點拿得到要求的解析度"
+    )
 
 
 def _probe_camera(width: int | None, height: int | None):
@@ -1111,3 +1116,40 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def merged_capture_size(
+    single_eye_size: tuple[int, int], vertical_split: bool = False
+) -> tuple[int, int]:
+    """標定用的單眼尺寸對應到相機該輸出的合併畫面尺寸。
+
+    UVC 雙目模組送出的是一張左右（或上下）併排的畫面，而標定存的是切開之後
+    單眼的尺寸。要向相機要求的是合併後的那個數字。
+    """
+    width, height = single_eye_size
+    return (width, height * 2) if vertical_split else (width * 2, height)
+
+
+def describe_resolution_mismatch(
+    calibrated: tuple[int, int],
+    captured: tuple[int, int],
+    vertical_split: bool = False,
+) -> str | None:
+    """切開後的單眼尺寸與標定不符時回傳該講的話，相符時回傳 None。
+
+    這件事必須在取樣之前擋下來，而且要當成錯誤而不是警告。內參是綁在特定
+    解析度上的：fx 用 1280 寬的畫面算出來，套到 320 寬的半幀上，視差回推的深度
+    就是垃圾。2026-09-29 實機踩到一次，相機退回 640x480，於是 192 幀全部算出
+    深度 104mm，而那個訊息指向的是左右配對錯誤，查錯了方向。
+    """
+    if tuple(calibrated) == tuple(captured):
+        return None
+    want = merged_capture_size(calibrated, vertical_split)
+    return (
+        f"畫面尺寸與標定不符：標定是單眼 {calibrated[0]}x{calibrated[1]}，"
+        f"現在切開後是 {captured[0]}x{captured[1]}。\n"
+        f"內參綁在解析度上，不符的話算出來的深度沒有意義。加上參數再跑一次：\n"
+        f"  --width {want[0]} --height {want[1]}\n"
+        f"相機拿不到這個解析度的話，要嘛是節點挑錯了，要嘛這顆模組要用 "
+        f"--vertical-split，兩者都不是就得用現在的解析度重新標定。"
+    )

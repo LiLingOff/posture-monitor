@@ -6,8 +6,12 @@
 與 `conftest.py` 給測試用的做法一致。
 
 用法：
-  python posture.py once   --width 2560 --height 720
-  python posture.py live   --width 2560 --height 720
+  python posture.py once
+  python posture.py live --baseline data/baselines/<受試者>.json
+  python posture.py analyse data/sessions/<記錄>.csv
+
+解析度不給的話照標定檔要求，因為內參綁在解析度上，相機退回自己的預設值
+（實機遇過 640x480）算出來的深度沒有意義。
 """
 from __future__ import annotations
 
@@ -22,8 +26,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calibration.capture import (_open_camera,  # noqa: E402
-                                 describe_camera_open_failure, find_camera_index,
-                                 split_merged_frame)
+                                 describe_camera_open_failure,
+                                 describe_resolution_mismatch, find_camera_index,
+                                 merged_capture_size, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
@@ -66,8 +71,18 @@ def _match(calib, left_detections, right_detections) -> PersonMatch:
         raise RuntimeError(str(exc)) from exc
 
 
-def _open_selected_camera(args):
-    """開啟相機。--camera auto 時先自動挑一個讀得出畫面的節點。"""
+def _open_selected_camera(args, calib=None):
+    """開啟相機。--camera auto 時先自動挑一個讀得出畫面的節點。
+
+    沒指定 --width/--height 時用標定檔的解析度當目標。這不是方便而已：
+    內參綁在解析度上，不給的話相機會退回它自己的預設值（實機遇過 640x480），
+    而那個畫面算出來的深度沒有意義。標定檔已經知道該用多少，不該叫人每次手打。
+    """
+    if calib is not None and not (args.width and args.height):
+        args.width, args.height = merged_capture_size(
+            calib.image_size, args.vertical_split
+        )
+        _step(f"沒指定解析度，照標定檔要求 {args.width}x{args.height}")
     if args.camera == "auto":
         args.camera, how = find_camera_index(args.width, args.height)
         _step(how)
@@ -82,6 +97,21 @@ def _grab_pair(cap, args):
     if not ok:
         raise RuntimeError("讀取相機影格失敗")
     return split_merged_frame(frame, args.vertical_split, args.swap_lr)
+
+
+def _require_matching_resolution(calib, left_frame, args) -> None:
+    """解析度不符就在取樣之前停下來。
+
+    警告沒有用。2026-09-29 實機那次相機退回 640x480，程式照樣跑完 192 幀，
+    每一幀都算出深度 104mm，而印出的原因指向左右配對錯誤，查錯了方向。
+    """
+    problem = describe_resolution_mismatch(
+        calib.image_size,
+        (left_frame.shape[1], left_frame.shape[0]),
+        args.vertical_split,
+    )
+    if problem is not None:
+        raise SystemExit(problem)
 
 
 def _measure_once(engine, calib, cap, args):
@@ -146,13 +176,14 @@ def _run_once(args) -> None:
           f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
 
     engine = _build_engine(args)
-    cap = _open_selected_camera(args)
+    cap = _open_selected_camera(args, calib)
     try:
         _step(f"等自動曝光穩定，丟掉前 {args.discard} 張")
         _discard_frames(cap, args.discard)
 
         left_frame, right_frame = _grab_pair(cap, args)
         _step(f"取得畫面，單眼 {left_frame.shape[1]}x{left_frame.shape[0]}")
+        _require_matching_resolution(calib, left_frame, args)
 
         # 載入權重、搬上GPU，fp16還要建TensorRT engine，這段可能要等上幾分鐘，
         # 中間沒有任何輸出會看起來像當掉。
@@ -185,14 +216,16 @@ def _run_once(args) -> None:
 def _run_live(args) -> None:
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
-    cap = _open_selected_camera(args)
+    cap = _open_selected_camera(args, calib)
 
     _discard_frames(cap, args.discard)
     ok, frame = cap.read()
     if not ok:
         raise RuntimeError("讀取相機影格失敗")
+    left_frame = split_merged_frame(frame, args.vertical_split, args.swap_lr)[0]
+    _require_matching_resolution(calib, left_frame, args)
     print(f"載入模型（{args.precision} / {args.device}）", flush=True)
-    engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
+    engine.warmup(left_frame)
 
     baseline = _load_baseline(args, calib)
     log = (MeasurementLog(args.log, subject=args.subject, overwrite=args.overwrite)
@@ -300,7 +333,7 @@ def _run_baseline(args) -> None:
     """請受試者坐正保持不動，取這段時間的平均當作他的零點。"""
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
-    cap = _open_selected_camera(args)
+    cap = _open_selected_camera(args, calib)
 
     collector = BaselineCollector()
     try:
@@ -308,8 +341,10 @@ def _run_baseline(args) -> None:
         ok, frame = cap.read()
         if not ok:
             raise RuntimeError("讀取相機影格失敗")
+        left_frame = split_merged_frame(frame, args.vertical_split, args.swap_lr)[0]
+        _require_matching_resolution(calib, left_frame, args)
         _step(f"載入模型（{args.precision} / {args.device}）")
-        engine.warmup(split_merged_frame(frame, args.vertical_split, args.swap_lr)[0])
+        engine.warmup(left_frame)
 
         print()
         print(f"請 {args.subject} 坐正、目視前方、雙肩放鬆，保持不動 {args.seconds:.0f} 秒。")
@@ -539,8 +574,10 @@ def main() -> None:
                        help="相機 index，或 auto 自動挑。節點編號會因為重新插拔或"
                             "重開機而移位，auto 會逐一試到讀得出畫面為止")
         p.add_argument("--width", type=int, default=None,
-                       help="必須與標定時的解析度一致")
-        p.add_argument("--height", type=int, default=None)
+                       help="合併畫面的寬度。不給的話照標定檔要求，"
+                            "因為內參綁在解析度上，不符的話深度沒有意義")
+        p.add_argument("--height", type=int, default=None,
+                       help="合併畫面的高度。同上")
         p.add_argument("--vertical-split", action="store_true")
         p.add_argument("--swap-lr", action="store_true")
         p.add_argument("--precision", choices=["fp32", "fp16"], default="fp32")

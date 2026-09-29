@@ -236,8 +236,8 @@ fp32 的網路是全卷積的，同一個模型吃任何尺寸。fp16 的 Tensor
 
 | 用途 | 指令 |
 |---|---|
-| 量測一次並印出完整診斷 | `python posture.py once --width 2560 --height 720` |
-| 持續量測，逐幀更新 | `python posture.py live --width 2560 --height 720` |
+| 量測一次並印出完整診斷 | `python posture.py once` |
+| 持續量測，逐幀更新 | `python posture.py live` |
 | 取個人基準 | `python posture.py baseline --subject chenyue --out data/baselines/chenyue.json` |
 | 量測並記錄 | `python posture.py live --baseline data/baselines/chenyue.json --log data/sessions/0923.csv` |
 | 調整平均視窗 | 加上 `--window 60`（預設 30 幀，約 5 秒）|

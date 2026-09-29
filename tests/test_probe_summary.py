@@ -188,7 +188,9 @@ def test_falls_back_to_anything_readable_when_nothing_matches():
         candidates=[3],
     )
     assert index == 3
-    assert "不是要求的" in how
+    # 訊息要同時說出拿到什麼與要的是什麼，只說「不符」的話還是得自己去查標定檔
+    assert "640x480" in how
+    assert "2560x720" in how
 
 
 def test_takes_the_lowest_readable_node_when_no_size_was_requested():
@@ -206,3 +208,39 @@ def test_reports_every_node_it_tried_when_none_work():
 
     with pytest.raises(RuntimeError, match="1、2、3"):
         find_camera_index(probe=_fake_probe({}), candidates=[1, 2, 3])
+
+
+def test_merged_size_doubles_the_axis_the_module_splits_on():
+    from calibration.capture import merged_capture_size
+
+    assert merged_capture_size((1280, 720)) == (2560, 720)
+    assert merged_capture_size((1280, 720), vertical_split=True) == (1280, 1440)
+
+
+def test_a_matching_resolution_says_nothing():
+    from calibration.capture import describe_resolution_mismatch
+
+    assert describe_resolution_mismatch((1280, 720), (1280, 720)) is None
+
+
+def test_the_resolution_the_camera_fell_back_to_is_caught():
+    """2026-09-29 實機：相機退回 640x480，切開是 320x480，而標定是 1280x720。
+
+    當時程式照樣跑完 192 幀，每一幀都算出深度 104mm，印出的原因卻指向左右
+    配對錯誤。訊息要直接給出該加的參數，因為那是唯一要做的事。
+    """
+    from calibration.capture import describe_resolution_mismatch
+
+    problem = describe_resolution_mismatch((1280, 720), (320, 480))
+    assert problem is not None
+    assert "1280x720" in problem
+    assert "320x480" in problem
+    assert "--width 2560 --height 720" in problem
+
+
+def test_the_suggested_parameters_follow_the_split_direction():
+    """上下併排的模組要求的是兩倍高而不是兩倍寬，給錯了照樣拿不到。"""
+    from calibration.capture import describe_resolution_mismatch
+
+    problem = describe_resolution_mismatch((1280, 720), (640, 240), vertical_split=True)
+    assert "--width 1280 --height 1440" in problem
