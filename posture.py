@@ -515,15 +515,30 @@ def _refuse_to_overwrite(args) -> None:
     基準要請受試者坐著不動半分鐘、量測一次要跑二十分鐘，等到做完才發現檔名撞到，
     白費的是受試者的時間。
     """
-    target = None
+    target, flag = None, None
     if args.mode == "baseline":
-        target = args.out
+        target, flag = args.out, "--out"
     elif args.mode == "live":
-        target = args.log
+        target, flag = args.log, "--log"
     if target is not None and Path(target).exists() and not args.overwrite:
         raise SystemExit(
-            f"{target} 已經存在。換個檔名，或確定要覆蓋的話加上 --overwrite"
+            f"{target} 已經存在。用這個名字，或確定要覆蓋的話加上 --overwrite：\n"
+            f"  {flag} {_next_free_name(target)}"
         )
+
+
+def _next_free_name(path: Path) -> Path:
+    """在原檔名後面加序號，找出一個還沒被用掉的。
+
+    只說「換個檔名」的話，受試者得坐在那裡等人想名字。這一步本來就是為了
+    不浪費他的時間才放在開相機之前，那就該把名字也一起想好。
+    """
+    path = Path(path)
+    for n in range(2, 100):
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path.with_name(f"{path.stem}-{int(time.time())}{path.suffix}")
 
 
 def _run_analyse(args) -> None:

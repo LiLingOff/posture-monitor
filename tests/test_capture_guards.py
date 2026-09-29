@@ -287,3 +287,69 @@ def test_expected_eye_size_halves_the_right_axis():
     assert capture._expected_eye_size(2560, 720, vertical_split=False) == (1280, 720)
     assert capture._expected_eye_size(1280, 1440, vertical_split=True) == (1280, 720)
     assert capture._expected_eye_size(None, None, vertical_split=False) is None
+
+
+def _posture_module():
+    """posture.py 在根目錄且不是套件，要用檔案路徑載入。"""
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location("posture_cli", "posture.py")
+    module = importlib.util.module_from_spec(spec)
+    saved = sys.argv
+    sys.argv = ["posture.py"]
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.argv = saved
+    return module
+
+
+def test_a_clashing_output_name_comes_with_a_free_one(tmp_path):
+    """只說「換個檔名」的話，受試者得坐在那裡等人想名字。
+
+    2026-09-29 實機踩到：基準剛取完、人還坐著，live 因為檔名撞到直接結束。
+    """
+    import pytest
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    posture = _posture_module()
+    taken = tmp_path / "0929-zerogap.csv"
+    taken.write_text("x", encoding="utf-8")
+    args = SimpleNamespace(mode="live", log=taken, overwrite=False)
+
+    with pytest.raises(SystemExit) as exc:
+        posture._refuse_to_overwrite(args)
+    assert "--log" in str(exc.value)
+    assert "0929-zerogap-2.csv" in str(exc.value)
+    assert not Path(str(exc.value).rsplit(" ", 1)[-1]).exists()
+
+
+def test_the_suggested_name_skips_the_ones_already_used(tmp_path):
+    from types import SimpleNamespace
+    import pytest
+
+    posture = _posture_module()
+    for name in ("s.csv", "s-2.csv", "s-3.csv"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    args = SimpleNamespace(mode="live", log=tmp_path / "s.csv", overwrite=False)
+
+    with pytest.raises(SystemExit) as exc:
+        posture._refuse_to_overwrite(args)
+    assert "s-4.csv" in str(exc.value)
+
+
+def test_the_baseline_clash_names_its_own_flag(tmp_path):
+    """基準檔用 --out，記錄檔用 --log。貼錯旗標一樣得重打。"""
+    from types import SimpleNamespace
+    import pytest
+
+    posture = _posture_module()
+    taken = tmp_path / "chenyue.json"
+    taken.write_text("{}", encoding="utf-8")
+    args = SimpleNamespace(mode="baseline", out=taken, overwrite=False)
+
+    with pytest.raises(SystemExit) as exc:
+        posture._refuse_to_overwrite(args)
+    assert "--out" in str(exc.value)
+    assert "chenyue-2.json" in str(exc.value)
