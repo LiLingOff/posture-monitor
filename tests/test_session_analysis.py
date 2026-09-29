@@ -37,10 +37,36 @@ def _old_format_session(tmp_path, count=120, baseline=-4.0, ca=lambda i: 8.0):
     return _write(tmp_path, rows)
 
 
-def test_reads_the_subject_from_the_comment_line(tmp_path):
-    rows, subject = read_rows(_old_format_session(tmp_path))
-    assert subject == "A"
+def test_reads_the_metadata_block(tmp_path):
+    rows, meta = read_rows(_old_format_session(tmp_path))
+    assert meta["subject"] == "A"
     assert len(rows) == 120
+
+
+def test_unknown_metadata_keys_are_kept(tmp_path):
+    """日後多記一項不該要求同步改讀取端。"""
+    rows = [_usable_row(1, 8.0), _usable_row(2, 9.0)]
+    path = _write(tmp_path, rows, subject=None)
+    text = path.read_text(encoding="utf-8")
+    path.write_text("# subject=B\n# something_new=42\n" + text, encoding="utf-8")
+    _, meta = read_rows(path)
+    assert meta["subject"] == "B"
+    assert meta["something_new"] == "42"
+
+
+def test_a_file_without_a_condition_says_so_rather_than_guessing(tmp_path):
+    """2026-09-24 與 09-29 那幾份沒有 condition，而它們正是最值得分析的資料。"""
+    summary = analyse_session(_old_format_session(tmp_path))
+    assert summary.subject == "A"
+    assert summary.condition is None
+    assert summary.trial is None
+    assert summary.label == "A"
+
+
+def test_the_label_falls_back_to_the_filename(tmp_path):
+    rows = [_usable_row(i + 1, 8.0) for i in range(5)]
+    summary = analyse_session(_write(tmp_path, rows, subject=None, name="0929-x.csv"))
+    assert summary.label == "0929-x"
 
 
 def test_a_file_with_only_a_header_says_so_rather_than_dividing_by_zero(tmp_path):

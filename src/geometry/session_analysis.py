@@ -152,7 +152,7 @@ class SessionSummary:
     """一份逐幀記錄的完整摘要。"""
 
     path: Path
-    subject: str | None
+    meta: dict[str, str] = field(default_factory=dict)
     frames: int = 0
     usable: int = 0
     duration_s: float | None = None
@@ -163,6 +163,28 @@ class SessionSummary:
     has_baseline: bool = False
     judgement: JudgementReplay | None = None
     azimuth_bins: list = field(default_factory=list)
+
+    @property
+    def subject(self) -> str | None:
+        return self.meta.get("subject")
+
+    @property
+    def condition(self) -> str | None:
+        """姿勢條件。早期的檔案沒有這一項，彙整時要看得出來是「沒記」。"""
+        return self.meta.get("condition")
+
+    @property
+    def trial(self) -> int | None:
+        value = self.meta.get("trial")
+        return int(value) if value and value.isdigit() else None
+
+    @property
+    def label(self) -> str:
+        """報表上這一列的名字。沒有中繼資料時退回檔名，總比空著好。"""
+        parts = [p for p in (self.subject, self.condition) if p]
+        if self.trial is not None:
+            parts.append(f"#{self.trial}")
+        return " / ".join(parts) if parts else self.path.stem
 
     @property
     def rejected(self) -> int:
@@ -183,18 +205,23 @@ def _number(text: str) -> float | None:
         return None
 
 
-def read_rows(path: Path) -> tuple[list[dict], str | None]:
-    """讀出資料列與 `# subject=` 註解。
+def read_rows(path: Path) -> tuple[list[dict], dict[str, str]]:
+    """讀出資料列與標頭的 `# key=value` 區塊。
 
     註解列用 `#` 開頭，pandas 讀得掉，csv 模組讀不掉，所以在這裡先濾。
+
+    回傳的中繼資料是原樣的字串對照表，缺的鍵就是缺。早期的檔案只有
+    `# subject=`，而那幾份正是最值得分析的資料，所以不能因為少了欄位就拒讀。
+    不認得的鍵也照收，日後多記一項不必同步改這裡。
     """
     text = Path(path).read_text(encoding="utf-8").splitlines()
-    subject = None
+    meta: dict[str, str] = {}
     body = []
     for line in text:
         if line.startswith("#"):
-            if "subject=" in line:
-                subject = line.split("subject=", 1)[1].strip()
+            key, sep, value = line.lstrip("#").strip().partition("=")
+            if sep:
+                meta[key.strip()] = value.strip()
             continue
         body.append(line)
     if not body:
@@ -202,7 +229,7 @@ def read_rows(path: Path) -> tuple[list[dict], str | None]:
     rows = list(csv.DictReader(body))
     if not rows:
         raise ValueError(f"{path} 只有標題列，沒有資料。那一次量測可能沒跑起來")
-    return rows, subject
+    return rows, meta
 
 
 def _collect(rows: list[dict], column: str) -> np.ndarray:
@@ -278,8 +305,8 @@ def analyse_session(
     path: Path, window: int = 30, margin: float = 1.0, force_replay: bool = False
 ) -> SessionSummary:
     """讀一份逐幀 CSV，算出所有要看的數字。"""
-    rows, subject = read_rows(path)
-    summary = SessionSummary(path=Path(path), subject=subject, frames=len(rows))
+    rows, meta = read_rows(path)
+    summary = SessionSummary(path=Path(path), meta=meta, frames=len(rows))
 
     for row in rows:
         if row.get("usable") == "1":

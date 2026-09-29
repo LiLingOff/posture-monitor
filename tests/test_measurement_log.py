@@ -99,11 +99,49 @@ def test_each_row_is_flushed_so_a_ctrl_c_keeps_the_data(tmp_path):
     log.close()
 
 
-def test_subject_is_written_as_a_comment_line(tmp_path):
+def test_the_header_says_who_what_and_when(tmp_path):
+    """多受試者的資料一旦累積，靠檔名辨識就會出錯。"""
+    path = tmp_path / "s.csv"
+    with MeasurementLog(path, subject="chenyue", condition="upright", trial=2) as log:
+        log.write(_measurement())
+    head = path.read_text(encoding="utf-8")
+    assert "# subject=chenyue" in head
+    assert "# condition=upright" in head
+    assert "# trial=2" in head
+    assert "# captured_at=" in head
+
+
+def test_empty_metadata_is_left_out_entirely(tmp_path):
+    """寫成空值的話，讀回來分不出「沒填」與「填了空字串」。"""
     path = tmp_path / "s.csv"
     with MeasurementLog(path, subject="chenyue") as log:
         log.write(_measurement())
-    assert path.read_text(encoding="utf-8").startswith("# subject=chenyue")
+    head = path.read_text(encoding="utf-8")
+    assert "condition" not in head
+    assert "trial" not in head
+
+
+def test_the_baseline_values_are_recorded_not_just_its_filename(tmp_path):
+    """只記檔名的話，那份基準被 --overwrite 蓋掉就再也對不回來。"""
+    from geometry.baseline import PostureBaseline
+
+    baseline = PostureBaseline(
+        subject="chenyue", captured_at="2026-09-29T20:06:12", frames=149, rejected=0,
+        duration_s=30.0, theta_ca_deg=3.78, theta_sym_deg=5.30,
+        theta_ca_std_deg=4.5, theta_sym_std_deg=0.5,
+        theta_ca_standard_error_deg=0.83, theta_sym_standard_error_deg=0.09,
+        distance_mm=685.0, azimuth_deg=43.0,
+    )
+    path = tmp_path / "s.csv"
+    with MeasurementLog(path, subject="chenyue",
+                        baseline_file="data/baselines/chenyue.json",
+                        baseline=baseline) as log:
+        log.write(_measurement())
+    head = path.read_text(encoding="utf-8")
+    assert "# baseline_file=data/baselines/chenyue.json" in head
+    assert "# baseline_theta_ca_deg=3.780" in head
+    assert "# baseline_theta_ca_error_deg=0.830" in head
+    assert "# baseline_captured_at=2026-09-29T20:06:12" in head
 
 
 def test_refuses_to_overwrite_an_existing_session(tmp_path):

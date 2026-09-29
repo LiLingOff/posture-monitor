@@ -290,18 +290,9 @@ def test_expected_eye_size_halves_the_right_axis():
 
 
 def _posture_module():
-    """posture.py 在根目錄且不是套件，要用檔案路徑載入。"""
-    import importlib.util
-    import sys
-    spec = importlib.util.spec_from_file_location("posture_cli", "posture.py")
-    module = importlib.util.module_from_spec(spec)
-    saved = sys.argv
-    sys.argv = ["posture.py"]
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.argv = saved
-    return module
+    from posture_loader import load_posture_module
+
+    return load_posture_module("posture_cli")
 
 
 def test_a_clashing_output_name_comes_with_a_free_one(tmp_path):

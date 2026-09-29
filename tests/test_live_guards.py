@@ -2,25 +2,16 @@
 
 這些都來自 2026-09-29 的實機量測：相機中途斷線、以及同一個原因連續略過。
 """
-import importlib.util
-import sys
 from types import SimpleNamespace
 
 import pytest
 
 from geometry.pipeline import rejection_advice
+from posture_loader import load_posture_module
 
 
 def _posture():
-    spec = importlib.util.spec_from_file_location("posture_live", "posture.py")
-    module = importlib.util.module_from_spec(spec)
-    saved = sys.argv
-    sys.argv = ["posture.py"]
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.argv = saved
-    return module
+    return load_posture_module("posture_live")
 
 
 def test_a_dropped_frame_does_not_stop_the_measurement():

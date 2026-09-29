@@ -8,11 +8,20 @@
 與略過原因。
 
 記的是原始角度與扣除基準之後的角度兩者。基準日後可能重取，原始值留著才能重算。
+
+**檔案要能自己說出自己是什麼。** 標頭有一個 `# key=value` 區塊，記下受試者、
+姿勢條件、第幾次、什麼時候量的，以及用了哪一份基準與它的數值。多受試者的資料
+一旦開始累積，靠檔名辨識就會出錯；而基準值一起存下來，是為了日後重取基準時
+還能從原始角度重算，這與「原始角度也要記」是同一個理由。
+
+`#` 開頭的列 pandas 用 `comment="#"` 讀得掉，csv 模組要自己濾，
+`session_analysis.read_rows` 已經在做。
 """
 from __future__ import annotations
 
 import csv
 import time
+from datetime import datetime
 from pathlib import Path
 
 _COLUMNS = (
@@ -42,6 +51,40 @@ def _number(value, digits: int = 3):
     return "" if value is None else round(float(value), digits)
 
 
+def metadata_lines(
+    subject: str = "",
+    condition: str = "",
+    trial: int | None = None,
+    baseline_file=None,
+    baseline=None,
+) -> list[str]:
+    """標頭的 `# key=value` 區塊。
+
+    空的欄位整列不寫。寫成空值的話，讀回來分不出「這一項沒填」與「填了空字串」，
+    而彙整時「沒填」要能被看見。
+
+    基準的數值跟著檔名一起記。只記檔名的話，那份基準日後被覆蓋就再也對不回來，
+    而 `--overwrite` 存在就代表它會被覆蓋。
+    """
+    lines = [f"# captured_at={datetime.now().isoformat(timespec='seconds')}"]
+    for key, value in (("subject", subject), ("condition", condition)):
+        if value:
+            lines.append(f"# {key}={value}")
+    if trial is not None:
+        lines.append(f"# trial={trial}")
+    if baseline_file is not None:
+        lines.append(f"# baseline_file={baseline_file}")
+    if baseline is not None:
+        lines.extend([
+            f"# baseline_theta_ca_deg={baseline.theta_ca_deg:.3f}",
+            f"# baseline_theta_sym_deg={baseline.theta_sym_deg:.3f}",
+            f"# baseline_theta_ca_error_deg={baseline.theta_ca_standard_error_deg:.3f}",
+            f"# baseline_captured_at={baseline.captured_at}",
+            f"# baseline_frames={baseline.frames}",
+        ])
+    return lines
+
+
 class MeasurementLog:
     """開著檔案逐幀寫入，並且每一列寫完就 flush。
 
@@ -49,7 +92,16 @@ class MeasurementLog:
     因為相機斷線而中斷，累積的話那些資料就全沒了。
     """
 
-    def __init__(self, path: Path, subject: str = "", overwrite: bool = False):
+    def __init__(
+        self,
+        path: Path,
+        subject: str = "",
+        overwrite: bool = False,
+        condition: str = "",
+        trial: int | None = None,
+        baseline_file: Path | str | None = None,
+        baseline=None,
+    ):
         self._path = Path(path)
         if self._path.exists() and not overwrite:
             raise FileExistsError(
@@ -59,9 +111,8 @@ class MeasurementLog:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
-        if subject:
-            # 註解列，pandas 用 comment="#" 讀得掉
-            self._file.write(f"# subject={subject}\n")
+        for line in metadata_lines(subject, condition, trial, baseline_file, baseline):
+            self._file.write(line + "\n")
         self._writer.writerow(_COLUMNS)
         self._start = time.perf_counter()
         self._frame = 0

@@ -19,6 +19,7 @@ import argparse
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -99,6 +100,9 @@ def _open_selected_camera(args, calib=None):
 # 110 秒內寫了 162485 筆空記錄。每次失敗之間停一下，累積到這個次數就停止量測。
 _READ_RETRY_PAUSE_S = 0.1
 _MAX_CONSECUTIVE_READ_FAILURES = 25
+# 略過率超過這個比例就提醒重量。乾淨的量測是 2~5%；2026-09-29 那份 23% 的資料
+# 共同關鍵點從 12.2 掉到 9.0，留下來的幀代表不了整段姿勢。
+_REJECTION_LIMIT = 0.15
 
 
 def _grab_pair(cap, args):
@@ -324,7 +328,41 @@ def _run_once(args) -> None:
     ))
 
 
-def _run_live(args) -> None:
+@dataclass
+class Recording:
+    """錄製一段之後留下來的東西。
+
+    回傳而不是直接印出來，因為 `study` 要把好幾段收集起來最後一起比較，
+    而 `live` 只要印一段。判斷「這一段能不能用」的邏輯也只該寫一次。
+    """
+
+    session: "_Session"
+    ca_window: RollingAngle
+    sym_window: RollingAngle
+    rejected: int
+    frames: int
+    transitions: list
+    camera_lost: str | None = None
+    log_path: Path | None = None
+    condition: str = ""      # study 用，live 留空
+    trial: int | None = None
+
+    @property
+    def rejection_rate(self) -> float:
+        return 0.0 if self.frames == 0 else self.rejected / self.frames
+
+    @property
+    def usable(self) -> int:
+        return len(self.session.ca)
+
+
+def _prepare(args):
+    """載入標定、開相機、暖機。回傳 (calib, engine, cap)。
+
+    `study` 只做一次，之後每一段都重用。這正是零間隔的關鍵：先前每跑一次
+    `live` 都要重載模型，那段時間就是基準與量測之間的空檔，而那個空檔
+    正是 2026-09-29 量到 63% 誤報率的原因。
+    """
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
     cap = _open_selected_camera(args, calib)
@@ -337,20 +375,22 @@ def _run_live(args) -> None:
     _require_matching_resolution(calib, left_frame, args)
     print(f"載入模型（{args.precision} / {args.device}）", flush=True)
     engine.warmup(left_frame)
+    return calib, engine, cap
 
-    baseline = _load_baseline(args, calib)
-    log = (MeasurementLog(args.log, subject=args.subject, overwrite=args.overwrite)
-           if args.log else None)
-    if log is not None:
-        print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
-    print(f"開始量測，平均視窗 {args.window} 幀。Ctrl-C 結束", flush=True)
-    print("要看的是平均值，不是單幀。單幀誤差與判定門檻同量級", flush=True)
 
+def _record(engine, calib, cap, args, baseline, log, snapshots,
+            seconds: float | None = None) -> Recording:
+    """錄製一段。seconds 是 None 就跑到 Ctrl-C 為止。
+
+    固定秒數存在的理由是實測出來的：2026-09-29 有一次量測跑到受試者忘記
+    維持姿勢，整段資料作廢。段落短就不會忘。
+    """
     judge = _make_judge(args, baseline)
     started_at = time.perf_counter()
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
     rejected = 0
+    frames_seen = 0
     consecutive_misses = 0
     read_failures = 0
     saved_a_rejected_frame = False
@@ -358,12 +398,10 @@ def _run_live(args) -> None:
     lost: str | None = None
     session = _Session()
     stuck = _StuckWatcher()
-    snapshots = _Snapshots(args.snapshots, args.snapshot_every)
-    if snapshots.enabled:
-        print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {args.snapshots}，"
-              f"事後可以核對當時的姿勢", flush=True)
+
     try:
-        while True:
+        while seconds is None or (time.perf_counter() - started_at) < seconds:
+            frames_seen += 1
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
                 read_failures = 0
@@ -416,7 +454,8 @@ def _run_live(args) -> None:
                     print("\r" + line, flush=True)
 
             _print_line(_live_line(
-                ca_window, sym_window, measurement, corrected, rejected, reason, verdict
+                ca_window, sym_window, measurement, corrected, rejected, reason,
+                verdict, None if seconds is None else seconds - (time.perf_counter() - started_at)
             ))
             if log is not None:
                 log.write(
@@ -432,19 +471,75 @@ def _run_live(args) -> None:
             )
     except KeyboardInterrupt:
         pass
+
+    return Recording(
+        session=session, ca_window=ca_window, sym_window=sym_window,
+        rejected=rejected, frames=frames_seen, transitions=transitions,
+        camera_lost=lost, log_path=None if log is None else log.path,
+    )
+
+
+def _report(recording: Recording, baseline, log) -> None:
+    """一段錄完之後印出來的東西。
+
+    相機掉線時也要走完這一段。已經量到的東西才是這次的產出，不該因為
+    結束的方式不同就不印。
+    """
     print()
-    # 相機掉線時也要走完這一段。已經量到的東西才是這次的產出，不該因為
-    # 結束的方式不同就不印。
-    if lost is not None:
-        print(lost)
-    _print_summary(session, ca_window, sym_window, rejected, baseline)
-    _print_transitions(transitions)
+    if recording.camera_lost is not None:
+        print(recording.camera_lost)
+    _print_summary(recording.session, recording.ca_window, recording.sym_window,
+                   recording.rejected, baseline)
+    _print_transitions(recording.transitions)
     if log is not None:
         print(f"已記錄 {log.frames_written} 幀到 {log.path}")
-        log.close()
-    cap.release()
-    if lost is not None:
+
+
+def _run_live(args) -> None:
+    calib, engine, cap = _prepare(args)
+    baseline = _load_baseline(args, calib)
+    log = _open_log(args, baseline)
+    snapshots = _open_snapshots(args)
+    print(f"開始量測，平均視窗 {args.window} 幀。"
+          + ("Ctrl-C 結束" if args.seconds is None else f"{args.seconds:.0f} 秒後自動結束"),
+          flush=True)
+    print("要看的是平均值，不是單幀。單幀誤差與判定門檻同量級", flush=True)
+
+    try:
+        recording = _record(engine, calib, cap, args, baseline, log, snapshots,
+                            args.seconds)
+        _report(recording, baseline, log)
+    finally:
+        if log is not None:
+            log.close()
+        cap.release()
+    if recording.camera_lost is not None:
         raise SystemExit(1)
+
+
+def _open_log(args, baseline, condition: str = "", trial: int | None = None,
+              path: Path | None = None):
+    """開一份逐幀記錄。中繼資料一併寫進標頭。"""
+    target = path if path is not None else args.log
+    if target is None:
+        return None
+    log = MeasurementLog(
+        target, subject=args.subject, overwrite=args.overwrite,
+        condition=condition or getattr(args, "condition", "") or "",
+        trial=trial if trial is not None else getattr(args, "trial", None),
+        baseline_file=getattr(args, "baseline", None), baseline=baseline,
+    )
+    print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
+    return log
+
+
+def _open_snapshots(args, out_dir: Path | None = None):
+    target = out_dir if out_dir is not None else args.snapshots
+    snapshots = _Snapshots(target, args.snapshot_every)
+    if snapshots.enabled:
+        print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {target}，"
+              f"事後可以核對當時的姿勢", flush=True)
+    return snapshots
 
 
 def _load_baseline(args, calib) -> PostureBaseline | None:
@@ -472,73 +567,269 @@ def _corrected(baseline: PostureBaseline | None, measurement):
     return baseline.correct(measurement.theta_ca_deg, measurement.theta_sym_deg)
 
 
-def _run_baseline(args) -> None:
-    """請受試者坐正保持不動，取這段時間的平均當作他的零點。"""
-    calib = StereoCalibrationResult.load(args.calibration)
-    engine = _build_engine(args)
-    cap = _open_selected_camera(args, calib)
+def _countdown(seconds: int, message: str = "秒後開始…") -> None:
+    """倒數，讓受試者坐定。
 
+    這不是裝飾。2026-09-29 實機：同樣取樣 30 秒，倒數 3 秒那次的單幀散佈是
+    ±11.1°、基準誤差 ±2.97°；倒數 20 秒那次是 ±4.5° 與 ±0.83°，而且零略過。
+    剛坐下的十幾秒人還在調整，那一段會被平均進基準裡。
+    """
+    for remaining in range(seconds, 0, -1):
+        print(f"\r{remaining} {message}", end="", flush=True)
+        time.sleep(1.0)
+
+
+def _collect_baseline(
+    engine, calib, cap, args, seconds: float
+) -> tuple[PostureBaseline, list[str]]:
+    """請受試者保持不動，取這段時間的平均當作他的零點。
+
+    相機與模型由呼叫端準備好。`study` 靠這一點讓取基準與量測之間沒有模型
+    重載的空檔，而那個空檔正是 63% 誤報率的來源。
+    """
     collector = BaselineCollector()
-    try:
-        _discard_frames(cap, args.discard)
-        ok, frame = cap.read()
-        if not ok:
-            raise RuntimeError("讀取相機影格失敗")
-        left_frame = split_merged_frame(frame, args.vertical_split, args.swap_lr)[0]
-        _require_matching_resolution(calib, left_frame, args)
-        _step(f"載入模型（{args.precision} / {args.device}）")
-        engine.warmup(left_frame)
-
-        print()
-        print(f"請 {args.subject} 坐正、目視前方、雙肩放鬆，保持不動 {args.seconds:.0f} 秒。")
-        for remaining in range(args.countdown, 0, -1):
-            print(f"\r{remaining} 秒後開始…", end="", flush=True)
-            time.sleep(1.0)
-        print("\r開始取樣，請保持不動        ", flush=True)
-
-        start = time.perf_counter()
-        saved_a_rejected_frame = False
-        read_failures = 0
-        while (elapsed := time.perf_counter() - start) < args.seconds:
-            try:
-                measurement, match, frames = _measure_once(engine, calib, cap, args)
-                read_failures = 0
-            except RuntimeError as exc:
-                if isinstance(exc, CameraReadError):
-                    read_failures += 1
-                    lost = _camera_lost(args, read_failures)
-                    if lost is not None:
-                        print()
-                        raise SystemExit(lost)
-                    # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
-                    # 用滿剩下的取樣時間空轉。
-                    time.sleep(_READ_RETRY_PAUSE_S)
-                _print_line(str(exc))
-                continue
-            reason = collector.add(measurement)
-            # 存第一張被略過的畫面。全部被略過時，那正是唯一想看的東西。
-            if reason and args.save_frames and not saved_a_rejected_frame:
-                _save_frames(*frames, args.save_frames, match.left, match.right)
-                saved_a_rejected_frame = True
-            _print_line(
-                f"剩下 {args.seconds - elapsed:4.1f} 秒   已收 {collector.count:3d} 幀"
-                + (f"   略過 {collector.rejected}" if collector.rejected else "")
-                + (f"   （{reason}）" if reason else "")
-            )
-        print()
-    finally:
-        cap.release()
+    start = time.perf_counter()
+    saved_a_rejected_frame = False
+    read_failures = 0
+    while (elapsed := time.perf_counter() - start) < seconds:
+        try:
+            measurement, match, frames = _measure_once(engine, calib, cap, args)
+            read_failures = 0
+        except RuntimeError as exc:
+            if isinstance(exc, CameraReadError):
+                read_failures += 1
+                lost = _camera_lost(args, read_failures)
+                if lost is not None:
+                    print()
+                    raise SystemExit(lost)
+                # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
+                # 用滿剩下的取樣時間空轉。
+                time.sleep(_READ_RETRY_PAUSE_S)
+            _print_line(str(exc))
+            continue
+        reason = collector.add(measurement)
+        # 存第一張被略過的畫面。全部被略過時，那正是唯一想看的東西。
+        if reason and args.save_frames and not saved_a_rejected_frame:
+            _save_frames(*frames, args.save_frames, match.left, match.right)
+            saved_a_rejected_frame = True
+        _print_line(
+            f"剩下 {seconds - elapsed:4.1f} 秒   已收 {collector.count:3d} 幀"
+            + (f"   略過 {collector.rejected}" if collector.rejected else "")
+            + (f"   （{reason}）" if reason else "")
+        )
+    print()
 
     baseline = collector.finish(args.subject, time.perf_counter() - start)
     print()
     print(baseline.describe())
-    for warning in collector.quality_warnings(baseline):
+    # 警告一起回傳而不是掛在 baseline 上：PostureBaseline 是 frozen 的，
+    # 而且這些警告描述的是「怎麼取的」，不是基準本身的內容。
+    warnings = collector.quality_warnings(baseline)
+    for warning in warnings:
         print(f"  需要注意：{warning}")
+    return baseline, warnings
+
+
+def _run_baseline(args) -> None:
+    calib, engine, cap = _prepare(args)
+    try:
+        print()
+        print(f"請 {args.subject} 坐正、目視前方、雙肩放鬆，保持不動 {args.seconds:.0f} 秒。")
+        _countdown(args.countdown)
+        print("\r開始取樣，請保持不動        ", flush=True)
+        baseline, _ = _collect_baseline(engine, calib, cap, args, args.seconds)
+    finally:
+        cap.release()
 
     baseline.save(args.out, overwrite=args.overwrite)
     print()
     print(f"已存到 {args.out}。之後這樣用：")
     print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
+
+
+def session_paths(root: Path, subject: str, condition: str, trial: int):
+    """一次量測要寫出去的三個路徑。
+
+    檔名自己說得出是誰、哪種姿勢、第幾次，因為彙整時靠中繼資料而不是檔名，
+    但人在檔案總管裡找東西還是靠檔名。
+    """
+    folder = Path(root) / subject
+    stem = f"{condition}-{trial}"
+    return folder / f"{stem}.csv", folder / f"{stem}-shots", folder / "baseline.json"
+
+
+def _next_trial(root: Path, subject: str, condition: str) -> int:
+    """這個人這種姿勢已經量過幾次了。
+
+    自動接續而不是每次都從 1 開始，因為撞名是 2026-09-29 真的發生過的事，
+    而當時受試者正坐著等。
+    """
+    folder = Path(root) / subject
+    if not folder.is_dir():
+        return 1
+    used = set()
+    for path in folder.glob(f"{condition}-*.csv"):
+        tail = path.stem[len(condition) + 1:]
+        if tail.isdigit():
+            used.add(int(tail))
+    return max(used) + 1 if used else 1
+
+
+def _prompt(message: str, interactive: bool = True) -> None:
+    """印出指導語並等使用者按 Enter。
+
+    `--no-prompt` 時只印不等，讓沒有人在旁邊的情況也跑得完（例如自己一個人
+    設定好之後走回座位，或是在測試裡）。
+    """
+    print()
+    print(message, flush=True)
+    if interactive:
+        try:
+            input("  坐定之後按 Enter 開始…")
+        except (EOFError, OSError):
+            # stdin 關掉、被導向、或在 nohup 底下都讀不到，那時候要直接往下走
+            # 而不是當掉。OSError 也要接：管線與 pytest 給的是這一個。
+            print()
+
+
+def _condition_brief(condition: str) -> str:
+    """每種姿勢的指導語。
+
+    只有坐正與前傾寫死，其他名稱照樣跑得動，只是指導語要口頭給。姿勢種類
+    還沒定案，程式不該先把清單釘死。
+    """
+    known = {
+        "upright": "請坐正：背部貼著椅背、雙腳平放地面、下巴微收、"
+                   "視線看向前方牆上的固定點。**全程不要看螢幕。**",
+        "forward": "請刻意前傾：上半身往前，但不要轉身，視線仍然看向同一個固定點。",
+    }
+    return known.get(condition, f"請維持「{condition}」的姿勢，視線看向前方的固定點。")
+
+
+def _run_study(args) -> None:
+    """一個行程跑完整套流程：取基準，接著逐一量各種姿勢。
+
+    存在的理由是流程本身就是資料品質的一部分。2026-09-29 那晚四次量測作廢
+    三次，沒有一次是程式算錯：解析度不符、基準隔了九分鐘、量測中轉頭看螢幕、
+    受試者不自覺前傾。把流程寫進程式，做錯就變難。
+
+    最關鍵的一點是**基準與量測之間沒有模型重載的空檔**。先前那兩件事是兩次
+    獨立的指令，中間要重新載入模型，受試者就會站起來活動一下，而那正是
+    誤報率 63% 的來源。
+    """
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    if not conditions:
+        raise SystemExit("--conditions 至少要有一種姿勢，例如 upright,forward")
+
+    calib, engine, cap = _prepare(args)
+    root = args.out_dir
+    recordings = []
+    try:
+        baseline = _study_baseline(engine, calib, cap, args, root)
+        for condition in conditions:
+            recordings.append(
+                _study_one(engine, calib, cap, args, baseline, condition, root)
+            )
+    finally:
+        cap.release()
+
+    _study_summary(recordings, args)
+
+
+def _study_baseline(engine, calib, cap, args, root: Path):
+    """取基準，品質不好就問要不要重取。
+
+    取完就直接往下走是不行的。2026-09-29 有一份基準略過了 27% 的幀，當時
+    沒有任何提示，而後面所有量測都帶著它。
+    """
+    _, _, baseline_path = session_paths(root, args.subject, "x", 1)
+    while True:
+        _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
+                + _condition_brief("upright")
+                + "\n  取完之後**不要起身**，會直接接著量測。",
+                not args.no_prompt)
+        _countdown(args.countdown)
+        print("\r開始取樣，請保持不動        ", flush=True)
+        baseline, warnings = _collect_baseline(engine, calib, cap, args, args.seconds)
+        if not warnings or args.no_prompt:
+            break
+        print()
+        if not _ask_yes("這份基準有上面的問題，要重取一次嗎？"):
+            break
+
+    baseline.save(baseline_path, overwrite=True)
+    print(f"基準存到 {baseline_path}", flush=True)
+    return baseline
+
+
+def _ask_yes(question: str) -> bool:
+    """問一個是非題。讀不到 stdin 時當作「否」。
+
+    當作否是刻意的：這個函式問的是「要不要重做」，而沒有人在旁邊的時候
+    停下來等一個不會來的答案，比繼續跑完更糟。
+    """
+    try:
+        answer = input(f"{question}[Y/n] ").strip().lower()
+    except (EOFError, OSError):
+        return False
+    return answer in ("", "y", "yes")
+
+
+def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path):
+    """量一種姿勢。"""
+    trial = _next_trial(root, args.subject, condition)
+    csv_path, shots_dir, baseline_path = session_paths(
+        root, args.subject, condition, trial
+    )
+    _prompt(f"接下來量「{condition}」第 {trial} 次，{args.seconds_each:.0f} 秒。\n"
+            + _condition_brief(condition), not args.no_prompt)
+
+    log = MeasurementLog(
+        csv_path, subject=args.subject, overwrite=args.overwrite,
+        condition=condition, trial=trial,
+        baseline_file=baseline_path, baseline=baseline,
+    )
+    snapshots = _Snapshots(shots_dir, args.snapshot_every)
+    print(f"記錄到 {csv_path}，畫面存到 {shots_dir}", flush=True)
+    try:
+        recording = _record(engine, calib, cap, args, baseline, log, snapshots,
+                            args.seconds_each)
+        _report(recording, baseline, log)
+    finally:
+        log.close()
+    recording.condition = condition
+    recording.trial = trial
+    return recording
+
+
+def _study_summary(recordings, args) -> None:
+    """全部量完之後的總結。
+
+    每一段自己的摘要已經印過了，這裡看的是段與段之間：哪一段的資料不能用、
+    以及兩種姿勢分不分得開。
+    """
+    print()
+    print("=" * 60)
+    print(f"受試者 {args.subject}，共 {len(recordings)} 段")
+    for recording in recordings:
+        mean = recording.session.mean_ca
+        shown = "—" if mean is None else f"{mean:+.2f}°"
+        flag = "" if recording.rejection_rate <= _REJECTION_LIMIT else "  ← 略過率偏高"
+        print(f"  {recording.condition:12s} #{recording.trial}  "
+              f"θ_CA {shown:>9s}  "
+              f"可用 {recording.usable}/{recording.frames}"
+              f"（略過 {recording.rejection_rate * 100:.0f}%）{flag}")
+
+    bad = [r for r in recordings if r.rejection_rate > _REJECTION_LIMIT]
+    if bad:
+        print()
+        print(f"略過率超過 {_REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限，"
+              f"建議重量：" + "、".join(f"{r.condition} #{r.trial}" for r in bad))
+
+    print()
+    print("接下來：先翻一遍存下來的畫面，確認每一張都是預期的姿勢，再跑")
+    print("  python posture.py analyse "
+          + " ".join(str(r.log_path) for r in recordings if r.log_path))
 
 
 def _print_line(text: str) -> None:
@@ -579,11 +870,14 @@ def _where(measurement) -> str:
 
 def _live_line(
     ca_window: RollingAngle, sym_window: RollingAngle, measurement,
-    corrected, rejected: int, reason, verdict=None,
+    corrected, rejected: int, reason, verdict=None, remaining_s: float | None = None,
 ) -> str:
+    # 固定秒數的段落要顯示剩下多久。受試者維持姿勢時最想知道的就是這個，
+    # 不知道還要多久就容易提早鬆掉。
+    left = "" if remaining_s is None else f"  剩 {max(0.0, remaining_s):3.0f}s"
     if reason is not None:
         # 調整架設位置時正是略過最多的時候，這幾個數字不能跟著消失
-        return f"略過：{reason}{_where(measurement)}  已略過 {rejected} 幀"
+        return f"略過：{reason}{_where(measurement)}  已略過 {rejected} 幀{left}"
     # 括號裡放的是扣掉基準之後的單幀值。放原始角度的話它跟前面的平均差了一個
     # 基準的量，看起來像兩個不相干的數字。
     return (
@@ -593,6 +887,7 @@ def _live_line(
         f"  {ca_window.count:2d}/{ca_window.window}幀"
         + (f"  略過{rejected}" if rejected else "")
         + ("" if verdict is None else f"  {verdict.posture.value}")
+        + left
     )
 
 
@@ -643,6 +938,15 @@ class _Session:
             self.ca.append(corrected[0])
         if corrected[1] is not None:
             self.sym.append(corrected[1])
+
+    @property
+    def mean_ca(self) -> float | None:
+        """整段的 θ_CA 平均。沒有資料時回傳 None 而不是 0，0 是合法的角度。"""
+        return float(np.mean(self.ca)) if self.ca else None
+
+    @property
+    def mean_sym(self) -> float | None:
+        return float(np.mean(self.sym)) if self.sym else None
 
 
 def _tell(message: str | None) -> None:
@@ -773,6 +1077,7 @@ def main() -> None:
         ("once", "量測一次並印出完整診斷"),
         ("live", "持續量測，印移動平均"),
         ("baseline", "請受試者坐正保持不動，取個人基準（θ_offset）"),
+        ("study", "一個行程跑完整套實驗流程：取基準，接著逐一量各種姿勢"),
     )
     for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
@@ -815,7 +1120,7 @@ def main() -> None:
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
-        if name in ("live", "baseline"):
+        if name in ("live", "baseline", "study"):
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")
         if name == "live":
@@ -825,18 +1130,27 @@ def main() -> None:
             p.add_argument("--log", type=Path, default=None,
                            help="把每一幀寫成 CSV，含被略過的幀。"
                                 "事後分析與 Kinovea 對標都需要這份原始資料")
+            p.add_argument("--snapshots", type=Path, default=None,
+                           help="每隔一段時間存一張左眼畫面到這個資料夾。"
+                                "姿勢事後查證不了，沒有畫面的話量到的數字"
+                                "既不能當誤報率、也不能當正確偵測的證據")
+            p.add_argument("--seconds", type=float, default=None,
+                           help="量測長度。不給就跑到 Ctrl-C 為止。"
+                                "固定秒數的段落比較不會發生受試者忘記維持姿勢")
+            p.add_argument("--condition", default="",
+                           help="姿勢條件的名稱，例如 upright 或 forward。"
+                                "寫進 CSV 標頭，彙整時靠它分組")
+            p.add_argument("--trial", type=int, default=None,
+                           help="同一個人同一種姿勢的第幾次，寫進 CSV 標頭")
+        if name in ("live", "study"):
             p.add_argument("--margin", type=float, default=1.0,
                            help="遲滯寬度，單位是標準誤差的倍數。調高會減少誤報但"
                                 "反應變慢、不動作的區間變寬")
             p.add_argument("--no-judge", action="store_true",
                            help="只印角度不做超標判定，用來收集原始資料")
-            p.add_argument("--snapshots", type=Path, default=None,
-                           help="每隔一段時間存一張左眼畫面到這個資料夾。"
-                                "姿勢事後查證不了，沒有畫面的話量到的數字"
-                                "既不能當誤報率、也不能當正確偵測的證據")
             p.add_argument("--snapshot-every", type=float, default=10.0,
-                           help="存畫面的間隔秒數，要搭配 --snapshots")
-        if name in ("live", "baseline"):
+                           help="存畫面的間隔秒數。study 一定會存，live 要搭配 --snapshots")
+        if name in ("live", "baseline", "study"):
             p.add_argument("--overwrite", action="store_true",
                            help="允許覆蓋既有的基準檔或記錄檔")
         if name == "baseline":
@@ -848,6 +1162,23 @@ def main() -> None:
             p.add_argument("--countdown", type=int, default=3,
                            help="開始前的倒數秒數。剛坐下的十幾秒人還在調整，"
                                 "那段的散佈明顯比後面大，會被平均進基準裡")
+        if name == "study":
+            p.add_argument("--conditions", default="upright,forward",
+                           help="要量的姿勢，逗號分隔。名稱可以自己取，"
+                                "程式不限定種類，只把它寫進 CSV 與檔名")
+            p.add_argument("--seconds", type=float, default=30.0,
+                           help="取基準的取樣長度")
+            p.add_argument("--seconds-each", type=float, default=90.0,
+                           help="每一種姿勢量多久。固定秒數比 Ctrl-C 好，"
+                                "段落短受試者才不會忘記維持姿勢")
+            p.add_argument("--countdown", type=int, default=15,
+                           help="每一段開始前的倒數秒數，讓受試者坐定。"
+                                "實測 3 秒與 20 秒的基準誤差差了 3.5 倍")
+            p.add_argument("--out-dir", type=Path, default=Path("data/sessions"),
+                           help="資料寫到 <out-dir>/<subject>/ 底下，檔名自動產生")
+            p.add_argument("--no-prompt", action="store_true",
+                           help="不等按鍵，每一段印完指導語就直接開始。"
+                                "自己一個人量、或在測試裡跑的時候用")
 
     args = parser.parse_args()
     # analyse 只讀 CSV，標定檔與相機的檢查對它都不適用。
@@ -872,8 +1203,8 @@ def main() -> None:
         args.out = Path("data/baselines") / f"{args.subject}.json"
     _refuse_to_overwrite(args)
 
-    {"once": _run_once, "live": _run_live,
-     "baseline": _run_baseline, "analyse": _run_analyse}[args.mode](args)
+    {"once": _run_once, "live": _run_live, "baseline": _run_baseline,
+     "study": _run_study, "analyse": _run_analyse}[args.mode](args)
 
 
 if __name__ == "__main__":
