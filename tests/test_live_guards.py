@@ -146,3 +146,50 @@ def test_the_threshold_is_respected(after):
     reason = "深度 104mm 落在合理範圍外"
     told = [watcher.saw(reason) for _ in range(after + 2)]
     assert told.index(next(t for t in told if t is not None)) == after - 1
+
+
+def test_the_snapshot_name_says_when_what_and_the_verdict():
+    """要能不開 CSV 就看出這一張是什麼時候、量到多少、判成什麼。"""
+    posture = _posture()
+    name = posture.snapshot_name(42, 87.3, 24.9, "超標")
+    assert name == "000042_t087.3s_ca+024.9_over.png"
+
+
+def test_snapshot_names_sort_in_time_order():
+    """檔案總管按名字排序，補零之後才與時間順序一致。"""
+    posture = _posture()
+    names = [posture.snapshot_name(i, i * 10.0, 5.0, "正常") for i in (2, 10, 100)]
+    assert names == sorted(names)
+
+
+def test_a_missing_angle_is_not_written_as_zero():
+    """0 是合法的角度值，拿它表示算不出來會讓檔名說謊。"""
+    posture = _posture()
+    assert "cana" in posture.snapshot_name(1, 1.0, None, None)
+
+
+def test_the_sign_survives_because_it_is_the_whole_point():
+    """θ_CA 的符號就是前傾與後仰的差別。"""
+    posture = _posture()
+    assert "ca-012.0" in posture.snapshot_name(1, 1.0, -12.0, "正常")
+    assert "ca+012.0" in posture.snapshot_name(1, 1.0, 12.0, "正常")
+
+
+def test_snapshots_are_off_unless_a_folder_is_given():
+    posture = _posture()
+    assert not posture._Snapshots(None, 10.0).enabled
+    assert not posture._Snapshots(__import__("pathlib").Path("x"), 0).enabled
+
+
+def test_snapshots_are_taken_on_the_interval_not_every_frame(tmp_path):
+    """每幀都存的話，兩分鐘的量測會產生六百張，沒有人會去看。"""
+    import numpy as np
+
+    posture = _posture()
+    shots = posture._Snapshots(tmp_path, 10.0)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    saved = [shots.maybe_save(i, i * 1.0, frame, None, 5.0, "正常")
+             for i in range(25)]
+    taken = [s for s in saved if s is not None]
+    assert len(taken) == 3, "0、10、20 秒各一張"
+    assert len(list(tmp_path.glob("*.png"))) == 3

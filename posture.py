@@ -184,6 +184,65 @@ def _measure_once(engine, calib, cap, args):
     return measurement, match, frames
 
 
+def snapshot_name(frame: int, elapsed_s: float, theta_ca_deg: float | None,
+                  posture: str | None) -> str:
+    """快照的檔名。要能不開 CSV 就看出這一張是什麼時候、量到多少、判成什麼。
+
+    檔名排序要與時間順序一致，所以幀號補零；角度帶正負號，因為 θ_CA 的符號
+    就是前傾與後仰的差別。角度算不出來時寫 na，不寫 0，0 是合法的角度。
+    """
+    angle = "na" if theta_ca_deg is None else f"{theta_ca_deg:+06.1f}"
+    verdict = {"超標": "over", "正常": "ok", "未知": "unknown"}.get(posture or "", "none")
+    return f"{frame:06d}_t{elapsed_s:05.1f}s_ca{angle}_{verdict}.png"
+
+
+class _Snapshots:
+    """每隔一段時間存一張左眼畫面。
+
+    存在的理由是姿勢事後查證不了。2026-09-29 連續兩次量測的結論都被推翻：
+    一次是方位角在過程中漂了三十幾度，一次是受試者不自覺前傾而事後才想起來。
+    兩次都不是程式的問題，而是「請坐正兩分鐘」這件事沒有留下任何獨立記錄，
+    所以量到的數字既不能當誤報率、也不能當正確偵測的證據。
+
+    存左眼就夠。要確認的是姿勢而不是立體配對，而且一半的張數換一半的磁碟。
+    """
+
+    def __init__(self, out_dir: Path | None, every_s: float):
+        self._dir = out_dir
+        self._every = every_s
+        self._next_at = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self._dir is not None and self._every > 0
+
+    def maybe_save(self, frame_index, elapsed_s, left_frame, left_kp,
+                   theta_ca_deg, posture) -> str | None:
+        """時間到了就存一張，回傳檔名。"""
+        if not self.enabled or elapsed_s < self._next_at:
+            return None
+        self._next_at = elapsed_s + self._every
+        name = snapshot_name(frame_index, elapsed_s, theta_ca_deg, posture)
+        _write_frame(left_frame, self._dir / name, left_kp)
+        return name
+
+
+def _write_frame(frame, path: Path, keypoints=None) -> None:
+    """把一張畫面寫成 png，偵測到的關鍵點疊上去。"""
+    import cv2
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    canvas = frame.copy()
+    if keypoints is not None:
+        for i, (x, y) in enumerate(keypoints.points):
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            cv2.circle(canvas, (int(x), int(y)), 4, (0, 255, 0), -1)
+            cv2.putText(canvas, COCO18_KEYPOINT_NAMES[i], (int(x) + 6, int(y) - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
+    cv2.imwrite(str(path), canvas)
+
+
 def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=None) -> Path:
     """把左右兩眼的畫面存下來，偵測到的關鍵點疊上去。
 
@@ -191,19 +250,8 @@ def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=
     頭有沒有被切掉、畫面裡還有什麼被當成人，這些看一眼就知道，
     用座標猜要來回好幾輪。
     """
-    import cv2
-
-    out_dir.mkdir(parents=True, exist_ok=True)
     for name, frame, kp in (("left", left_frame, left_kp), ("right", right_frame, right_kp)):
-        canvas = frame.copy()
-        if kp is not None:
-            for i, (x, y) in enumerate(kp.points):
-                if not (np.isfinite(x) and np.isfinite(y)):
-                    continue
-                cv2.circle(canvas, (int(x), int(y)), 4, (0, 255, 0), -1)
-                cv2.putText(canvas, COCO18_KEYPOINT_NAMES[i], (int(x) + 6, int(y) - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
-        cv2.imwrite(str(out_dir / f"{name}.png"), canvas)
+        _write_frame(frame, out_dir / f"{name}.png", kp)
     return out_dir
 
 
@@ -308,6 +356,10 @@ def _run_live(args) -> None:
     transitions: list[str] = []
     lost: str | None = None
     stuck = _StuckWatcher()
+    snapshots = _Snapshots(args.snapshots, args.snapshot_every)
+    if snapshots.enabled:
+        print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {args.snapshots}，"
+              f"事後可以核對當時的姿勢", flush=True)
     try:
         while True:
             try:
@@ -370,6 +422,11 @@ def _run_live(args) -> None:
                     ca_standard_error=ca_window.standard_error,
                     posture="" if verdict is None else verdict.posture.value,
                 )
+            snapshots.maybe_save(
+                0 if log is None else log.frames_written,
+                time.perf_counter() - started_at, frames[0], match.left,
+                corrected[0], None if verdict is None else verdict.posture.value,
+            )
     except KeyboardInterrupt:
         pass
     print()
@@ -739,6 +796,12 @@ def main() -> None:
                                 "反應變慢、不動作的區間變寬")
             p.add_argument("--no-judge", action="store_true",
                            help="只印角度不做超標判定，用來收集原始資料")
+            p.add_argument("--snapshots", type=Path, default=None,
+                           help="每隔一段時間存一張左眼畫面到這個資料夾。"
+                                "姿勢事後查證不了，沒有畫面的話量到的數字"
+                                "既不能當誤報率、也不能當正確偵測的證據")
+            p.add_argument("--snapshot-every", type=float, default=10.0,
+                           help="存畫面的間隔秒數，要搭配 --snapshots")
         if name in ("live", "baseline"):
             p.add_argument("--overwrite", action="store_true",
                            help="允許覆蓋既有的基準檔或記錄檔")
