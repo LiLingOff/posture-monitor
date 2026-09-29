@@ -158,7 +158,7 @@ def test_refuses_to_overwrite_an_existing_baseline(tmp_path):
 
 
 def _reject_all(reason_depth_mm: float, frames: int = 12):
-    """做出一批全部因為同一個原因被擋掉的量測。"""
+    """生出一批全部因為同一個原因被擋掉的量測。"""
     collector = BaselineCollector()
     calib = _calib()
     for i in range(frames):

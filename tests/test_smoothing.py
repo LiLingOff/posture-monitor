@@ -76,7 +76,7 @@ def test_a_drifting_window_reports_a_larger_error_than_std_over_root_n():
 
 
 def test_no_values_yet_reports_nothing_rather_than_zero():
-    """空視窗回傳 0 的話會被讀成完美姿勢，那是最糟的失效方式。"""
+    """空視窗回傳 0 的話會被讀成完美姿勢。"""
     rolling = RollingAngle(10)
     assert rolling.mean is None
     assert rolling.std is None

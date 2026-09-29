@@ -77,7 +77,7 @@ def sessions_markdown(cohort: Cohort) -> str:
     ]
     for r in rows:
         # 先算好每一格再組字串。塞進 f-string 裡的條件運算式在這種寬度下
-        # 讀不出來，而表格的欄位又多，錯一格不會有人發現。
+        # 讀不出來，而表格有十一欄，錯位一格在成品上看不出來。
         flag = " ⚠" if r["rejection_rate"] > 0.15 else ""
         trial = "—" if r["trial"] is None else str(r["trial"])
         angle = _fmt(r["theta_ca_deg"], 2, "°")
@@ -139,8 +139,8 @@ def _why_no_separation(separation: Separation, cohort: Cohort) -> str:
     if unlabelled:
         lines.append(
             f"有 {unlabelled} 段沒有記錄姿勢條件，那些是在 CSV 加上 `condition` "
-            f"欄之前量的。它們照樣列在上面的逐段表裡，但不能參與比較——"
-            f"事後補標會變成猜，而猜錯不會有人發現。"
+            f"欄之前量的。它們照樣列在上面的逐段表裡，但不能參與比較，"
+            f"因為事後補標會變成猜，而猜錯的地方不會有任何痕跡。"
         )
     if not missing and not unlabelled:
         lines.append("兩種姿勢都有資料，但沒有受試者同時具備兩者的可用段落。"

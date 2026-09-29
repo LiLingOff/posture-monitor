@@ -1175,7 +1175,7 @@ def describe_camera_loss(index: int, failures: int, seconds: float) -> str:
     return (
         f"相機連續 {failures} 次讀不到畫面（約 {seconds:.0f} 秒），停止量測。\n"
         f"這通常是 USB 斷線或供電不足，節點編號也可能在重新列舉之後換掉了。\n"
-        f"已經寫下的資料是完整的，斷線之前的部分照常可以分析。\n"
+        f"已經寫下的資料是完整的，斷線之前那一段照常可以分析。\n"
         f"接回去之後確認節點：ls -l /dev/video*，或直接用 --camera auto 重跑。\n"
         + describe_camera_open_failure(index)
     )

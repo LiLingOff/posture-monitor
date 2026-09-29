@@ -57,7 +57,7 @@ def test_too_few_samples_fall_back_rather_than_return_nothing():
 
 
 def test_a_single_value_has_no_spread_to_report():
-    """回傳 0 會被讀成完美的量測，那是最糟的失效方式。"""
+    """回傳 0 會被讀成「完美的量測」，而不是「只有一個樣本」。"""
     assert standard_error([7.0]) is None
     assert standard_error([]) is None
 

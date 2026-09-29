@@ -211,7 +211,7 @@ def read_rows(path: Path) -> tuple[list[dict], dict[str, str]]:
     註解列用 `#` 開頭，pandas 讀得掉，csv 模組讀不掉，所以在這裡先濾。
 
     回傳的中繼資料是原樣的字串對照表，缺的鍵就是缺。早期的檔案只有
-    `# subject=`，而那幾份正是最值得分析的資料，所以不能因為少了欄位就拒讀。
+    `# subject=`，而那幾份的分析價值最高，不能因為少了欄位就拒讀。
     不認得的鍵也照收，日後多記一項不必同步改這裡。
     """
     text = Path(path).read_text(encoding="utf-8").splitlines()

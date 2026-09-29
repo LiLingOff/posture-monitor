@@ -1,7 +1,7 @@
 """分析逐幀 CSV。
 
 重點在**舊檔案也要讀得動**。`posture` 與 `angle_max_vertical_disparity_px`
-是後來才加的欄，2026-09-24 那兩份珍貴的記錄裡沒有，而那正是最需要分析的資料。
+是後來才加的欄，2026-09-24 那兩份記錄裡沒有，而它們的分析價值最高。
 """
 import numpy as np
 import pytest
@@ -83,7 +83,7 @@ def test_an_empty_file_says_so(tmp_path):
 
 
 def test_it_reads_a_csv_written_before_the_newer_columns_existed(tmp_path):
-    """2026-09-24 那兩份記錄沒有 posture 與 angle_max 欄，而那是最需要分析的資料。"""
+    """2026-09-24 那兩份記錄沒有 posture 與 angle_max 欄，卻最需要分析。"""
     summary = analyse_session(_old_format_session(tmp_path))
     assert summary.frames == 120
     assert summary.usable == 120
