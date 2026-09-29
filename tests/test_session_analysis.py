@@ -210,3 +210,61 @@ def test_the_report_survives_a_file_with_no_subject_comment(tmp_path):
     summary = analyse_session(_write(tmp_path, rows, subject=None))
     assert summary.subject is None
     assert format_session(summary)
+
+
+def _azimuth_row(frame, azimuth, usable=True, reason="", shared=12):
+    flag = 1 if usable else 0
+    ca = "8.0" if usable else ""
+    return (f"{frame},{frame * 0.2:.3f},{flag},{reason},{ca},1.0,{ca},1.0,"
+            f"{ca},1.0,0.5,660.0,{azimuth},7.7,{shared},15.0")
+
+
+def test_rejection_rate_is_broken_down_by_azimuth(tmp_path):
+    """方位角的上限不在幾何而在遮擋，所以只能從略過率實測。"""
+    rows = []
+    frame = 0
+    for azimuth, bad in ((25.0, 0), (35.0, 2), (45.0, 12), (55.0, 16)):
+        for i in range(20):
+            frame += 1
+            rows.append(_azimuth_row(
+                frame, azimuth, usable=i >= bad,
+                reason="right_shoulder 的垂直視差 8.9px，左右配對錯了" if i < bad else "",
+            ))
+    summary = analyse_session(_write(tmp_path, rows))
+    bins = {int(b.low): b for b in summary.azimuth_bins}
+    assert bins[20].rejection_rate == 0.0
+    assert bins[50].rejection_rate == pytest.approx(0.8)
+    assert bins[50].shoulder_rejected == 16
+    assert "這就是方位角的實際上限" in format_session(summary)
+
+
+def test_a_fixed_azimuth_produces_no_breakdown(tmp_path):
+    """定點量測分箱沒有意義，報一張只有一列的表只會誤導。"""
+    rows = [_azimuth_row(i + 1, 20.0 + (i % 3)) for i in range(60)]
+    summary = analyse_session(_write(tmp_path, rows))
+    assert summary.azimuth_bins == []
+    assert "方位角與遮擋" not in format_session(summary)
+
+
+def test_bins_with_too_few_frames_are_left_out(tmp_path):
+    """幀數太少時比例本身不可信，寧可不報。"""
+    rows = [_azimuth_row(i + 1, 25.0) for i in range(40)]
+    rows += [_azimuth_row(100 + i, 55.0) for i in range(3)]
+    summary = analyse_session(_write(tmp_path, rows))
+    assert [int(b.low) for b in summary.azimuth_bins] == [20]
+
+
+def test_only_shoulder_failures_count_towards_occlusion(tmp_path):
+    """手腕配錯與方位角無關，混進來會讓遮擋看起來比實際嚴重。"""
+    rows = []
+    for i in range(40):
+        rows.append(_azimuth_row(
+            i + 1, 25.0, usable=i >= 10,
+            reason="right_wrist 的垂直視差 30px，左右配對錯了" if i < 10 else "",
+        ))
+    for i in range(40):
+        rows.append(_azimuth_row(100 + i, 55.0))
+    summary = analyse_session(_write(tmp_path, rows))
+    low = next(b for b in summary.azimuth_bins if b.low == 20.0)
+    assert low.rejected == 10
+    assert low.shoulder_rejected == 0

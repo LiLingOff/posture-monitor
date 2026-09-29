@@ -162,6 +162,7 @@ class SessionSummary:
     columns: dict[str, Column] = field(default_factory=dict)
     has_baseline: bool = False
     judgement: JudgementReplay | None = None
+    azimuth_bins: list = field(default_factory=list)
 
     @property
     def rejected(self) -> int:
@@ -325,6 +326,7 @@ def analyse_session(
         if values.size:
             summary.columns[label] = Column(label, values)
 
+    summary.azimuth_bins = rejection_by_azimuth(rows)
     stored = None if force_replay else _read_judgement(rows)
     summary.judgement = stored or _replay_judgement(rows, window, margin)
     return summary
@@ -351,3 +353,71 @@ def compare(a: AngleSummary, b: AngleSummary) -> tuple[float, float | None, floa
     combined = float(np.hypot(error_a, error_b))
     sigma = None if combined == 0 else abs(difference) / combined
     return difference, combined, sigma
+
+
+# 方位角分箱的寬度。太窄每一箱的幀數不夠，太寬看不出劣化從哪裡開始。
+_AZIMUTH_BIN_DEG = 10.0
+# 少於這麼多幀的箱子不報，比例本身不可信。
+_MINIMUM_BIN_FRAMES = 15
+# 方位角的跨度小於這個值時整段不報，那不是一次掃描而是一個定點。
+_MINIMUM_AZIMUTH_SPAN_DEG = 15.0
+
+
+@dataclass(frozen=True)
+class AzimuthBin:
+    """一段方位角範圍內的偵測品質。"""
+
+    low: float
+    high: float
+    frames: int
+    rejected: int
+    shoulder_rejected: int
+    shared_keypoints: float | None
+
+    @property
+    def rejection_rate(self) -> float:
+        return 0.0 if self.frames == 0 else self.rejected / self.frames
+
+
+def rejection_by_azimuth(rows: list[dict]) -> list[AzimuthBin]:
+    """略過率隨方位角怎麼變。
+
+    這是「雙目模組能推到多大的方位角」的直接量測。限制不在幾何而在遮擋：
+    方位角愈大，遠側的肩膀愈容易被身體擋住，而雙肩正是解剖平面的來源。
+    幾何上的精度隨方位角變好，所以上限只能實測，不能用算的。
+
+    被略過的幀也記著方位角，所以這個比例算得出來。分開數「肩膀配對錯誤」，
+    因為那正是遮擋的徵狀，而手腕腳踝配錯與方位角無關。
+
+    方位角跨度不夠時回傳空的：定點量測的分箱沒有意義。
+    """
+    seen = [(_number(r.get("azimuth_deg", "")), r) for r in rows]
+    seen = [(a, r) for a, r in seen if a is not None]
+    if not seen:
+        return []
+    values = [a for a, _ in seen]
+    if max(values) - min(values) < _MINIMUM_AZIMUTH_SPAN_DEG:
+        return []
+
+    buckets: dict[int, list[dict]] = {}
+    for azimuth, row in seen:
+        buckets.setdefault(int(azimuth // _AZIMUTH_BIN_DEG), []).append(row)
+
+    out: list[AzimuthBin] = []
+    for index in sorted(buckets):
+        group = buckets[index]
+        if len(group) < _MINIMUM_BIN_FRAMES:
+            continue
+        rejected = [r for r in group if r.get("usable") != "1"]
+        shoulder = [r for r in rejected if "shoulder" in (r.get("reject_reason") or "")]
+        shared = [_number(r.get("shared_keypoints", "")) for r in group]
+        shared = [v for v in shared if v is not None]
+        out.append(AzimuthBin(
+            low=index * _AZIMUTH_BIN_DEG,
+            high=(index + 1) * _AZIMUTH_BIN_DEG,
+            frames=len(group),
+            rejected=len(rejected),
+            shoulder_rejected=len(shoulder),
+            shared_keypoints=float(np.mean(shared)) if shared else None,
+        ))
+    return out

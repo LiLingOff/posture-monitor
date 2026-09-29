@@ -112,6 +112,36 @@ def _conditions(summary: SessionSummary) -> list[str]:
     return lines
 
 
+def _azimuth(summary: SessionSummary) -> list[str]:
+    """略過率隨方位角怎麼變。這是方位角上限的直接量測。
+
+    幾何上的精度隨方位角變好，所以上限只能來自遮擋：遠側肩膀被身體擋住之後，
+    解剖平面與 θ_sym 都算不出來。看的是肩膀配對錯誤從哪一箱開始變多。
+    """
+    bins = summary.azimuth_bins
+    if len(bins) < 2:
+        return []
+    lines = [cell("方位角", 12) + cell("幀數", 8) + cell("略過率", 10)
+             + cell("其中肩膀配錯", 15) + "共同關鍵點"]
+    for b in bins:
+        shared = "—" if b.shared_keypoints is None else f"{b.shared_keypoints:.1f}"
+        lines.append(
+            cell(f"{b.low:.0f}~{b.high:.0f}°", 12)
+            + cell(f"{b.frames}", 8)
+            + cell(f"{b.rejection_rate * 100:.0f}%", 10)
+            + cell(f"{b.shoulder_rejected}", 15)
+            + shared
+        )
+    worst = max(bins, key=lambda b: b.rejection_rate)
+    best = min(bins, key=lambda b: b.rejection_rate)
+    if worst.rejection_rate > 2 * max(best.rejection_rate, 0.02):
+        lines.append("")
+        lines.append(f"  {worst.low:.0f}° 以上的略過率是 {best.low:.0f}° 那一段的 "
+                     f"{worst.rejection_rate / max(best.rejection_rate, 0.01):.0f} 倍，"
+                     f"遠側肩膀開始被擋住。這就是方位角的實際上限")
+    return lines
+
+
 def _judgement(summary: SessionSummary) -> list[str]:
     replay = summary.judgement
     if replay is None:
@@ -146,6 +176,7 @@ def format_session(summary: SessionSummary) -> str:
         ("角度", _angles(summary)),
         ("相鄰幀的相關性", _correlation_evidence(summary)),
         ("量測條件", _conditions(summary)),
+        ("方位角與遮擋", _azimuth(summary)),
         ("判定", _judgement(summary)),
     ]
     out = [title, "=" * 60]
