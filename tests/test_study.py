@@ -11,8 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from geometry.baseline import PostureBaseline
+from geometry.recording import Recording, RollingAngle, Session
+from geometry.study import (baseline_path, condition_brief, next_trial,
+                            parse_conditions, review, session_paths)
 from posture_loader import load_posture_module
 
+# 流程的測試要走 _run_study，那需要整個 CLI；純邏輯的部分直接 import 上面
+# 那幾個，不必為了檔名與編號載入 OpenCV。
 posture = load_posture_module("posture_study")
 
 
@@ -46,7 +51,7 @@ def _args(tmp_path, **overrides):
 # ---- 檔名與批次編號 ----------------------------------------------------
 
 def test_the_paths_say_who_what_and_which_attempt(tmp_path):
-    csv_path, shots = posture.session_paths(tmp_path, "chenyue", "upright", 2)
+    csv_path, shots = session_paths(tmp_path, "chenyue", "upright", 2)
     assert csv_path == tmp_path / "chenyue" / "upright-2.csv"
     assert shots == tmp_path / "chenyue" / "upright-2-shots"
 
@@ -55,7 +60,7 @@ def test_the_baseline_path_does_not_depend_on_the_condition(tmp_path):
     """基準是每位受試者一份。先前它跟 CSV 擠在同一個回傳值裡，取基準那邊
     只好傳一個假的 condition 進來才拿得到它。
     """
-    assert (posture.baseline_path(tmp_path, "chenyue")
+    assert (baseline_path(tmp_path, "chenyue")
             == tmp_path / "chenyue" / "baseline.json")
 
 
@@ -63,21 +68,21 @@ def test_the_trial_number_continues_from_what_is_already_there(tmp_path):
     """撞名是 2026-09-29 真的發生過的事，而當時受試者正坐著等。"""
     folder = tmp_path / "chenyue"
     folder.mkdir()
-    assert posture._next_trial(tmp_path, "chenyue", "upright") == 1
+    assert next_trial(tmp_path, "chenyue", "upright") == 1
     (folder / "upright-1.csv").write_text("x", encoding="utf-8")
     (folder / "upright-2.csv").write_text("x", encoding="utf-8")
-    assert posture._next_trial(tmp_path, "chenyue", "upright") == 3
+    assert next_trial(tmp_path, "chenyue", "upright") == 3
 
 
 def test_each_condition_counts_separately(tmp_path):
     folder = tmp_path / "chenyue"
     folder.mkdir()
     (folder / "upright-1.csv").write_text("x", encoding="utf-8")
-    assert posture._next_trial(tmp_path, "chenyue", "forward") == 1
+    assert next_trial(tmp_path, "chenyue", "forward") == 1
 
 
 def test_a_missing_folder_starts_at_one(tmp_path):
-    assert posture._next_trial(tmp_path, "nobody", "upright") == 1
+    assert next_trial(tmp_path, "nobody", "upright") == 1
 
 
 def test_a_stray_filename_does_not_break_the_numbering(tmp_path):
@@ -86,19 +91,19 @@ def test_a_stray_filename_does_not_break_the_numbering(tmp_path):
     folder.mkdir()
     (folder / "upright-notes.csv").write_text("x", encoding="utf-8")
     (folder / "upright-3.csv").write_text("x", encoding="utf-8")
-    assert posture._next_trial(tmp_path, "chenyue", "upright") == 4
+    assert next_trial(tmp_path, "chenyue", "upright") == 4
 
 
 # ---- 指導語 ------------------------------------------------------------
 
 def test_the_known_conditions_carry_the_rule_that_was_learned_the_hard_way():
     """量測中轉頭看螢幕會把上半身帶過去，方位角跟著漂，那次資料作廢。"""
-    assert "不要看螢幕" in posture._condition_brief("upright")
+    assert "不要看螢幕" in condition_brief("upright")
 
 
 def test_an_unnamed_condition_still_gets_something_usable():
     """姿勢種類還沒定案，程式不該把清單釘死。"""
-    brief = posture._condition_brief("slouch")
+    brief = condition_brief("slouch")
     assert "slouch" in brief
     assert "固定點" in brief
 
@@ -114,13 +119,13 @@ class _Recorder:
 
     def __call__(self, engine, calib, cap, args, baseline, log, snapshots, seconds):
         self.calls.append(seconds)
-        session = posture._Session()
+        session = Session()
         for _ in range(100):
             session.add((5.0, 1.0))
         rejected = int(round(self._rate * 100 / (1 - self._rate)))
-        return posture.Recording(
-            session=session, ca_window=posture.RollingAngle(30),
-            sym_window=posture.RollingAngle(30), rejected=rejected,
+        return Recording(
+            session=session, ca_window=RollingAngle(30),
+            sym_window=RollingAngle(30), rejected=rejected,
             frames=100 + rejected, transitions=[],
             log_path=None if log is None else log.path,
         )
@@ -290,7 +295,7 @@ def test_both_printed_rejection_rates_use_the_same_denominator(tmp_path, monkeyp
             # 十幀通過檢查但只有 θ_sym，θ_CA 算不出來
             for _ in range(10):
                 recording.session.add((None, 1.0))
-            return posture.Recording(
+            return Recording(
                 session=recording.session, ca_window=recording.ca_window,
                 sym_window=recording.sym_window, rejected=recording.rejected,
                 frames=recording.frames + 10, transitions=[],
@@ -306,3 +311,48 @@ def test_both_printed_rejection_rates_use_the_same_denominator(tmp_path, monkeyp
     rates = re.findall(r"（略過 (\d+)%）|（(\d+)%）偵測失誤", printed)
     values = {a or b for a, b in rates}
     assert len(values) == 1, f"印出了不一致的略過率：{values}"
+
+
+# ---- 純邏輯：不必載入 CLI ------------------------------------------------
+
+def test_the_condition_list_keeps_the_order_it_was_given():
+    """受試者是按指定順序量的，而疲勞會隨時間累積，順序是實驗設計的一部分。"""
+    assert parse_conditions("forward,upright") == ["forward", "upright"]
+
+
+def test_whitespace_around_condition_names_is_trimmed():
+    assert parse_conditions(" slouch , lean-left ") == ["slouch", "lean-left"]
+
+
+def test_an_empty_condition_list_is_rejected_by_the_parser():
+    """設定錯了要早點說，不要開了相機才說。"""
+    with pytest.raises(ValueError, match="至少要有一種姿勢"):
+        parse_conditions(" , ")
+
+
+def _recording(condition, trial, ca, rejected, frames):
+    session = Session()
+    for _ in range(frames - rejected):
+        session.add((ca, 1.0))
+    return Recording(
+        session=session, ca_window=RollingAngle(30), sym_window=RollingAngle(30),
+        rejected=rejected, frames=frames, condition=condition, trial=trial,
+    )
+
+
+def test_review_marks_the_segments_that_lost_too_many_frames():
+    """略過率上限只該有一個說法。這裡判斷，印出來的地方不要再寫一次。"""
+    segments = review([
+        _recording("upright", 1, ca=0.0, rejected=4, frames=100),
+        _recording("forward", 1, ca=20.0, rejected=30, frames=100),
+    ])
+    assert [seg.too_many_rejected for seg in segments] == [False, True]
+    assert segments[0].theta_ca_deg == pytest.approx(0.0)
+    assert segments[1].usable == 70
+
+
+def test_review_survives_a_segment_with_no_usable_frames():
+    """整段都被略過時要回報「沒有」，不是 0。0 是合法的角度。"""
+    segments = review([_recording("upright", 1, ca=0.0, rejected=50, frames=50)])
+    assert segments[0].theta_ca_deg is None
+    assert segments[0].rejection_rate == pytest.approx(1.0)

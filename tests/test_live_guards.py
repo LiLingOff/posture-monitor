@@ -2,24 +2,20 @@
 
 這些都來自 2026-09-29 的實機量測：相機中途斷線、以及同一個原因連續略過。
 """
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
 from geometry.pipeline import rejection_advice
-from posture_loader import load_posture_module
-
-
-def _posture():
-    return load_posture_module("posture_live")
+from geometry.recording import (MAX_CONSECUTIVE_READ_FAILURES,
+                                READ_RETRY_PAUSE_S, Session, Snapshots,
+                                StuckWatcher, camera_lost, snapshot_name)
 
 
 def test_a_dropped_frame_does_not_stop_the_measurement():
     """偶爾掉一幀是正常的，停下來的話二十分鐘的量測會被一次打嗝毀掉。"""
-    posture = _posture()
-    args = SimpleNamespace(camera=1)
-    assert posture._camera_lost(args, 1) is None
-    assert posture._camera_lost(args, posture._MAX_CONSECUTIVE_READ_FAILURES - 1) is None
+    assert camera_lost(1, 1) is None
+    assert camera_lost(1, MAX_CONSECUTIVE_READ_FAILURES - 1) is None
 
 
 def test_a_camera_that_is_gone_stops_the_measurement():
@@ -27,9 +23,7 @@ def test_a_camera_that_is_gone_stops_the_measurement():
 
     相機不見了的話重試多少次都一樣，而重試迴圈會把有效資料埋在後面。
     """
-    posture = _posture()
-    args = SimpleNamespace(camera=1)
-    message = posture._camera_lost(args, posture._MAX_CONSECUTIVE_READ_FAILURES)
+    message = camera_lost(1, MAX_CONSECUTIVE_READ_FAILURES)
     assert message is not None
     # 當下最想知道的是資料還在不在
     assert "已經寫下的資料是完整的" in message
@@ -48,14 +42,12 @@ def test_the_retry_pause_keeps_the_log_from_running_away():
 
     上限是這兩個數字的乘積：25 次 × 0.1 秒，約兩秒半，之後就停止量測。
     """
-    posture = _posture()
-    assert posture._READ_RETRY_PAUSE_S > 0
-    worst = posture._MAX_CONSECUTIVE_READ_FAILURES
-    assert worst * posture._READ_RETRY_PAUSE_S < 10.0
+    assert READ_RETRY_PAUSE_S > 0
+    assert MAX_CONSECUTIVE_READ_FAILURES * READ_RETRY_PAUSE_S < 10.0
 
 
 def _watcher(after=3):
-    return _posture()._StuckWatcher(after=after)
+    return StuckWatcher(after=after)
 
 
 def test_a_repeated_reason_eventually_says_what_to_do():
@@ -141,43 +133,37 @@ def test_the_threshold_is_respected(after):
 
 def test_the_snapshot_name_says_when_what_and_the_verdict():
     """要能不開 CSV 就看出這一張是什麼時候、量到多少、判成什麼。"""
-    posture = _posture()
-    name = posture.snapshot_name(42, 87.3, 24.9, "超標")
+    name = snapshot_name(42, 87.3, 24.9, "超標")
     assert name == "000042_t087.3s_ca+024.9_over.png"
 
 
 def test_snapshot_names_sort_in_time_order():
     """檔案總管按名字排序，補零之後才與時間順序一致。"""
-    posture = _posture()
-    names = [posture.snapshot_name(i, i * 10.0, 5.0, "正常") for i in (2, 10, 100)]
+    names = [snapshot_name(i, i * 10.0, 5.0, "正常") for i in (2, 10, 100)]
     assert names == sorted(names)
 
 
 def test_a_missing_angle_is_not_written_as_zero():
     """0 是合法的角度值，拿它表示算不出來會讓檔名說謊。"""
-    posture = _posture()
-    assert "cana" in posture.snapshot_name(1, 1.0, None, None)
+    assert "cana" in snapshot_name(1, 1.0, None, None)
 
 
 def test_the_sign_survives_because_it_is_the_whole_point():
     """θ_CA 的符號就是前傾與後仰的差別。"""
-    posture = _posture()
-    assert "ca-012.0" in posture.snapshot_name(1, 1.0, -12.0, "正常")
-    assert "ca+012.0" in posture.snapshot_name(1, 1.0, 12.0, "正常")
+    assert "ca-012.0" in snapshot_name(1, 1.0, -12.0, "正常")
+    assert "ca+012.0" in snapshot_name(1, 1.0, 12.0, "正常")
 
 
 def test_snapshots_are_off_unless_a_folder_is_given():
-    posture = _posture()
-    assert not posture._Snapshots(None, 10.0).enabled
-    assert not posture._Snapshots(__import__("pathlib").Path("x"), 0).enabled
+    assert not Snapshots(None, 10.0).enabled
+    assert not Snapshots(Path("x"), 0).enabled
 
 
 def test_snapshots_are_taken_on_the_interval_not_every_frame(tmp_path):
     """每幀都存的話，兩分鐘的量測會產生六百張，沒有人會去看。"""
     import numpy as np
 
-    posture = _posture()
-    shots = posture._Snapshots(tmp_path, 10.0)
+    shots = Snapshots(tmp_path, 10.0)
     frame = np.zeros((48, 64, 3), dtype=np.uint8)
     saved = [shots.maybe_save(i, i * 1.0, frame, None, 5.0, "正常")
              for i in range(25)]
@@ -191,8 +177,7 @@ def test_the_end_summary_covers_the_whole_session_not_the_last_window():
 
     標題寫的是整段，數字卻只有結尾那一小段，兩者對不起來。
     """
-    posture = _posture()
-    session = posture._Session()
+    session = Session()
     for value in [2.0] * 200 + [20.0] * 30:
         session.add((value, 1.0))
     assert len(session.ca) == 230
@@ -202,8 +187,7 @@ def test_the_end_summary_covers_the_whole_session_not_the_last_window():
 
 def test_the_session_keeps_the_two_angles_apart():
     """θ_CA 算得出來而 θ_sym 算不出來的幀是常見的，不能讓它們錯位。"""
-    posture = _posture()
-    session = posture._Session()
+    session = Session()
     session.add((5.0, None))
     session.add((6.0, 1.0))
     session.add((None, 2.0))

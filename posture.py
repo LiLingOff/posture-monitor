@@ -19,7 +19,7 @@ import argparse
 import shutil
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -27,32 +27,34 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calibration.capture import (CameraReadError, _open_camera,  # noqa: E402
-                                 describe_camera_loss,
                                  describe_camera_open_failure,
                                  describe_resolution_mismatch, find_camera_index,
                                  merged_capture_size, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
-from geometry.pipeline import (PersonMatch,  # noqa: E402
-                               estimate_theta_ca_precision_deg,
-                               format_measurement, match_person_pair,
-                               measure_posture, rejection_advice, unusable_reason)
 from geometry.baseline import (REJECTION_LIMIT,  # noqa: E402
                                BaselineCollector, PostureBaseline,
-                               baseline_quality_warnings,
-                               group_rejection_reason)
-from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
-from geometry.measurement_log import MeasurementLog  # noqa: E402
+                               baseline_quality_warnings)
 from geometry.cohort import Separation, collect  # noqa: E402
 from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
                                     to_markdown)
+from geometry.judgement import PostureJudge  # noqa: E402
+from geometry.measurement_log import MeasurementLog  # noqa: E402
+from geometry.pipeline import (PersonMatch,  # noqa: E402
+                               estimate_theta_ca_precision_deg,
+                               format_measurement, match_person_pair,
+                               measure_posture, unusable_reason)
+from geometry.recording import (READ_RETRY_PAUSE_S, Recording,  # noqa: E402
+                                Session, Snapshots, StuckWatcher, camera_lost,
+                                forget_if_stale, write_frame)
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
-from geometry.uncertainty import standard_error  # noqa: E402
+from geometry.study import (baseline_path, condition_brief,  # noqa: E402
+                            next_trial, parse_conditions, review, session_paths)
 from geometry.terminal import cell, truncate  # noqa: E402
+from geometry.uncertainty import standard_error  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
-from pose.topology import COCO18_KEYPOINT_NAMES  # noqa: E402
 
 
 def _build_engine(args) -> LightweightOpenPoseEngine:
@@ -100,71 +102,11 @@ def _open_selected_camera(args, calib=None):
     return cap
 
 
-# 相機掉線之後每次讀取都會立刻失敗，不擋的話迴圈會全速空轉。實機那次在
-# 110 秒內寫了 162485 筆空記錄。每次失敗之間停一下，累積到這個次數就停止量測。
-_READ_RETRY_PAUSE_S = 0.1
-_MAX_CONSECUTIVE_READ_FAILURES = 25
-
-
 def _grab_pair(cap, args):
     ok, frame = cap.read()
     if not ok:
         raise CameraReadError("讀取相機影格失敗")
     return split_merged_frame(frame, args.vertical_split, args.swap_lr)
-
-
-# 同一個原因連續略過這麼多幀就提示一次。實機約 5fps，15 幀是三秒，
-# 短到還來得及調整，長到不會被零星的失誤觸發。
-_STUCK_AFTER_FRAMES = 15
-
-
-class _StuckWatcher:
-    """一直因為同一件事被略過時提示一次該怎麼辦。
-
-    逐幀那一行只說「哪裡不對」，而且會被下一幀蓋掉，所以連續略過三十秒看到的
-    是同一句話重複閃動，沒有人知道該動什麼。原因分組時把數字換掉，因為
-    「垂直視差 8.9px」與「8.4px」是同一件事。
-
-    提示每一段只印一次。反覆印會把它變成跟原本那一行一樣的背景雜訊。
-    """
-
-    def __init__(self, after: int = _STUCK_AFTER_FRAMES):
-        self._after = after
-        self._key: str | None = None
-        self._run = 0
-        self._told = False
-
-    def saw(self, reason: str | None) -> str | None:
-        """收下這一幀的略過原因（沒被略過就傳 None），回傳該印的提示。"""
-        if reason is None:
-            self._key, self._run, self._told = None, 0, False
-            return None
-        key = group_rejection_reason(reason)
-        if key != self._key:
-            self._key, self._run, self._told = key, 1, False
-        else:
-            self._run += 1
-        # 門檻只在這裡判斷一次。分到兩個分支去判斷的話，一段的第一幀會被
-        # 漏掉，提示就永遠晚一幀，而 after=1 這種設定會完全不合預期。
-        if self._told or self._run < self._after:
-            return None
-        self._told = True
-        advice = rejection_advice(reason)
-        head = f"連續 {self._run} 幀都是同一個原因：{reason}"
-        return head + ("\n  " + advice if advice else "")
-
-
-def _camera_lost(args, failures: int) -> str | None:
-    """連續讀取失敗到這個程度就當成相機不見了，回傳該印的話。
-
-    偶爾掉一幀是正常的，相機不見了則重試多少次都一樣。分不開的話只有兩種
-    壞法：太早放棄，或像實機那次一樣空轉到把有效資料埋掉。
-    """
-    if failures < _MAX_CONSECUTIVE_READ_FAILURES:
-        return None
-    return describe_camera_loss(
-        args.camera, failures, failures * _READ_RETRY_PAUSE_S
-    )
 
 
 def _require_matching_resolution(calib, left_frame, args) -> None:
@@ -190,65 +132,6 @@ def _measure_once(engine, calib, cap, args):
     return measurement, match, frames
 
 
-def snapshot_name(frame: int, elapsed_s: float, theta_ca_deg: float | None,
-                  posture: str | None) -> str:
-    """快照的檔名。要能不開 CSV 就看出這一張是什麼時候、量到多少、判成什麼。
-
-    檔名排序要與時間順序一致，所以幀號補零；角度帶正負號，因為 θ_CA 的符號
-    就是前傾與後仰的差別。角度算不出來時寫 na，不寫 0，0 是合法的角度。
-    """
-    angle = "na" if theta_ca_deg is None else f"{theta_ca_deg:+06.1f}"
-    verdict = {"超標": "over", "正常": "ok", "未知": "unknown"}.get(posture or "", "none")
-    return f"{frame:06d}_t{elapsed_s:05.1f}s_ca{angle}_{verdict}.png"
-
-
-class _Snapshots:
-    """每隔一段時間存一張左眼畫面。
-
-    姿勢事後查證不了，所以要留下畫面。2026-09-29 連續兩次量測的結論都被推翻：
-    一次是方位角在過程中漂了三十幾度，一次是受試者不自覺前傾而事後才想起來。
-    兩次都不是程式的問題，而是「請坐正兩分鐘」這件事沒有留下任何獨立記錄，
-    所以量到的數字既不能當誤報率、也不能當正確偵測的證據。
-
-    存左眼就夠。要確認的是姿勢而不是立體配對，而且一半的張數換一半的磁碟。
-    """
-
-    def __init__(self, out_dir: Path | None, every_s: float):
-        self._dir = out_dir
-        self._every = every_s
-        self._next_at = 0.0
-
-    @property
-    def enabled(self) -> bool:
-        return self._dir is not None and self._every > 0
-
-    def maybe_save(self, frame_index, elapsed_s, left_frame, left_kp,
-                   theta_ca_deg, posture) -> str | None:
-        """時間到了就存一張，回傳檔名。"""
-        if not self.enabled or elapsed_s < self._next_at:
-            return None
-        self._next_at = elapsed_s + self._every
-        name = snapshot_name(frame_index, elapsed_s, theta_ca_deg, posture)
-        _write_frame(left_frame, self._dir / name, left_kp)
-        return name
-
-
-def _write_frame(frame, path: Path, keypoints=None) -> None:
-    """把一張畫面寫成 png，偵測到的關鍵點疊上去。"""
-    import cv2
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canvas = frame.copy()
-    if keypoints is not None:
-        for i, (x, y) in enumerate(keypoints.points):
-            if not (np.isfinite(x) and np.isfinite(y)):
-                continue
-            cv2.circle(canvas, (int(x), int(y)), 4, (0, 255, 0), -1)
-            cv2.putText(canvas, COCO18_KEYPOINT_NAMES[i], (int(x) + 6, int(y) - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
-    cv2.imwrite(str(path), canvas)
-
-
 def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=None) -> Path:
     """把左右兩眼的畫面存下來，偵測到的關鍵點疊上去。
 
@@ -257,7 +140,7 @@ def _save_frames(left_frame, right_frame, out_dir: Path, left_kp=None, right_kp=
     用座標猜要來回好幾輪。
     """
     for name, frame, kp in (("left", left_frame, left_kp), ("right", right_frame, right_kp)):
-        _write_frame(frame, out_dir / f"{name}.png", kp)
+        write_frame(frame, out_dir / f"{name}.png", kp)
     return out_dir
 
 
@@ -329,34 +212,6 @@ def _run_once(args) -> None:
     ))
 
 
-@dataclass
-class Recording:
-    """錄製一段之後留下來的東西。
-
-    回傳而不是直接印出來，因為 `study` 要把好幾段收集起來最後一起比較，
-    而 `live` 只要印一段。判斷「這一段能不能用」的邏輯也只該寫一次。
-    """
-
-    session: "_Session"
-    ca_window: RollingAngle
-    sym_window: RollingAngle
-    rejected: int
-    frames: int
-    transitions: list
-    camera_lost: str | None = None
-    log_path: Path | None = None
-    condition: str = ""      # study 用，live 留空
-    trial: int | None = None
-
-    @property
-    def rejection_rate(self) -> float:
-        return 0.0 if self.frames == 0 else self.rejected / self.frames
-
-    @property
-    def usable(self) -> int:
-        return len(self.session.ca)
-
-
 def _prepare(args):
     """載入標定、開相機、暖機。回傳 (calib, engine, cap)。
 
@@ -397,8 +252,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     saved_a_rejected_frame = False
     transitions: list[str] = []
     lost: str | None = None
-    session = _Session()
-    stuck = _StuckWatcher()
+    session = Session()
+    stuck = StuckWatcher()
 
     try:
         while seconds is None or (time.perf_counter() - started_at) < seconds:
@@ -409,15 +264,15 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
             except RuntimeError as exc:
                 if isinstance(exc, CameraReadError):
                     read_failures += 1
-                    lost = _camera_lost(args, read_failures)
+                    lost = camera_lost(args.camera, read_failures)
                     if lost is not None:
                         break
-                    time.sleep(_READ_RETRY_PAUSE_S)
+                    time.sleep(READ_RETRY_PAUSE_S)
                 # 讀不到畫面與偵測不到人都是這一幀沒有資料，一樣要計入略過，
                 # 否則結束時印的數字會與實際寫下的筆數對不起來。
                 rejected += 1
                 consecutive_misses += 1
-                _forget_if_stale(ca_window, sym_window, consecutive_misses)
+                forget_if_stale(ca_window, sym_window, consecutive_misses)
                 _tell(stuck.saw(str(exc)))
                 _print_line(f"{exc}（已略過 {rejected} 幀）")
                 if log is not None:
@@ -437,7 +292,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
                 consecutive_misses += 1
-                _forget_if_stale(ca_window, sym_window, consecutive_misses)
+                forget_if_stale(ca_window, sym_window, consecutive_misses)
                 if args.save_frames and not saved_a_rejected_frame:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
@@ -539,7 +394,7 @@ def _open_log(args, baseline, path, condition: str, trial: int | None,
 
 
 def _open_snapshots(args, out_dir):
-    snapshots = _Snapshots(out_dir, args.snapshot_every)
+    snapshots = Snapshots(out_dir, args.snapshot_every)
     if snapshots.enabled:
         print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {out_dir}，"
               f"事後可以核對當時的姿勢", flush=True)
@@ -602,13 +457,13 @@ def _collect_baseline(
         except RuntimeError as exc:
             if isinstance(exc, CameraReadError):
                 read_failures += 1
-                lost = _camera_lost(args, read_failures)
+                lost = camera_lost(args.camera, read_failures)
                 if lost is not None:
                     print()
                     raise SystemExit(lost)
                 # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
                 # 用滿剩下的取樣時間空轉。
-                time.sleep(_READ_RETRY_PAUSE_S)
+                time.sleep(READ_RETRY_PAUSE_S)
             _print_line(str(exc))
             continue
         reason = collector.add(measurement)
@@ -651,47 +506,6 @@ def _run_baseline(args) -> None:
     print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
 
 
-def subject_dir(root: Path, subject: str) -> Path:
-    """一位受試者的資料夾。"""
-    return Path(root) / subject
-
-
-def baseline_path(root: Path, subject: str) -> Path:
-    """這位受試者這次的基準檔。每個 session 一份，與姿勢無關。"""
-    return subject_dir(root, subject) / "baseline.json"
-
-
-def session_paths(root: Path, subject: str, condition: str, trial: int):
-    """一次量測的 CSV 與快照資料夾。
-
-    檔名自己說得出是誰、哪種姿勢、第幾次，因為彙整時靠中繼資料而不是檔名，
-    但人在檔案總管裡找東西還是靠檔名。
-
-    只回傳真的跟 condition/trial 有關的兩個路徑。基準檔是每位受試者一份，
-    先前把它塞在同一個回傳值裡，取基準那邊只好傳假的 condition 進來拿它。
-    """
-    folder = subject_dir(root, subject)
-    stem = f"{condition}-{trial}"
-    return folder / f"{stem}.csv", folder / f"{stem}-shots"
-
-
-def _next_trial(root: Path, subject: str, condition: str) -> int:
-    """這個人這種姿勢已經量過幾次了。
-
-    自動接續而不是每次都從 1 開始，因為撞名是 2026-09-29 真的發生過的事，
-    而當時受試者正坐著等。
-    """
-    folder = subject_dir(root, subject)
-    if not folder.is_dir():
-        return 1
-    used = set()
-    for path in folder.glob(f"{condition}-*.csv"):
-        tail = path.stem[len(condition) + 1:]
-        if tail.isdigit():
-            used.add(int(tail))
-    return max(used) + 1 if used else 1
-
-
 def _prompt(message: str, interactive: bool = True) -> None:
     """印出指導語並等使用者按 Enter。
 
@@ -709,20 +523,6 @@ def _prompt(message: str, interactive: bool = True) -> None:
             print()
 
 
-def _condition_brief(condition: str) -> str:
-    """每種姿勢的指導語。
-
-    只有坐正與前傾寫死，其他名稱照樣跑得動，只是指導語要口頭給。姿勢種類
-    還沒定案，程式不該先把清單釘死。
-    """
-    known = {
-        "upright": "請坐正：背部貼著椅背、雙腳平放地面、下巴微收、"
-                   "視線看向前方牆上的固定點。**全程不要看螢幕。**",
-        "forward": "請刻意前傾：上半身往前，但不要轉身，視線仍然看向同一個固定點。",
-    }
-    return known.get(condition, f"請維持「{condition}」的姿勢，視線看向前方的固定點。")
-
-
 def _run_study(args) -> None:
     """一個行程跑完整套流程：取基準，接著逐一量各種姿勢。
 
@@ -734,9 +534,10 @@ def _run_study(args) -> None:
     獨立的指令，中間要重新載入模型，受試者就會站起來活動一下。誤報率 63%
     就是從那個空檔來的。
     """
-    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
-    if not conditions:
-        raise SystemExit("--conditions 至少要有一種姿勢，例如 upright,forward")
+    try:
+        conditions = parse_conditions(args.conditions)
+    except ValueError as exc:
+        raise SystemExit(f"--conditions {exc}")
 
     calib, engine, cap = _prepare(args)
     root = args.out_dir
@@ -762,7 +563,7 @@ def _study_baseline(engine, calib, cap, args, root: Path):
     target = baseline_path(root, args.subject)
     while True:
         _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
-                + _condition_brief("upright")
+                + condition_brief("upright")
                 + "\n  取完之後**不要起身**，會直接接著量測。",
                 not args.no_prompt)
         _countdown(args.countdown)
@@ -794,10 +595,10 @@ def _ask_yes(question: str) -> bool:
 
 def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path):
     """量一種姿勢。"""
-    trial = _next_trial(root, args.subject, condition)
+    trial = next_trial(root, args.subject, condition)
     csv_path, shots_dir = session_paths(root, args.subject, condition, trial)
     _prompt(f"接下來量「{condition}」第 {trial} 次，{args.seconds_each:.0f} 秒。\n"
-            + _condition_brief(condition), not args.no_prompt)
+            + condition_brief(condition), not args.no_prompt)
 
     log = _open_log(args, baseline, csv_path, condition, trial,
                     baseline_path(root, args.subject))
@@ -819,23 +620,24 @@ def _study_summary(recordings, args) -> None:
     每一段自己的摘要已經印過了，這裡看的是段與段之間：哪一段的資料不能用、
     以及兩種姿勢分不分得開。
     """
+    segments = review(recordings)
     print()
     print("=" * 60)
-    print(f"受試者 {args.subject}，共 {len(recordings)} 段")
-    for recording in recordings:
-        mean = recording.session.mean_ca
-        shown = "—" if mean is None else f"{mean:+.2f}°"
-        flag = "" if recording.rejection_rate <= REJECTION_LIMIT else "  ← 略過率偏高"
-        print(f"  {recording.condition:12s} #{recording.trial}  "
+    print(f"受試者 {args.subject}，共 {len(segments)} 段")
+    for segment in segments:
+        shown = ("—" if segment.theta_ca_deg is None
+                 else f"{segment.theta_ca_deg:+.2f}°")
+        flag = "  ← 略過率偏高" if segment.too_many_rejected else ""
+        print(f"  {segment.condition:12s} #{segment.trial}  "
               f"θ_CA {shown:>9s}  "
-              f"可用 {recording.usable}/{recording.frames}"
-              f"（略過 {recording.rejection_rate * 100:.0f}%）{flag}")
+              f"可用 {segment.usable}/{segment.frames}"
+              f"（略過 {segment.rejection_rate * 100:.0f}%）{flag}")
 
-    bad = [r for r in recordings if r.rejection_rate > REJECTION_LIMIT]
+    bad = [seg for seg in segments if seg.too_many_rejected]
     if bad:
         print()
         print(f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限，"
-              f"建議重量：" + "、".join(f"{r.condition} #{r.trial}" for r in bad))
+              f"建議重量：" + "、".join(f"{seg.condition} #{seg.trial}" for seg in bad))
 
     print()
     print("接下來：先翻一遍存下來的畫面，確認每一張都是預期的姿勢，再跑")
@@ -919,41 +721,6 @@ def _make_judge(args, baseline: PostureBaseline | None) -> PostureJudge | None:
           f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算），"
           f"遲滯寬度 {args.margin:.1f} 倍標準誤差", flush=True)
     return judge
-
-
-def _forget_if_stale(
-    ca_window: RollingAngle, sym_window: RollingAngle, consecutive_misses: int
-) -> None:
-    """偵測連續失敗久了就把移動平均清掉，讓狀態回到未知。
-
-    不清的話，受試者離開座位之後裝置會對著空椅子繼續回報上一個狀態。
-    """
-    if windows_are_stale(consecutive_misses, ca_window.window):
-        ca_window.clear()
-        sym_window.clear()
-
-
-class _Session:
-    """整段量測收下的角度。
-
-    移動視窗只留最近 N 個，結尾的摘要需要的是全部。CSV 也有，但要看一眼結果
-    就得再開一個程式，那不合理。
-    """
-
-    def __init__(self):
-        self.ca: list[float] = []
-        self.sym: list[float] = []
-
-    def add(self, corrected) -> None:
-        if corrected[0] is not None:
-            self.ca.append(corrected[0])
-        if corrected[1] is not None:
-            self.sym.append(corrected[1])
-
-    @property
-    def mean_ca(self) -> float | None:
-        """整段的 θ_CA 平均。沒有資料時回傳 None 而不是 0，0 是合法的角度。"""
-        return float(np.mean(self.ca)) if self.ca else None
 
 
 def _tell(message: str | None) -> None:
