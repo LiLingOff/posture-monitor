@@ -43,6 +43,7 @@ from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
+from geometry.uncertainty import standard_error  # noqa: E402
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -355,6 +356,7 @@ def _run_live(args) -> None:
     saved_a_rejected_frame = False
     transitions: list[str] = []
     lost: str | None = None
+    session = _Session()
     stuck = _StuckWatcher()
     snapshots = _Snapshots(args.snapshots, args.snapshot_every)
     if snapshots.enabled:
@@ -387,6 +389,7 @@ def _run_live(args) -> None:
             corrected = _corrected(baseline, measurement)
             if reason is None:
                 consecutive_misses = 0
+                session.add(corrected)
                 if corrected[0] is not None:
                     ca_window.add(corrected[0])
                 if corrected[1] is not None:
@@ -434,7 +437,7 @@ def _run_live(args) -> None:
     # 結束的方式不同就不印。
     if lost is not None:
         print(lost)
-    _print_summary(ca_window, sym_window, rejected, baseline)
+    _print_summary(session, ca_window, sym_window, rejected, baseline)
     _print_transitions(transitions)
     if log is not None:
         print(f"已記錄 {log.frames_written} 幀到 {log.path}")
@@ -624,6 +627,24 @@ def _forget_if_stale(
         sym_window.clear()
 
 
+class _Session:
+    """整段量測收下的角度。
+
+    移動視窗只留最近 N 個，結尾的摘要需要的是全部。CSV 也有，但要看一眼結果
+    就得再開一個程式，那不合理。
+    """
+
+    def __init__(self):
+        self.ca: list[float] = []
+        self.sym: list[float] = []
+
+    def add(self, corrected) -> None:
+        if corrected[0] is not None:
+            self.ca.append(corrected[0])
+        if corrected[1] is not None:
+            self.sym.append(corrected[1])
+
+
 def _tell(message: str | None) -> None:
     """把提示印成獨立的一行。逐幀那一行會被蓋掉，提示不該跟著消失。"""
     if message is None:
@@ -652,20 +673,33 @@ def _print_transitions(transitions: list[str]) -> None:
 
 
 def _print_summary(
-    ca_window: RollingAngle, sym_window: RollingAngle, rejected: int,
-    baseline: PostureBaseline | None = None,
+    session: "_Session", ca_window: RollingAngle, sym_window: RollingAngle,
+    rejected: int, baseline: PostureBaseline | None = None,
 ) -> None:
-    """結束時把整段的統計印出來，這才是可以記錄下來的數字。"""
-    print("相對個人基準的偏移量：" if baseline else "原始角度（未扣除個人基準）：")
+    """結束時把整段的統計印出來，這才是可以記錄下來的數字。
+
+    印的是**整段**，不是移動視窗。視窗只有 30 幀（約 6 秒），拿它當結尾的摘要
+    等於把一百秒的量測講成最後六秒的樣子，而標題寫的是整段。移動視窗另外印
+    一行，因為判定看的是它，兩個數字差很多本身就是資訊：那代表姿勢在變。
+    """
+    print("整段（相對個人基準的偏移量）：" if baseline else "整段（原始角度，未扣除個人基準）：")
+    for name, values in (("θ_CA ", session.ca), ("θ_sym", session.sym)):
+        if len(values) < 2:
+            print(f"{name}  沒有足夠的量測")
+            continue
+        array = np.asarray(values)
+        error = standard_error(array)
+        shown = "" if error is None else f" ± {error:.1f}°"
+        print(f"{name}  {array.mean():+.2f}°{shown}"
+              f"（{len(values)} 幀，單幀標準差 ±{array.std():.1f}°）")
     for name, window in (("θ_CA ", ca_window), ("θ_sym", sym_window)):
         if window.mean is None:
-            print(f"{name}  沒有可用的量測")
             continue
-        spread = f"，單幀標準差 ±{window.std:.1f}°" if window.std is not None else ""
         error = f" ± {window.standard_error:.1f}°" if window.standard_error is not None else ""
-        print(f"{name}  {window.mean:+.2f}°{error}（{window.count} 幀{spread}）")
+        print(f"  結束前 {window.count} 幀  {name} {window.mean:+.2f}°{error}")
     if rejected:
-        print(f"略過 {rejected} 幀偵測失誤")
+        total = rejected + len(session.ca)
+        print(f"略過 {rejected} / {total} 幀（{rejected / total * 100:.0f}%）偵測失誤")
 
 
 def _refuse_to_overwrite(args) -> None:

@@ -193,3 +193,28 @@ def test_snapshots_are_taken_on_the_interval_not_every_frame(tmp_path):
     taken = [s for s in saved if s is not None]
     assert len(taken) == 3, "0、10、20 秒各一張"
     assert len(list(tmp_path.glob("*.png"))) == 3
+
+
+def test_the_end_summary_covers_the_whole_session_not_the_last_window():
+    """2026-09-29 實機：跑了一百秒，摘要印的是最後 30 幀（約六秒）的平均。
+
+    標題寫的是整段，數字卻只有結尾那一小段，兩者對不起來。
+    """
+    posture = _posture()
+    session = posture._Session()
+    for value in [2.0] * 200 + [20.0] * 30:
+        session.add((value, 1.0))
+    assert len(session.ca) == 230
+    import numpy as np
+    assert np.mean(session.ca) == pytest.approx(4.35, abs=0.01)
+
+
+def test_the_session_keeps_the_two_angles_apart():
+    """θ_CA 算得出來而 θ_sym 算不出來的幀是常見的，不能讓它們錯位。"""
+    posture = _posture()
+    session = posture._Session()
+    session.add((5.0, None))
+    session.add((6.0, 1.0))
+    session.add((None, 2.0))
+    assert session.ca == [5.0, 6.0]
+    assert session.sym == [1.0, 2.0]

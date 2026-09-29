@@ -377,3 +377,36 @@ def test_a_normal_spread_still_gets_the_sampling_length_advice():
     warning = next(w for w in baseline_quality_warnings(steady, 6.9) if "基準誤差" in w)
     assert "66 秒" in warning
     assert "先讓受試者坐定" not in warning
+
+
+def test_a_high_rejection_rate_is_warned_about_even_when_the_error_is_small():
+    """2026-09-29 實機：109 幀收下、41 幀略過（27%），誤差 ±1.34° 所以零警告。
+
+    誤差小不代表這份基準可信。留下來的幀可能全都偏向同一邊，而被擋掉的
+    那些正好是另一種姿勢。
+    """
+    collector = _collect(12.0, frames=109)
+    for _ in range(41):
+        collector._reasons["right_shoulder 的垂直視差 N px，左右配對錯了"] += 1
+        collector._reason_examples.setdefault(
+            "right_shoulder 的垂直視差 N px，左右配對錯了",
+            "right_shoulder 的垂直視差 8.1px，左右配對錯了")
+        collector.rejected += 1
+    baseline = _with(frames=109, theta_ca_standard_error_deg=1.34,
+                     theta_ca_std_deg=5.5, distance_mm=597.0, azimuth_deg=25.0)
+    warnings = collector.quality_warnings(baseline)
+    stated = next(w for w in warnings if "略過" in w)
+    assert "27%" in stated
+    # 最常見的原因與它的建議要一起講，否則使用者只知道有問題不知道動什麼
+    assert "right_shoulder" in stated
+    assert "遠側肩膀" in stated
+
+
+def test_a_normal_rejection_rate_says_nothing():
+    """乾淨的量測是 2~5%，那個範圍不該被打擾。"""
+    collector = _collect(12.0, frames=146)
+    for _ in range(7):
+        collector.rejected += 1
+    baseline = _with(frames=146, theta_ca_standard_error_deg=0.63,
+                     theta_ca_std_deg=4.2, distance_mm=579.0, azimuth_deg=20.0)
+    assert not any("略過" in w for w in collector.quality_warnings(baseline))

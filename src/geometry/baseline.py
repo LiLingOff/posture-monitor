@@ -57,6 +57,10 @@ _MOVEMENT_FACTOR = 1.8
 # 散佈只是偏高、還沒到「在動」的程度。這時候誤差大多半是因為散佈大，
 # 而把散佈壓一半等於把取樣時間砍到四分之一，比拉長取樣划算。
 _ELEVATED_SPREAD_FACTOR = 1.3
+# 略過率超過這個比例就提醒。乾淨的量測是 2~5%，2026-09-29 有一份基準略過 27%
+# 卻沒有任何警告，因為當時的條件是「略過的比收下的還多」，那個門檻太寬了。
+# 偵測有四分之一的時間在失敗，剩下那四分之三憑什麼代表這個人的坐姿。
+_REJECTION_WARNING_RATE = 0.15
 
 
 def group_rejection_reason(reason: str) -> str:
@@ -301,9 +305,18 @@ class BaselineCollector:
         """這份基準有沒有問題。取基準時沒發現的話，之後每一次判定都帶著它。"""
         expected = float(np.mean(self._precision)) if self._precision else None
         warnings = baseline_quality_warnings(baseline, expected)
-        if self.rejected > self.count:
-            warnings.append(
-                f"略過 {self.rejected} 幀比收下的 {self.count} 還多，偵測不穩定，"
-                f"這份基準的代表性有限"
-            )
+        total = self.count + self.rejected
+        rate = self.rejected / total if total else 0.0
+        if rate > _REJECTION_WARNING_RATE:
+            # 誤差小不代表這份基準可信。留下來的那些幀可能全都偏向同一邊，
+            # 而被擋掉的那些正好是另一種姿勢。
+            line = (f"略過 {self.rejected}/{total} 幀（{rate * 100:.0f}%），"
+                    f"乾淨的量測是 2~5%。留下來的幀不一定代表得了整段坐姿")
+            top = self.main_rejection
+            if top is not None:
+                advice = rejection_advice(top[0])
+                line += f"\n    {top[1]} 幀是同一個原因：{top[0]}"
+                if advice:
+                    line += f"\n    {advice}"
+            warnings.append(line)
         return warnings
