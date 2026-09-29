@@ -21,17 +21,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 
-from .session_analysis import SessionSummary, analyse_session
+from .baseline import REJECTION_LIMIT
+from .judgement import Posture
+from .session_analysis import UNLABELLED, SessionSummary, analyse_session
 from .uncertainty import standard_error
 
-# 沒有記錄姿勢條件的檔案歸在這一組。
-UNLABELLED = "未標註"
-# 略過率超過這個比例的 session 不列入彙整的統計，但仍然會出現在逐 session 表裡。
-_REJECTION_LIMIT = 0.15
+# UNLABELLED 與 REJECTION_LIMIT 都從別處 re-export，讓 cohort 的使用者不必
+# 知道它們原本住在哪一個模組。
 
 
 @dataclass(frozen=True)
@@ -42,16 +43,26 @@ class ConditionResult:
     condition: str
     sessions: list[SessionSummary]
 
+    @cached_property
+    def usable(self) -> list[tuple[SessionSummary, float]]:
+        """可以進統計的 session，以及各自的 θ_CA 平均。
+
+        平均跟著一起回傳，因為篩選本來就得算它來判斷算不算得出來，而
+        `theta_ca_deg` 接著又要用同一個值。分開寫的話每個 session 的平均
+        會算兩次。
+        """
+        out = []
+        for summary in self.sessions:
+            if summary.rejection_rate > REJECTION_LIMIT:
+                continue
+            angle = summary.angle("θ_CA")
+            if angle is not None:
+                out.append((summary, angle.mean))
+        return out
+
     @property
     def usable_sessions(self) -> list[SessionSummary]:
-        """略過率過高的 session 不進統計。留下來的幀代表不了整段姿勢。"""
-        return [s for s in self.sessions
-                if s.rejection_rate <= _REJECTION_LIMIT and self._mean(s) is not None]
-
-    @staticmethod
-    def _mean(summary: SessionSummary) -> float | None:
-        angle = summary.angles.get("θ_CA 扣基準") or summary.angles.get("θ_CA 原始")
-        return None if angle is None else angle.mean
+        return [summary for summary, _ in self.usable]
 
     @property
     def theta_ca_deg(self) -> float | None:
@@ -60,7 +71,7 @@ class ConditionResult:
         多次重複時取各次平均值的平均，不是把所有幀倒在一起：一次量 300 幀、
         一次量 60 幀的話，後者的權重不該只有五分之一，它是獨立的一次嘗試。
         """
-        values = [self._mean(s) for s in self.usable_sessions]
+        values = [mean for _, mean in self.usable]
         return float(np.mean(values)) if values else None
 
     @property
@@ -71,14 +82,8 @@ class ConditionResult:
             if summary.judgement is None:
                 continue
             total += summary.judgement.total
-            over += summary.judgement.counts.get("超標", 0)
+            over += summary.judgement.counts.get(Posture.OVER.value, 0)
         return over / total if total else None
-
-    @property
-    def rejection_rate(self) -> float | None:
-        frames = sum(s.frames for s in self.sessions)
-        rejected = sum(s.rejected for s in self.sessions)
-        return rejected / frames if frames else None
 
 
 @dataclass
@@ -87,24 +92,40 @@ class Cohort:
 
     sessions: list[SessionSummary] = field(default_factory=list)
 
-    @property
-    def subjects(self) -> list[str]:
-        seen = {s.subject or "?" for s in self.sessions}
-        return sorted(seen)
+    @cached_property
+    def _groups(self) -> dict[tuple[str, str], ConditionResult]:
+        """(受試者, 姿勢) → 結果。建一次就好。
 
-    @property
+        先前每次 `result()` 都掃一遍整個 session 清單，而報表會問
+        「每個人 × 每種姿勢」再加上差距的兩次，五個人兩種姿勢就是二十幾遍。
+        分組的鍵一律走 SessionSummary 的 subject_key/condition_key，
+        免得這裡的歸屬規則與 subjects/conditions 的列舉規則各走各的。
+        """
+        buckets: dict[tuple[str, str], list[SessionSummary]] = {}
+        for summary in self.sessions:
+            buckets.setdefault(
+                (summary.subject_key, summary.condition_key), []
+            ).append(summary)
+        return {
+            key: ConditionResult(subject=key[0], condition=key[1], sessions=group)
+            for key, group in buckets.items()
+        }
+
+    @cached_property
+    def subjects(self) -> list[str]:
+        return sorted({subject for subject, _ in self._groups})
+
+    @cached_property
     def conditions(self) -> list[str]:
         """出現過的姿勢名稱，未標註的排在最後。"""
-        seen = {s.condition or UNLABELLED for s in self.sessions}
+        seen = {condition for _, condition in self._groups}
         named = sorted(c for c in seen if c != UNLABELLED)
         return named + ([UNLABELLED] if UNLABELLED in seen else [])
 
     def result(self, subject: str, condition: str) -> ConditionResult:
-        return ConditionResult(
-            subject=subject, condition=condition,
-            sessions=[s for s in self.sessions
-                      if (s.subject or "?") == subject
-                      and (s.condition or UNLABELLED) == condition],
+        return self._groups.get(
+            (subject, condition),
+            ConditionResult(subject=subject, condition=condition, sessions=[]),
         )
 
     def differences(self, baseline_condition: str, other: str) -> dict[str, float]:
@@ -139,12 +160,18 @@ class Separation:
         values = list(self.per_subject.values())
         return float(np.mean(values)) if values else None
 
-    @property
+    @cached_property
     def error_deg(self) -> float | None:
         """跨受試者的標準誤差。分母是人數，不是幀數。
 
         只有一個人時回傳 None。一個樣本算不出散佈，而回傳 0 會被讀成
         「這個差距在人與人之間完全一致」，那是這份資料最不支持的一種說法。
+
+        **這裡刻意不用 `uncertainty.standard_error`。** 那個函式在樣本數夠多時
+        改走批次平均法，前提是相鄰的樣本彼此相關（θ_CA 的逐幀資料正是如此）。
+        受試者之間沒有這種序列相關，一個人的資料放在清單裡的第幾個位置不帶任何
+        訊息，套批次平均法只會把誤差算小。這一行就是 `std/√n`，而在這個層級
+        它是對的。
         """
         values = list(self.per_subject.values())
         if len(values) < 2:
@@ -181,5 +208,5 @@ def collect(paths: list[Path]) -> Cohort:
 
 def session_error_deg(summary: SessionSummary) -> float | None:
     """單一 session 的誤差，已經把相鄰幀的相關性算進去。"""
-    angle = summary.angles.get("θ_CA 扣基準") or summary.angles.get("θ_CA 原始")
+    angle = summary.angle("θ_CA")
     return None if angle is None else standard_error(angle.values)

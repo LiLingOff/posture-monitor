@@ -230,7 +230,7 @@ def segment_table(summary: SessionSummary, segments: int = 6) -> str:
 
     三十分鐘的量測要看的是「每五分鐘往哪走」，整段一個平均看不出來。
     """
-    angle = summary.angles.get("θ_CA 扣基準") or summary.angles.get("θ_CA 原始")
+    angle = summary.angle("θ_CA")
     if angle is None or angle.count < segments * 2:
         return ""
     size = angle.count // segments

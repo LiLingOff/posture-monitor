@@ -6,8 +6,8 @@
 import numpy as np
 import pytest
 
-from geometry.session_analysis import (AngleSummary, analyse_session, compare,
-                                       correlation, read_rows)
+from geometry.session_analysis import (UNLABELLED, AngleSummary, analyse_session,
+                                       compare, correlation, read_rows)
 from geometry.session_report import format_report, format_session, segment_table
 
 _HEADER = (
@@ -55,18 +55,38 @@ def test_unknown_metadata_keys_are_kept(tmp_path):
 
 
 def test_a_file_without_a_condition_says_so_rather_than_guessing(tmp_path):
-    """2026-09-24 與 09-29 那幾份沒有 condition，而它們正是最值得分析的資料。"""
+    """2026-09-24 與 09-29 那幾份沒有 condition，而它們的分析價值最高。"""
     summary = analyse_session(_old_format_session(tmp_path))
     assert summary.subject == "A"
     assert summary.condition is None
     assert summary.trial is None
-    assert summary.label == "A"
+    # 分組時要歸到「未標註」而不是被濾掉
+    assert summary.condition_key == UNLABELLED
 
 
-def test_the_label_falls_back_to_the_filename(tmp_path):
+def test_a_file_without_a_subject_still_groups_somewhere(tmp_path):
     rows = [_usable_row(i + 1, 8.0) for i in range(5)]
     summary = analyse_session(_write(tmp_path, rows, subject=None, name="0929-x.csv"))
-    assert summary.label == "0929-x"
+    assert summary.subject is None
+    assert summary.subject_key == "?"
+
+
+def test_the_angle_accessor_prefers_the_baseline_corrected_values(tmp_path):
+    """判定看的是扣除基準之後的角度，統計要用同一個。"""
+    summary = analyse_session(_old_format_session(tmp_path, baseline=-4.0))
+    assert summary.angle("θ_CA") is summary.angles["θ_CA 扣基準"]
+
+
+def test_the_angle_accessor_falls_back_to_raw(tmp_path):
+    """沒給基準的那幾份也要算得出統計，不能回傳 None。"""
+    summary = analyse_session(_old_format_session(tmp_path, baseline=0.0))
+    del summary.angles["θ_CA 扣基準"]
+    assert summary.angle("θ_CA") is summary.angles["θ_CA 原始"]
+
+
+def test_an_unknown_angle_name_is_none_not_a_crash(tmp_path):
+    summary = analyse_session(_old_format_session(tmp_path))
+    assert summary.angle("θ_KA") is None
 
 
 def test_a_file_with_only_a_header_says_so_rather_than_dividing_by_zero(tmp_path):

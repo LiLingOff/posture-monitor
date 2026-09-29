@@ -19,7 +19,7 @@ import argparse
 import shutil
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -36,13 +36,15 @@ from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
                                format_measurement, match_person_pair,
                                measure_posture, rejection_advice, unusable_reason)
-from geometry.baseline import (BaselineCollector,  # noqa: E402
-                               PostureBaseline, baseline_quality_warnings)
+from geometry.baseline import (REJECTION_LIMIT,  # noqa: E402
+                               BaselineCollector, PostureBaseline,
+                               baseline_quality_warnings,
+                               group_rejection_reason)
 from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
-from geometry.baseline import group_rejection_reason  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.cohort import Separation, collect  # noqa: E402
-from geometry.cohort_report import to_csv, to_markdown  # noqa: E402
+from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
+                                    to_markdown)
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
@@ -102,9 +104,6 @@ def _open_selected_camera(args, calib=None):
 # 110 秒內寫了 162485 筆空記錄。每次失敗之間停一下，累積到這個次數就停止量測。
 _READ_RETRY_PAUSE_S = 0.1
 _MAX_CONSECUTIVE_READ_FAILURES = 25
-# 略過率超過這個比例就提醒重量。乾淨的量測是 2~5%；2026-09-29 那份 23% 的資料
-# 共同關鍵點從 12.2 掉到 9.0，留下來的幀代表不了整段姿勢。
-_REJECTION_LIMIT = 0.15
 
 
 def _grab_pair(cap, args):
@@ -490,8 +489,7 @@ def _report(recording: Recording, baseline, log) -> None:
     print()
     if recording.camera_lost is not None:
         print(recording.camera_lost)
-    _print_summary(recording.session, recording.ca_window, recording.sym_window,
-                   recording.rejected, baseline)
+    _print_summary(recording, baseline)
     _print_transitions(recording.transitions)
     if log is not None:
         print(f"已記錄 {log.frames_written} 幀到 {log.path}")
@@ -500,8 +498,9 @@ def _report(recording: Recording, baseline, log) -> None:
 def _run_live(args) -> None:
     calib, engine, cap = _prepare(args)
     baseline = _load_baseline(args, calib)
-    log = _open_log(args, baseline)
-    snapshots = _open_snapshots(args)
+    log = _open_log(args, baseline, args.log, args.condition, args.trial,
+                    args.baseline)
+    snapshots = _open_snapshots(args, args.snapshots)
     print(f"開始量測，平均視窗 {args.window} 幀。"
           + ("Ctrl-C 結束" if args.seconds is None else f"{args.seconds:.0f} 秒後自動結束"),
           flush=True)
@@ -519,27 +518,30 @@ def _run_live(args) -> None:
         raise SystemExit(1)
 
 
-def _open_log(args, baseline, condition: str = "", trial: int | None = None,
-              path: Path | None = None):
-    """開一份逐幀記錄。中繼資料一併寫進標頭。"""
-    target = path if path is not None else args.log
-    if target is None:
+def _open_log(args, baseline, path, condition: str, trial: int | None,
+              baseline_file):
+    """開一份逐幀記錄。中繼資料一併寫進標頭。
+
+    變動的四項（路徑、姿勢、第幾次、基準檔）一律由呼叫端傳，沒有預設值。
+    先前那些預設值配上 `getattr(args, ...)` 看起來能共用，實際上 study 自己
+    另外建了一份 MeasurementLog，於是同一件事有兩種寫法，而標頭少一個欄位
+    只會讓 CSV 安靜地掉進「未標註」那一組。
+    """
+    if path is None:
         return None
     log = MeasurementLog(
-        target, subject=args.subject, overwrite=args.overwrite,
-        condition=condition or getattr(args, "condition", "") or "",
-        trial=trial if trial is not None else getattr(args, "trial", None),
-        baseline_file=getattr(args, "baseline", None), baseline=baseline,
+        path, subject=args.subject, overwrite=args.overwrite,
+        condition=condition, trial=trial,
+        baseline_file=baseline_file, baseline=baseline,
     )
     print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     return log
 
 
-def _open_snapshots(args, out_dir: Path | None = None):
-    target = out_dir if out_dir is not None else args.snapshots
-    snapshots = _Snapshots(target, args.snapshot_every)
+def _open_snapshots(args, out_dir):
+    snapshots = _Snapshots(out_dir, args.snapshot_every)
     if snapshots.enabled:
-        print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {target}，"
+        print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {out_dir}，"
               f"事後可以核對當時的姿勢", flush=True)
     return snapshots
 
@@ -649,15 +651,28 @@ def _run_baseline(args) -> None:
     print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
 
 
+def subject_dir(root: Path, subject: str) -> Path:
+    """一位受試者的資料夾。"""
+    return Path(root) / subject
+
+
+def baseline_path(root: Path, subject: str) -> Path:
+    """這位受試者這次的基準檔。每個 session 一份，與姿勢無關。"""
+    return subject_dir(root, subject) / "baseline.json"
+
+
 def session_paths(root: Path, subject: str, condition: str, trial: int):
-    """一次量測要寫出去的三個路徑。
+    """一次量測的 CSV 與快照資料夾。
 
     檔名自己說得出是誰、哪種姿勢、第幾次，因為彙整時靠中繼資料而不是檔名，
     但人在檔案總管裡找東西還是靠檔名。
+
+    只回傳真的跟 condition/trial 有關的兩個路徑。基準檔是每位受試者一份，
+    先前把它塞在同一個回傳值裡，取基準那邊只好傳假的 condition 進來拿它。
     """
-    folder = Path(root) / subject
+    folder = subject_dir(root, subject)
     stem = f"{condition}-{trial}"
-    return folder / f"{stem}.csv", folder / f"{stem}-shots", folder / "baseline.json"
+    return folder / f"{stem}.csv", folder / f"{stem}-shots"
 
 
 def _next_trial(root: Path, subject: str, condition: str) -> int:
@@ -666,7 +681,7 @@ def _next_trial(root: Path, subject: str, condition: str) -> int:
     自動接續而不是每次都從 1 開始，因為撞名是 2026-09-29 真的發生過的事，
     而當時受試者正坐著等。
     """
-    folder = Path(root) / subject
+    folder = subject_dir(root, subject)
     if not folder.is_dir():
         return 1
     used = set()
@@ -744,7 +759,7 @@ def _study_baseline(engine, calib, cap, args, root: Path):
     取完就直接往下走是不行的。2026-09-29 有一份基準略過了 27% 的幀，當時
     沒有任何提示，而後面所有量測都帶著它。
     """
-    _, _, baseline_path = session_paths(root, args.subject, "x", 1)
+    target = baseline_path(root, args.subject)
     while True:
         _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
                 + _condition_brief("upright")
@@ -759,8 +774,8 @@ def _study_baseline(engine, calib, cap, args, root: Path):
         if not _ask_yes("這份基準有上面的問題，要重取一次嗎？"):
             break
 
-    baseline.save(baseline_path, overwrite=True)
-    print(f"基準存到 {baseline_path}", flush=True)
+    baseline.save(target, overwrite=True)
+    print(f"基準存到 {target}", flush=True)
     return baseline
 
 
@@ -780,28 +795,22 @@ def _ask_yes(question: str) -> bool:
 def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path):
     """量一種姿勢。"""
     trial = _next_trial(root, args.subject, condition)
-    csv_path, shots_dir, baseline_path = session_paths(
-        root, args.subject, condition, trial
-    )
+    csv_path, shots_dir = session_paths(root, args.subject, condition, trial)
     _prompt(f"接下來量「{condition}」第 {trial} 次，{args.seconds_each:.0f} 秒。\n"
             + _condition_brief(condition), not args.no_prompt)
 
-    log = MeasurementLog(
-        csv_path, subject=args.subject, overwrite=args.overwrite,
-        condition=condition, trial=trial,
-        baseline_file=baseline_path, baseline=baseline,
-    )
-    snapshots = _Snapshots(shots_dir, args.snapshot_every)
-    print(f"記錄到 {csv_path}，畫面存到 {shots_dir}", flush=True)
+    log = _open_log(args, baseline, csv_path, condition, trial,
+                    baseline_path(root, args.subject))
+    snapshots = _open_snapshots(args, shots_dir)
     try:
         recording = _record(engine, calib, cap, args, baseline, log, snapshots,
                             args.seconds_each)
         _report(recording, baseline, log)
     finally:
         log.close()
-    recording.condition = condition
-    recording.trial = trial
-    return recording
+    # replace 而不是直接指派：回傳的 Recording 一建好就是完整的，不會有
+    # 「要等 _study_one 跑完才算有效」的中間狀態。
+    return replace(recording, condition=condition, trial=trial)
 
 
 def _study_summary(recordings, args) -> None:
@@ -816,16 +825,16 @@ def _study_summary(recordings, args) -> None:
     for recording in recordings:
         mean = recording.session.mean_ca
         shown = "—" if mean is None else f"{mean:+.2f}°"
-        flag = "" if recording.rejection_rate <= _REJECTION_LIMIT else "  ← 略過率偏高"
+        flag = "" if recording.rejection_rate <= REJECTION_LIMIT else "  ← 略過率偏高"
         print(f"  {recording.condition:12s} #{recording.trial}  "
               f"θ_CA {shown:>9s}  "
               f"可用 {recording.usable}/{recording.frames}"
               f"（略過 {recording.rejection_rate * 100:.0f}%）{flag}")
 
-    bad = [r for r in recordings if r.rejection_rate > _REJECTION_LIMIT]
+    bad = [r for r in recordings if r.rejection_rate > REJECTION_LIMIT]
     if bad:
         print()
-        print(f"略過率超過 {_REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限，"
+        print(f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限，"
               f"建議重量：" + "、".join(f"{r.condition} #{r.trial}" for r in bad))
 
     print()
@@ -946,10 +955,6 @@ class _Session:
         """整段的 θ_CA 平均。沒有資料時回傳 None 而不是 0，0 是合法的角度。"""
         return float(np.mean(self.ca)) if self.ca else None
 
-    @property
-    def mean_sym(self) -> float | None:
-        return float(np.mean(self.sym)) if self.sym else None
-
 
 def _tell(message: str | None) -> None:
     """把提示印成獨立的一行。逐幀那一行會被蓋掉，提示不該跟著消失。"""
@@ -979,16 +984,20 @@ def _print_transitions(transitions: list[str]) -> None:
 
 
 def _print_summary(
-    session: "_Session", ca_window: RollingAngle, sym_window: RollingAngle,
-    rejected: int, baseline: PostureBaseline | None = None,
+    recording: "Recording", baseline: PostureBaseline | None = None,
 ) -> None:
     """結束時把整段的統計印出來，這才是可以記錄下來的數字。
 
     印的是**整段**，不是移動視窗。視窗只有 30 幀（約 6 秒），拿它當結尾的摘要
     等於把一百秒的量測講成最後六秒的樣子，而標題寫的是整段。移動視窗另外印
     一行，因為判定看的是它，兩個數字差很多本身就是資訊：那代表姿勢在變。
+
+    吃整個 Recording 而不是拆開的四個欄位，因為略過率的分母只能有一個說法。
+    先前這裡用 `rejected + 有角度的幀數`，而 study 的總結用 `Recording.frames`，
+    兩者在「通過檢查但算不出 θ_CA」的幀上不同，於是同一次錄製印出兩個百分比。
     """
     print("整段（相對個人基準的偏移量）：" if baseline else "整段（原始角度，未扣除個人基準）：")
+    session = recording.session
     for name, values in (("θ_CA ", session.ca), ("θ_sym", session.sym)):
         if len(values) < 2:
             print(f"{name}  沒有足夠的量測")
@@ -998,14 +1007,14 @@ def _print_summary(
         shown = "" if error is None else f" ± {error:.1f}°"
         print(f"{name}  {array.mean():+.2f}°{shown}"
               f"（{len(values)} 幀，單幀標準差 ±{array.std():.1f}°）")
-    for name, window in (("θ_CA ", ca_window), ("θ_sym", sym_window)):
+    for name, window in (("θ_CA ", recording.ca_window), ("θ_sym", recording.sym_window)):
         if window.mean is None:
             continue
         error = f" ± {window.standard_error:.1f}°" if window.standard_error is not None else ""
         print(f"  結束前 {window.count} 幀  {name} {window.mean:+.2f}°{error}")
-    if rejected:
-        total = rejected + len(session.ca)
-        print(f"略過 {rejected} / {total} 幀（{rejected / total * 100:.0f}%）偵測失誤")
+    if recording.rejected:
+        print(f"略過 {recording.rejected} / {recording.frames} 幀"
+              f"（{recording.rejection_rate * 100:.0f}%）偵測失誤")
 
 
 def _refuse_to_overwrite(args) -> None:
@@ -1052,13 +1061,16 @@ def _run_cohort(args) -> None:
         other=args.condition,
         per_subject=cohort.differences(args.baseline_condition, args.condition),
     )
-    markdown = to_markdown(cohort, separation)
+    # 逐段的數字只算一次，Markdown 與 CSV 共用。每個 session 的標準誤差要掃
+    # 過它所有的幀，重建三次就是三倍的工，而這個指令的用途正是吃一整個資料夾。
+    rows = session_rows(cohort)
+    markdown = to_markdown(cohort, separation, rows)
     print(markdown)
 
     if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / "cohort.md").write_text(markdown, encoding="utf-8")
-        (args.out / "cohort.csv").write_text(to_csv(cohort), encoding="utf-8")
+        (args.out / "cohort.csv").write_text(to_csv(rows), encoding="utf-8")
         print(f"已寫到 {args.out / 'cohort.md'} 與 {args.out / 'cohort.csv'}")
 
 
@@ -1217,7 +1229,7 @@ def main() -> None:
     args = parser.parse_args()
     # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
     if args.mode in ("analyse", "cohort"):
-        {"analyse": _run_analyse, "cohort": _run_cohort}[args.mode](args)
+        (_run_cohort if args.mode == "cohort" else _run_analyse)(args)
         return
     if not args.calibration.is_file():
         raise SystemExit(
@@ -1237,8 +1249,8 @@ def main() -> None:
         args.out = Path("data/baselines") / f"{args.subject}.json"
     _refuse_to_overwrite(args)
 
-    {"once": _run_once, "live": _run_live, "baseline": _run_baseline,
-     "study": _run_study, "analyse": _run_analyse}[args.mode](args)
+    {"once": _run_once, "live": _run_live,
+     "baseline": _run_baseline, "study": _run_study}[args.mode](args)
 
 
 if __name__ == "__main__":

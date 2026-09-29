@@ -7,8 +7,8 @@
 import pytest
 
 from geometry.cohort import UNLABELLED, Cohort, Separation, collect
-from geometry.cohort_report import (separation_markdown, sessions_markdown,
-                                    to_csv, to_markdown)
+from geometry.cohort_report import (separation_markdown, session_rows,
+                                    sessions_markdown, to_csv, to_markdown)
 
 _HEADER = (
     "frame,elapsed_s,usable,reject_reason,theta_ca_deg,theta_sym_deg,"
@@ -150,7 +150,7 @@ def test_a_high_rejection_session_is_shown_but_not_counted(tmp_path):
     assert len(result.sessions) == 2
     assert len(result.usable_sessions) == 1
     assert result.theta_ca_deg == pytest.approx(0.0, abs=0.1)
-    table = sessions_markdown(cohort)
+    table = sessions_markdown(session_rows(cohort))
     assert "⚠" in table
     assert table.count("| A |") == 2, "兩段都要列出來"
 
@@ -159,7 +159,7 @@ def test_a_clean_session_is_not_flagged(tmp_path):
     """圖例也不該出現。沒有東西被標卻印一行解釋，讀的人會回頭找那個符號。"""
     cohort = _cohort(tmp_path, dict(subject="A", condition="upright",
                                     ca=0.0, frames=60, rejected=2))
-    assert "⚠" not in sessions_markdown(cohort)
+    assert "⚠" not in sessions_markdown(session_rows(cohort))
 
 
 # ---- 判定 --------------------------------------------------------------
@@ -233,7 +233,7 @@ def test_the_csv_carries_every_number_the_markdown_shows(tmp_path):
         dict(subject="A", condition="upright", ca=0.0),
         dict(subject="A", condition="forward", ca=20.0),
     )
-    text = to_csv(cohort)
+    text = to_csv(session_rows(cohort))
     assert text.splitlines()[0].startswith("subject,condition,trial,file")
     assert len(text.strip().splitlines()) == 3
     assert "upright" in text and "forward" in text
@@ -242,7 +242,7 @@ def test_the_csv_carries_every_number_the_markdown_shows(tmp_path):
 def test_a_missing_value_is_an_empty_cell_not_a_zero(tmp_path):
     """0 是合法的角度值，拿它表示缺失會讓下游算錯。"""
     cohort = _cohort(tmp_path, dict(subject="A", condition=None, ca=5.0))
-    body = to_csv(cohort).splitlines()[1]
+    body = to_csv(session_rows(cohort)).splitlines()[1]
     assert ",," in body, "trial 沒有值，該是空格"
 
 

@@ -57,10 +57,15 @@ _MOVEMENT_FACTOR = 1.8
 # 散佈只是偏高、還沒到「在動」的程度。這時候誤差大多半是因為散佈大，
 # 而把散佈壓一半等於把取樣時間砍到四分之一，比拉長取樣划算。
 _ELEVATED_SPREAD_FACTOR = 1.3
-# 略過率超過這個比例就提醒。乾淨的量測是 2~5%，2026-09-29 有一份基準略過 27%
-# 卻沒有任何警告，因為當時的條件是「略過的比收下的還多」，那個門檻太寬了。
-# 偵測有四分之一的時間在失敗，剩下那四分之三憑什麼代表這個人的坐姿。
-_REJECTION_WARNING_RATE = 0.15
+# 略過率的容忍上限。乾淨的量測是 2~5%，2026-09-29 有一份基準略過 27% 卻沒有
+# 任何警告，因為當時的條件是「略過的比收下的還多」，那個門檻太寬了。偵測有
+# 四分之一的時間在失敗，剩下那四分之三憑什麼代表這個人的坐姿。
+#
+# 這是公開的，因為同一條政策有四個使用者：取基準時的警告、`cohort` 統計要排除
+# 哪些 session、報表上的 ⚠ 標記、以及 `study` 每段量完的提醒。各自寫一個 0.15
+# 的話，報表可以標某一段乾淨而統計其實把它排除掉了，而圖例還寫著「這些不列入
+# 下面的統計」。文件（實驗操作流程）引用的也是這個數字。
+REJECTION_LIMIT = 0.15
 
 
 def group_rejection_reason(reason: str) -> str:
@@ -307,7 +312,7 @@ class BaselineCollector:
         warnings = baseline_quality_warnings(baseline, expected)
         total = self.count + self.rejected
         rate = self.rejected / total if total else 0.0
-        if rate > _REJECTION_WARNING_RATE:
+        if rate > REJECTION_LIMIT:
             # 誤差小不代表這份基準可信。留下來的那些幀可能全都偏向同一邊，
             # 而被擋掉的那些正好是另一種姿勢。
             line = (f"略過 {self.rejected}/{total} 幀（{rate * 100:.0f}%），"

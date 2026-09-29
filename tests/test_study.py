@@ -4,6 +4,7 @@
 程式算錯：解析度不符、基準隔了九分鐘、量測中轉頭看螢幕、受試者不自覺前傾。
 這些測試盯的是那幾種失敗還會不會再發生。
 """
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,12 +46,17 @@ def _args(tmp_path, **overrides):
 # ---- 檔名與批次編號 ----------------------------------------------------
 
 def test_the_paths_say_who_what_and_which_attempt(tmp_path):
-    csv_path, shots, baseline = posture.session_paths(
-        tmp_path, "chenyue", "upright", 2
-    )
+    csv_path, shots = posture.session_paths(tmp_path, "chenyue", "upright", 2)
     assert csv_path == tmp_path / "chenyue" / "upright-2.csv"
     assert shots == tmp_path / "chenyue" / "upright-2-shots"
-    assert baseline == tmp_path / "chenyue" / "baseline.json"
+
+
+def test_the_baseline_path_does_not_depend_on_the_condition(tmp_path):
+    """基準是每位受試者一份。先前它跟 CSV 擠在同一個回傳值裡，取基準那邊
+    只好傳一個假的 condition 進來才拿得到它。
+    """
+    assert (posture.baseline_path(tmp_path, "chenyue")
+            == tmp_path / "chenyue" / "baseline.json")
 
 
 def test_the_trial_number_continues_from_what_is_already_there(tmp_path):
@@ -269,3 +275,34 @@ def test_the_camera_is_released_even_when_a_segment_blows_up(tmp_path, monkeypat
     with pytest.raises(RuntimeError):
         posture._run_study(_args(tmp_path, conditions="upright"))
     assert released
+
+
+def test_both_printed_rejection_rates_use_the_same_denominator(tmp_path, monkeypatch,
+                                                               capsys):
+    """同一次錄製不能印出兩個略過率。
+
+    `_print_summary` 原本用「略過 + 有角度的幀數」，而 study 的總結用
+    `Recording.frames`；兩者在「通過檢查但算不出 θ_CA」的幀上不同。
+    """
+    class _Partial(_Recorder):
+        def __call__(self, *a, **k):
+            recording = super().__call__(*a, **k)
+            # 十幀通過檢查但只有 θ_sym，θ_CA 算不出來
+            for _ in range(10):
+                recording.session.add((None, 1.0))
+            return posture.Recording(
+                session=recording.session, ca_window=recording.ca_window,
+                sym_window=recording.sym_window, rejected=recording.rejected,
+                frames=recording.frames + 10, transitions=[],
+            )
+
+    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_collect_baseline",
+                        lambda *a, **k: (_baseline(), []))
+    monkeypatch.setattr(posture, "_record", _Partial(rejection_rate=0.10))
+    posture._run_study(_args(tmp_path, conditions="upright"))
+
+    printed = capsys.readouterr().out
+    rates = re.findall(r"（略過 (\d+)%）|（(\d+)%）偵測失誤", printed)
+    values = {a or b for a, b in rates}
+    assert len(values) == 1, f"印出了不一致的略過率：{values}"

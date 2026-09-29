@@ -31,6 +31,9 @@ from .judgement import Posture, PostureJudge, windows_are_stale
 from .smoothing import RollingAngle
 from .uncertainty import lag1_autocorrelation, standard_error
 
+# 沒有記錄姿勢條件的檔案歸在這一組。2026-09-24 與 09-29 的記錄寫在 condition
+# 欄存在之前，而它們的分析價值最高，所以要有一個歸屬而不是被濾掉。
+UNLABELLED = "未標註"
 # 區段的數量。太少看不出漂移的形狀，太多每一段的平均本身就不穩。
 _SEGMENTS = 10
 # 相關性的警告線：區段平均的散佈超過白雜訊預期值這個倍數，就值得講出來。
@@ -179,12 +182,24 @@ class SessionSummary:
         return int(value) if value and value.isdigit() else None
 
     @property
-    def label(self) -> str:
-        """報表上這一列的名字。沒有中繼資料時退回檔名，總比空著好。"""
-        parts = [p for p in (self.subject, self.condition) if p]
-        if self.trial is not None:
-            parts.append(f"#{self.trial}")
-        return " / ".join(parts) if parts else self.path.stem
+    def subject_key(self) -> str:
+        """分組用的受試者名稱。沒記的檔案也要能歸到一組，不能整批消失。"""
+        return self.subject or "?"
+
+    @property
+    def condition_key(self) -> str:
+        """分組用的姿勢名稱，見 UNLABELLED 的說明。"""
+        return self.condition or UNLABELLED
+
+    def angle(self, name: str) -> AngleSummary | None:
+        """取某個角度，優先用扣除基準之後的值。
+
+        「扣基準優先、沒有才退回原始」是一項政策判斷，不是隨手寫的查表：
+        判定看的是扣除後的角度，所以統計也該用同一個。放在這裡是為了讓
+        `analyse_session` 裡那幾個標籤字串只出現一次；分散到各個報表去拼的話，
+        改一個標籤會讓其他地方安靜地變成 None。
+        """
+        return self.angles.get(f"{name} 扣基準") or self.angles.get(f"{name} 原始")
 
     @property
     def rejected(self) -> int:
@@ -301,6 +316,24 @@ def _read_judgement(rows: list[dict]) -> JudgementReplay | None:
     return JudgementReplay(0, 0.0, counts, transitions, first_over, replayed=False)
 
 
+def _used_a_baseline(summary: SessionSummary, meta: dict[str, str]) -> bool:
+    """這一段量測有沒有扣除個人基準。
+
+    標頭有記就照標頭。先前只能比對「扣除後的值與原始值是否相同」，那是在
+    CSV 還不會自報家門的年代留下的推測，而它在一種真實的情況下會答錯：
+    基準剛好是 0.0° 時兩欄完全相同，於是一份有效的量測被標成沒有基準，
+    報表跟著印出「這個判定不能當成誤報率」。
+
+    沒有標頭的舊檔案才退回比對。2026-09-24 與 09-29 的記錄都是那個年代的。
+    """
+    if "baseline_file" in meta or "baseline_theta_ca_deg" in meta:
+        return True
+    raw = summary.angles.get("θ_CA 原始")
+    corrected = summary.angles.get("θ_CA 扣基準")
+    return (raw is not None and corrected is not None
+            and not np.allclose(raw.values, corrected.values))
+
+
 def analyse_session(
     path: Path, window: int = 30, margin: float = 1.0, force_replay: bool = False
 ) -> SessionSummary:
@@ -332,13 +365,7 @@ def analyse_session(
         if values.size >= 2:
             summary.angles[label] = AngleSummary(label, values)
 
-    # 有基準的話，扣除後的值會與原始值不同。完全相同代表當時沒給 --baseline。
-    raw = summary.angles.get("θ_CA 原始")
-    corrected = summary.angles.get("θ_CA 扣基準")
-    summary.has_baseline = (
-        raw is not None and corrected is not None
-        and not np.allclose(raw.values, corrected.values)
-    )
+    summary.has_baseline = _used_a_baseline(summary, meta)
 
     for label, column in (
         ("距離 mm", "distance_mm"),

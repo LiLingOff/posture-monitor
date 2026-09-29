@@ -11,7 +11,8 @@ from __future__ import annotations
 import csv
 from io import StringIO
 
-from .cohort import Cohort, Separation, UNLABELLED, session_error_deg
+from .cohort import REJECTION_LIMIT, Cohort, Separation, session_error_deg
+from .judgement import Posture
 
 _SESSION_COLUMNS = (
     "subject", "condition", "trial", "file",
@@ -30,21 +31,17 @@ def _percent(value) -> str:
     return "—" if value is None else f"{value * 100:.0f}%"
 
 
-def _angle(summary, key: str):
-    return summary.angles.get(key)
-
-
 def session_rows(cohort: Cohort) -> list[dict]:
     """逐 session 的原始數字。Markdown 與 CSV 共用這一份。"""
     rows = []
     for summary in cohort.sessions:
-        corrected = _angle(summary, "θ_CA 扣基準") or _angle(summary, "θ_CA 原始")
-        sym = _angle(summary, "θ_sym 扣基準") or _angle(summary, "θ_sym 原始")
+        corrected = summary.angle("θ_CA")
+        sym = summary.angle("θ_sym")
         judgement = summary.judgement
-        over = (judgement.share("超標") if judgement is not None else None)
+        over = None if judgement is None else judgement.share(Posture.OVER.value)
         rows.append({
-            "subject": summary.subject or "?",
-            "condition": summary.condition or UNLABELLED,
+            "subject": summary.subject_key,
+            "condition": summary.condition_key,
             "trial": summary.trial,
             "file": summary.path.name,
             "frames": summary.frames,
@@ -67,8 +64,7 @@ def _column(summary, name: str):
     return None if column is None else column.mean
 
 
-def sessions_markdown(cohort: Cohort) -> str:
-    rows = session_rows(cohort)
+def sessions_markdown(rows: list[dict]) -> str:
     if not rows:
         return "沒有讀到任何資料。"
     out = [
@@ -78,7 +74,7 @@ def sessions_markdown(cohort: Cohort) -> str:
     for r in rows:
         # 先算好每一格再組字串。塞進 f-string 裡的條件運算式在這種寬度下
         # 讀不出來，而表格有十一欄，錯位一格在成品上看不出來。
-        flag = " ⚠" if r["rejection_rate"] > 0.15 else ""
+        flag = " ⚠" if r["rejection_rate"] > REJECTION_LIMIT else ""
         trial = "—" if r["trial"] is None else str(r["trial"])
         angle = _fmt(r["theta_ca_deg"], 2, "°")
         error = _fmt(r["theta_ca_error_deg"], 2, "°")
@@ -89,17 +85,17 @@ def sessions_markdown(cohort: Cohort) -> str:
             f"| ±{_fmt(r['theta_ca_single_frame_std_deg'], 1, '°')} "
             f"| {_fmt(r['theta_sym_deg'], 2, '°')} "
             f"| {r['usable']}/{r['frames']} "
-            f"| {r['rejection_rate'] * 100:.0f}%{flag} "
+            f"| {_percent(r['rejection_rate'])}{flag} "
             f"| {over} "
             f"| {_fmt(r['distance_mm'], 0, 'mm')} "
             f"| {_fmt(r['azimuth_deg'], 0, '°')} |"
         )
     # 圖例只在真的有標記時才印。沒有東西被標卻印一行解釋，讀的人會回頭找
     # 那個符號在哪裡。
-    if any(r["rejection_rate"] > 0.15 for r in rows):
+    if any(r["rejection_rate"] > REJECTION_LIMIT for r in rows):
         out.append("")
-        out.append("⚠ 是略過率超過 15% 的 session。留下來的幀代表不了整段姿勢，"
-                   "這些不列入下面的統計。")
+        out.append(f"⚠ 是略過率超過 {REJECTION_LIMIT * 100:.0f}% 的 session。"
+                   f"留下來的幀代表不了整段姿勢，這些不列入下面的統計。")
     return "\n".join(out)
 
 
@@ -143,8 +139,9 @@ def _why_no_separation(separation: Separation, cohort: Cohort) -> str:
             f"因為事後補標會變成猜，而猜錯的地方不會有任何痕跡。"
         )
     if not missing and not unlabelled:
-        lines.append("兩種姿勢都有資料，但沒有受試者同時具備兩者的可用段落。"
-                     "略過率超過 15% 的段落不列入統計，檢查上面標了 ⚠ 的那幾列。")
+        lines.append(f"兩種姿勢都有資料，但沒有受試者同時具備兩者的可用段落。"
+                     f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落不列入統計，"
+                     f"檢查上面標了 ⚠ 的那幾列。")
     return "\n\n".join(lines)
 
 
@@ -177,8 +174,10 @@ def separation_markdown(separation: Separation, cohort: Cohort) -> str:
                    "θ_CA 的相鄰幀自相關是 0.73，拿幀數當分母會把信賴水準"
                    "講得比實際高。")
 
-    spreads = [r["theta_ca_single_frame_std_deg"] for r in session_rows(cohort)
-               if r["theta_ca_single_frame_std_deg"] is not None]
+    # 只需要一欄的最大值，不必重建整份 rows（那會把每個 session 的
+    # standard_error 重算一次）。
+    spreads = [angle.single_frame_std for summary in cohort.sessions
+               if (angle := summary.angle("θ_CA")) is not None]
     if mean is not None and spreads:
         out.append("")
         out.append(f"差距 / 最大單幀散佈 = {abs(mean) / max(spreads):.1f} 倍。"
@@ -187,7 +186,9 @@ def separation_markdown(separation: Separation, cohort: Cohort) -> str:
     return "\n".join(out)
 
 
-def to_markdown(cohort: Cohort, separation: Separation | None) -> str:
+def to_markdown(cohort: Cohort, separation: Separation | None,
+                rows: list[dict] | None = None) -> str:
+    rows = session_rows(cohort) if rows is None else rows
     parts = [
         "# 量測結果彙整",
         "",
@@ -195,7 +196,7 @@ def to_markdown(cohort: Cohort, separation: Separation | None) -> str:
         "",
         "## 逐段",
         "",
-        sessions_markdown(cohort),
+        sessions_markdown(rows),
     ]
     subjects = subjects_markdown(cohort)
     if subjects:
@@ -205,11 +206,11 @@ def to_markdown(cohort: Cohort, separation: Separation | None) -> str:
     return "\n".join(parts) + "\n"
 
 
-def to_csv(cohort: Cohort) -> str:
+def to_csv(rows: list[dict]) -> str:
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_SESSION_COLUMNS, lineterminator="\n")
     writer.writeheader()
-    for row in session_rows(cohort):
+    for row in rows:
         writer.writerow({
             key: ("" if row[key] is None else row[key]) for key in _SESSION_COLUMNS
         })
