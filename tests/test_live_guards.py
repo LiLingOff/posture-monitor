@@ -76,7 +76,7 @@ def test_a_repeated_reason_eventually_says_what_to_do():
     told = watcher.saw(reason)
     assert told is not None
     assert "連續 3 幀" in told
-    assert "把模組轉得正面一點" in told
+    assert "兩邊肩膀都完整露出來" in told
 
 
 def test_the_hint_is_printed_once_per_run_not_every_frame():
