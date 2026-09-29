@@ -41,6 +41,8 @@ from geometry.baseline import (BaselineCollector,  # noqa: E402
 from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
 from geometry.baseline import group_rejection_reason  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
+from geometry.cohort import Separation, collect  # noqa: E402
+from geometry.cohort_report import to_csv, to_markdown  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
@@ -1038,6 +1040,28 @@ def _next_free_name(path: Path) -> Path:
     return path.with_name(f"{path.stem}-{int(time.time())}{path.suffix}")
 
 
+def _run_cohort(args) -> None:
+    """把一整批記錄彙整起來。不碰相機。"""
+    cohort = collect(args.paths)
+    if not cohort.sessions:
+        raise SystemExit(
+            "沒有讀到任何可用的 CSV。確認路徑，以及那些檔案不是只有標題列"
+        )
+    separation = Separation(
+        baseline_condition=args.baseline_condition,
+        other=args.condition,
+        per_subject=cohort.differences(args.baseline_condition, args.condition),
+    )
+    markdown = to_markdown(cohort, separation)
+    print(markdown)
+
+    if args.out is not None:
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "cohort.md").write_text(markdown, encoding="utf-8")
+        (args.out / "cohort.csv").write_text(to_csv(cohort), encoding="utf-8")
+        print(f"已寫到 {args.out / 'cohort.md'} 與 {args.out / 'cohort.csv'}")
+
+
 def _run_analyse(args) -> None:
     """分析逐幀 CSV。不碰相機，所以在哪台機器上都跑得動。"""
     summaries = []
@@ -1059,6 +1083,16 @@ def _run_analyse(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="端到端坐姿量測")
     sub = parser.add_subparsers(dest="mode", required=True)
+
+    ch = sub.add_parser("cohort", help="把一整批逐幀記錄彙整成報告要的表，不需要相機")
+    ch.add_argument("paths", type=Path, nargs="+",
+                    help="資料夾或 CSV。資料夾會遞迴找所有 .csv")
+    ch.add_argument("--baseline-condition", default="upright",
+                    help="當作基準的姿勢名稱，差距是相對它算的")
+    ch.add_argument("--condition", default="forward",
+                    help="要與基準比較的姿勢名稱")
+    ch.add_argument("--out", type=Path, default=None,
+                    help="把 Markdown 與 CSV 寫到這個資料夾。不給就只印出來")
 
     # analyse 不開相機，所以那些硬體參數對它沒有意義，單獨建 parser。
     ap = sub.add_parser("analyse", help="分析 live 留下的逐幀 CSV，不需要相機")
@@ -1181,9 +1215,9 @@ def main() -> None:
                                 "自己一個人量、或在測試裡跑的時候用")
 
     args = parser.parse_args()
-    # analyse 只讀 CSV，標定檔與相機的檢查對它都不適用。
-    if args.mode == "analyse":
-        _run_analyse(args)
+    # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
+    if args.mode in ("analyse", "cohort"):
+        {"analyse": _run_analyse, "cohort": _run_cohort}[args.mode](args)
         return
     if not args.calibration.is_file():
         raise SystemExit(
