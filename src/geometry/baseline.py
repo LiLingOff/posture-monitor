@@ -38,7 +38,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .pipeline import precision_advice, sitting_too_far, unusable_reason
+from .pipeline import (precision_advice, rejection_advice,  # noqa: F401
+                       sitting_too_far, unusable_reason)
 from .uncertainty import standard_error
 
 # 低於這個幀數就不給出基準。實務上要的是 150 幀以上（約 30 秒），
@@ -291,16 +292,9 @@ class BaselineCollector:
             return "一幀都沒收到，確認受試者在畫面內、光線足夠。"
         reason, count = top
         lines = [f"略過的原因幾乎都是同一個（{count}/{self.rejected} 幀）：{reason}"]
-        if "深度" in reason:
-            lines.append(
-                "深度是從視差回推的，落在合理範圍外代表左右兩眼對到了不同的位置，"
-                "不是受試者真的坐在那個距離。用 "
-                "python posture.py once --all-keypoints 看左右像素座標差多少。"
-            )
-        elif "垂直視差" in reason:
-            lines.append("對極線校正後左右的 y 應該幾乎相同，差太多代表標定不準或左右配對錯誤。")
-        elif "共同關鍵點" in reason:
-            lines.append("左右能同時看到的部位太少，多半是遮擋或其中一眼的畫面有問題。")
+        advice = rejection_advice(reason)
+        if advice:
+            lines.append(advice)
         return "\n".join(lines)
 
     def quality_warnings(self, baseline: PostureBaseline) -> list[str]:

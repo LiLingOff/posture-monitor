@@ -1158,3 +1158,24 @@ def describe_resolution_mismatch(
         f"相機拿不到這個解析度的話，要嘛是節點挑錯了，要嘛這顆模組要用 "
         f"--vertical-split，兩者都不是就得用現在的解析度重新標定。"
     )
+
+
+class CameraReadError(RuntimeError):
+    """相機讀不到畫面。
+
+    與「沒偵測到人」分開，因為兩者該有的反應相反：偵測失敗是暫時的，下一幀就
+    可能好了，值得繼續跑；相機不見了則重試多少次都一樣，而且重試的迴圈會全速
+    空轉。2026-09-29 實機的 USB 在量測中途斷掉（errno 19），程式在 110 秒內
+    寫進 162485 筆空記錄，把前面九十秒的有效資料埋在裡面。
+    """
+
+
+def describe_camera_loss(index: int, failures: int, seconds: float) -> str:
+    """相機中途不見了。訊息要說清楚資料還在，因為那是當下最想知道的事。"""
+    return (
+        f"相機連續 {failures} 次讀不到畫面（約 {seconds:.0f} 秒），停止量測。\n"
+        f"這通常是 USB 斷線或供電不足，節點編號也可能在重新列舉之後換掉了。\n"
+        f"已經寫下的資料是完整的，斷線之前的部分照常可以分析。\n"
+        f"接回去之後確認節點：ls -l /dev/video*，或直接用 --camera auto 重跑。\n"
+        + describe_camera_open_failure(index)
+    )

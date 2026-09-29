@@ -598,3 +598,31 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
             f"左右只有 {measurement.shared_count} 個共同關鍵點，樣本太少"
         )
     return warnings
+
+
+def rejection_advice(reason: str) -> str:
+    """一直因為同一件事被略過時，該去動什麼。
+
+    原因本身說的是「哪裡不對」，這裡說的是「怎麼辦」。兩者分開，因為逐幀的
+    訊息要短，而這句話只在同一個原因連續出現很多次的時候才值得印。
+
+    肩膀配對錯誤單獨列出來。2026-09-29 實機那次連續 130 幀都是
+    right_shoulder，方位角在 42 到 58 度之間，遠側肩膀落在身體後面，
+    自底向上的關聯每一幀都用同樣的方式連錯，所以它是一整段而不是零星幾幀。
+    """
+    if "shoulder" in reason and "垂直視差" in reason:
+        return ("遠側肩膀被身體擋住時，左右兩眼會把它連到不同位置，而且會連續好幾秒"
+                "都這樣。把模組轉得正面一點，讓兩邊肩膀都完整露出來。")
+    if "深度" in reason:
+        return ("深度是從視差回推的，落在合理範圍外代表左右兩眼對到了不同的位置，"
+                "不是受試者真的坐在那個距離。用 "
+                "python posture.py once --all-keypoints 看左右像素座標差多少。")
+    if "垂直視差" in reason:
+        return "對極線校正後左右的 y 應該幾乎相同，差太多代表標定不準或左右配對錯誤。"
+    if "共同關鍵點" in reason:
+        return "左右能同時看到的部位太少，多半是遮擋或其中一眼的畫面有問題。"
+    if "偵測到人" in reason:
+        return "確認受試者完整在畫面內、光線足夠，並檢查左右畫面是不是同一個場景。"
+    if "畫面邊緣" in reason:
+        return "受試者有一部分在畫面外。把相機轉向那個方向，或請他往畫面中央坐。"
+    return ""

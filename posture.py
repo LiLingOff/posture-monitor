@@ -25,7 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from calibration.capture import (_open_camera,  # noqa: E402
+from calibration.capture import (CameraReadError, _open_camera,  # noqa: E402
+                                 describe_camera_loss,
                                  describe_camera_open_failure,
                                  describe_resolution_mismatch, find_camera_index,
                                  merged_capture_size, split_merged_frame)
@@ -33,10 +34,11 @@ from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
                                format_measurement, match_person_pair,
-                               measure_posture, unusable_reason)
+                               measure_posture, rejection_advice, unusable_reason)
 from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline, baseline_quality_warnings)
 from geometry.judgement import PostureJudge, windows_are_stale  # noqa: E402
+from geometry.baseline import group_rejection_reason  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
@@ -92,11 +94,71 @@ def _open_selected_camera(args, calib=None):
     return cap
 
 
+# 相機掉線之後每次讀取都會立刻失敗，不擋的話迴圈會全速空轉。實機那次在
+# 110 秒內寫了 162485 筆空記錄。每次失敗之間停一下，累積到這個次數就停止量測。
+_READ_RETRY_PAUSE_S = 0.1
+_MAX_CONSECUTIVE_READ_FAILURES = 25
+
+
 def _grab_pair(cap, args):
     ok, frame = cap.read()
     if not ok:
-        raise RuntimeError("讀取相機影格失敗")
+        raise CameraReadError("讀取相機影格失敗")
     return split_merged_frame(frame, args.vertical_split, args.swap_lr)
+
+
+# 同一個原因連續略過這麼多幀就提示一次。實機約 5fps，15 幀是三秒，
+# 短到還來得及調整，長到不會被零星的失誤觸發。
+_STUCK_AFTER_FRAMES = 15
+
+
+class _StuckWatcher:
+    """一直因為同一件事被略過時提示一次該怎麼辦。
+
+    逐幀那一行只說「哪裡不對」，而且會被下一幀蓋掉，所以連續略過三十秒看到的
+    是同一句話重複閃動，沒有人知道該動什麼。原因分組時把數字換掉，因為
+    「垂直視差 8.9px」與「8.4px」是同一件事。
+
+    提示每一段只印一次。反覆印會把它變成跟原本那一行一樣的背景雜訊。
+    """
+
+    def __init__(self, after: int = _STUCK_AFTER_FRAMES):
+        self._after = after
+        self._key: str | None = None
+        self._run = 0
+        self._told = False
+
+    def saw(self, reason: str | None) -> str | None:
+        """收下這一幀的略過原因（沒被略過就傳 None），回傳該印的提示。"""
+        if reason is None:
+            self._key, self._run, self._told = None, 0, False
+            return None
+        key = group_rejection_reason(reason)
+        if key != self._key:
+            self._key, self._run, self._told = key, 1, False
+        else:
+            self._run += 1
+        # 門檻只在這裡判斷一次。分到兩個分支去判斷的話，一段的第一幀會被
+        # 漏掉，提示就永遠晚一幀，而 after=1 這種設定會完全不合預期。
+        if self._told or self._run < self._after:
+            return None
+        self._told = True
+        advice = rejection_advice(reason)
+        head = f"連續 {self._run} 幀都是同一個原因：{reason}"
+        return head + ("\n  " + advice if advice else "")
+
+
+def _camera_lost(args, failures: int) -> str | None:
+    """連續讀取失敗到這個程度就當成相機不見了，回傳該印的話。
+
+    偶爾掉一幀是正常的，相機不見了則重試多少次都一樣。分不開的話只有兩種
+    壞法：太早放棄，或像實機那次一樣空轉到把有效資料埋掉。
+    """
+    if failures < _MAX_CONSECUTIVE_READ_FAILURES:
+        return None
+    return describe_camera_loss(
+        args.camera, failures, failures * _READ_RETRY_PAUSE_S
+    )
 
 
 def _require_matching_resolution(calib, left_frame, args) -> None:
@@ -241,16 +303,30 @@ def _run_live(args) -> None:
     sym_window = RollingAngle(args.window)
     rejected = 0
     consecutive_misses = 0
+    read_failures = 0
     saved_a_rejected_frame = False
     transitions: list[str] = []
+    lost: str | None = None
+    stuck = _StuckWatcher()
     try:
         while True:
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
+                read_failures = 0
             except RuntimeError as exc:
+                if isinstance(exc, CameraReadError):
+                    read_failures += 1
+                    lost = _camera_lost(args, read_failures)
+                    if lost is not None:
+                        break
+                    time.sleep(_READ_RETRY_PAUSE_S)
+                # 讀不到畫面與偵測不到人都是這一幀沒有資料，一樣要計入略過，
+                # 否則結束時印的數字會與實際寫下的筆數對不起來。
+                rejected += 1
                 consecutive_misses += 1
                 _forget_if_stale(ca_window, sym_window, consecutive_misses)
-                _print_line(str(exc))
+                _tell(stuck.saw(str(exc)))
+                _print_line(f"{exc}（已略過 {rejected} 幀）")
                 if log is not None:
                     log.write(None, reject_reason=str(exc))
                 continue
@@ -271,6 +347,8 @@ def _run_live(args) -> None:
                 if args.save_frames and not saved_a_rejected_frame:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
+
+            _tell(stuck.saw(reason))
 
             verdict = None
             if judge is not None:
@@ -293,15 +371,20 @@ def _run_live(args) -> None:
                     posture="" if verdict is None else verdict.posture.value,
                 )
     except KeyboardInterrupt:
-        print()
-        _print_summary(ca_window, sym_window, rejected, baseline)
-        _print_transitions(transitions)
-        if log is not None:
-            print(f"已記錄 {log.frames_written} 幀到 {log.path}")
-    finally:
-        if log is not None:
-            log.close()
-        cap.release()
+        pass
+    print()
+    # 相機掉線時也要走完這一段。已經量到的東西才是這次的產出，不該因為
+    # 結束的方式不同就不印。
+    if lost is not None:
+        print(lost)
+    _print_summary(ca_window, sym_window, rejected, baseline)
+    _print_transitions(transitions)
+    if log is not None:
+        print(f"已記錄 {log.frames_written} 幀到 {log.path}")
+        log.close()
+    cap.release()
+    if lost is not None:
+        raise SystemExit(1)
 
 
 def _load_baseline(args, calib) -> PostureBaseline | None:
@@ -355,10 +438,21 @@ def _run_baseline(args) -> None:
 
         start = time.perf_counter()
         saved_a_rejected_frame = False
+        read_failures = 0
         while (elapsed := time.perf_counter() - start) < args.seconds:
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
+                read_failures = 0
             except RuntimeError as exc:
+                if isinstance(exc, CameraReadError):
+                    read_failures += 1
+                    lost = _camera_lost(args, read_failures)
+                    if lost is not None:
+                        print()
+                        raise SystemExit(lost)
+                    # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
+                    # 用滿剩下的取樣時間空轉。
+                    time.sleep(_READ_RETRY_PAUSE_S)
                 _print_line(str(exc))
                 continue
             reason = collector.add(measurement)
@@ -471,6 +565,14 @@ def _forget_if_stale(
     if windows_are_stale(consecutive_misses, ca_window.window):
         ca_window.clear()
         sym_window.clear()
+
+
+def _tell(message: str | None) -> None:
+    """把提示印成獨立的一行。逐幀那一行會被蓋掉，提示不該跟著消失。"""
+    if message is None:
+        return
+    _print_line("")
+    print("\r" + message, flush=True)
 
 
 def _elapsed(started_at: float) -> str:
