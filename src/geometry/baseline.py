@@ -14,7 +14,8 @@
 **取樣至少 30 秒。** 早先算 10 秒就夠是因為用了 std/√N，而相鄰幀並不獨立
 （見 uncertainty 模組）。實測 60 幀（約 10 秒）的基準，誤差是 ±3.1°，
 佔 2026-09-24 量到的坐正與前傾差距 18° 的六分之一；要壓到 ±2° 以內需要
-150 幀以上，在實機的 6.4fps 下是 25 到 30 秒。
+150 幀以上，在實機的 5fps 上下是 30 秒起跳。實際需要多久取決於當下的單幀
+散佈，所以 `seconds_for_target_error` 會照實測算，不用固定值。
 
 基準會連同距離與方位角一起存下來。這兩項不影響角度的正確性（解剖平面由雙肩
 定義），但影響精度，所以記錄下來才知道這份基準是在什麼條件下取得的。
@@ -37,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .pipeline import precision_advice, unusable_reason
+from .pipeline import precision_advice, sitting_too_far, unusable_reason
 from .uncertainty import standard_error
 
 # 低於這個幀數就不給出基準。實務上要的是 150 幀以上（約 30 秒），
@@ -47,12 +48,14 @@ _MINIMUM_FRAMES = 40
 # 基準的標準誤差超過這個值就提醒重做。這個偏移會進到之後每一次判定，
 # 相對 10° 的門檻，2° 已經是可觀的系統性偏差。
 _BASELINE_ERROR_WARNING_DEG = 2.0
-# 低於這個幀數時，誤差多半是取樣長度造成的，而不是距離或方位角。
-# 實測 408 幀（81 秒）的坐正基準誤差是 ±1.2°，150 幀約落在 ±2°。
-_ENOUGH_FRAMES = 150
-_RECOMMENDED_SECONDS = 30
+# 再久也不建議。基準的前提是「這段時間內姿勢不變」，而 2026-09-24 實測
+# 相隔九分鐘的兩次坐正差 14°，拉太長只是把漂移平均進去，不會讓基準更準。
+_LONGEST_USEFUL_SECONDS = 120.0
 # 實測散佈超過理論值這個倍數，代表受試者在取基準的過程中動了。
 _MOVEMENT_FACTOR = 1.8
+# 散佈只是偏高、還沒到「在動」的程度。這時候誤差大多半是因為散佈大，
+# 而把散佈壓一半等於把取樣時間砍到四分之一，比拉長取樣划算。
+_ELEVATED_SPREAD_FACTOR = 1.3
 
 
 def group_rejection_reason(reason: str) -> str:
@@ -123,6 +126,52 @@ class PostureBaseline:
         )
 
 
+def seconds_for_target_error(baseline: PostureBaseline, target_deg: float) -> float | None:
+    """要把基準誤差壓到 target_deg，這個取樣速率下需要多久。
+
+    誤差隨獨立樣本數的平方根下降，所以時間要乘上 (現在的誤差/目標)²。
+    這是一階估計，前提是姿勢在更長的時間裡仍然不變；漂移會讓實際效果打折，
+    所以超過 _LONGEST_USEFUL_SECONDS 就不該再往上加。
+
+    回傳 None 代表這條路走不通，該動的是別的東西。
+    """
+    error = baseline.theta_ca_standard_error_deg
+    if baseline.duration_s <= 0 or error <= target_deg:
+        return None
+    needed = baseline.duration_s * (error / target_deg) ** 2
+    return None if needed > _LONGEST_USEFUL_SECONDS else needed
+
+
+def _lever(baseline: PostureBaseline, expected_deg: float | None = None) -> str:
+    """誤差太大時，該動哪一個。
+
+    坐太遠的話先講距離。誤差隨距離平方成長，那一項壓倒性地大，這時候建議
+    取樣兩分鐘是在浪費受試者的時間，把椅子往前拉一次就解決。
+
+    距離沒問題才看取樣長度，因為那是唯一不必移動硬體就能改的。算出來超過
+    兩分鐘的話拉長取樣也不是解法，姿勢本身會先漂掉。
+
+    先前這裡用幀數門檻判斷卻用固定秒數給建議，於是 142 幀 / 30 秒的基準
+    收到「拉長到 30 秒以上」，自相矛盾而且沒有可執行的下一步。
+    """
+    if sitting_too_far(baseline.distance_mm):
+        return precision_advice(baseline.distance_mm, baseline.azimuth_deg)
+    # 散佈偏高時先講它。誤差與散佈成正比、與時間的平方根成反比，所以把散佈
+    # 壓一半等於取樣時間砍到四分之一。實機看到的是剛坐下那十幾秒人還在調整，
+    # 那段的散佈明顯比後面大。
+    if (expected_deg is not None
+            and baseline.theta_ca_std_deg > _ELEVATED_SPREAD_FACTOR * expected_deg):
+        return (f"單幀散佈 ±{baseline.theta_ca_std_deg:.1f}° 比這個位置該有的 "
+                f"±{expected_deg:.1f}° 高，先讓受試者坐定再開始"
+                f"（--countdown 拉長），比拉長取樣有效")
+    seconds = seconds_for_target_error(baseline, _BASELINE_ERROR_WARNING_DEG)
+    if seconds is not None:
+        return (f"再取一次，這次取樣 {seconds:.0f} 秒"
+                f"（目前的速率是每秒 {baseline.frames / baseline.duration_s:.1f} 幀）")
+    return ("拉長取樣已經補不回來（再久姿勢本身就會漂）。"
+            + precision_advice(baseline.distance_mm, baseline.azimuth_deg))
+
+
 def baseline_quality_warnings(
     baseline: PostureBaseline, expected_single_frame_error_deg: float | None = None
 ) -> list[str]:
@@ -137,17 +186,11 @@ def baseline_quality_warnings(
     """
     warnings: list[str] = []
     if baseline.theta_ca_standard_error_deg > _BASELINE_ERROR_WARNING_DEG:
-        # 取樣夠久的話，剩下的誤差才是幾何條件造成的，才該去調距離與方位角。
-        # 取樣不夠久的時候先講取樣，因為那是唯一有效的辦法。
-        lever = (
-            f"再取一次，這次拉長到 {_RECOMMENDED_SECONDS} 秒以上"
-            if baseline.frames < _ENOUGH_FRAMES
-            else precision_advice(baseline.distance_mm, baseline.azimuth_deg)
-        )
         warnings.append(
             f"基準誤差 ±{baseline.theta_ca_standard_error_deg:.1f}°"
             f"（單幀 ±{baseline.theta_ca_std_deg:.1f}°，{baseline.frames} 幀 / "
-            f"{baseline.duration_s:.0f} 秒），這個偏移會留在之後每一次判定裡。" + lever
+            f"{baseline.duration_s:.0f} 秒），這個偏移會留在之後每一次判定裡。"
+            + _lever(baseline, expected_single_frame_error_deg)
         )
     if (expected_single_frame_error_deg is not None
             and baseline.theta_ca_std_deg > _MOVEMENT_FACTOR * expected_single_frame_error_deg):

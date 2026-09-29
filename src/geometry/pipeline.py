@@ -163,6 +163,16 @@ def estimate_theta_ca_precision_deg(
     return float(np.degrees(np.sqrt(2) * sigma_forward / _EAR_SHOULDER_MM))
 
 
+def sitting_too_far(distance_mm: float | None) -> bool:
+    """距離本身就是主要的誤差來源嗎。
+
+    誤差隨距離平方成長，所以坐遠的時候其他任何補救都不划算：與其拉長取樣
+    兩分鐘，不如把椅子往前拉。門檻放寬到舒適距離的 1.3 倍，免得在 800mm
+    這種還算合理的位置一直催人往前坐。
+    """
+    return distance_mm is not None and distance_mm > _COMFORTABLE_DISTANCE_MM * 1.3
+
+
 def precision_advice(distance_mm: float | None, azimuth_deg: float | None) -> str:
     """誤差太大時，該動距離還是動方位角。
 
@@ -176,7 +186,7 @@ def precision_advice(distance_mm: float | None, azimuth_deg: float | None) -> st
     """
     if distance_mm is None or distance_mm <= 0:
         return "距離量不到，先確認受試者完整在畫面內"
-    if distance_mm > _COMFORTABLE_DISTANCE_MM * 1.3:
+    if sitting_too_far(distance_mm):
         factor = (distance_mm / _COMFORTABLE_DISTANCE_MM) ** 2
         return f"坐到 {_COMFORTABLE_DISTANCE_MM:.0f}mm 可降到約 1/{factor:.1f}（誤差隨距離平方成長）"
     if azimuth_deg is None:

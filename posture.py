@@ -629,9 +629,11 @@ def main() -> None:
             p.add_argument("--out", type=Path, default=None,
                            help="預設是 data/baselines/<subject>.json")
             p.add_argument("--seconds", type=float, default=30.0,
-                           help="取樣長度。實機約 6.4fps，30 秒約 190 幀，基準誤差約 ±2°")
+                           help="取樣長度。實機約 5fps，30 秒約 150 幀。"
+                                "不夠準的話程式會算出該取樣幾秒")
             p.add_argument("--countdown", type=int, default=3,
-                           help="開始前的倒數秒數，讓受試者坐定")
+                           help="開始前的倒數秒數。剛坐下的十幾秒人還在調整，"
+                                "那段的散佈明顯比後面大，會被平均進基準裡")
 
     args = parser.parse_args()
     # analyse 只讀 CSV，標定檔與相機的檢查對它都不適用。

@@ -104,7 +104,7 @@ def find_camera_index(
 def _probe_camera(width: int | None, height: int | None):
     """真的去開一次相機並讀一幀，回傳（成功嗎, 實際尺寸）。"""
     def probe(index: int) -> tuple[bool, tuple[int, int] | None]:
-        cap = _open_camera(index, width, height)
+        cap = _open_camera(index, width, height, quiet=True)
         try:
             if not cap.isOpened():
                 return False, None
@@ -192,9 +192,13 @@ def describe_stereo_open_failure(
 
 
 def _open_camera(
-    index: int, width: int | None = None, height: int | None = None
+    index: int, width: int | None = None, height: int | None = None,
+    quiet: bool = False,
 ) -> cv2.VideoCapture:
     """開啟相機。未指定width/height時採用驅動的預設模式。
+
+    quiet 給自動挑選用。挑選過程會把每個節點都開一次，那些訊息重複而且會與
+    挑選結果本身混在一起；挑完之後真正開啟的那一次才該講話。
 
     雙目模組要特別注意：左右眼並排的輸出通常只存在於某些寬解析度模式
     （2560x720之類），驅動預設的640x480往往只提供單眼或裁切後的畫面。
@@ -229,8 +233,9 @@ def _open_camera(
             if sys.platform.startswith("linux")
             else f"用 python -m src.calibration.capture probe --camera {index} 查詢支援的模式"
         )
-        print(f"[警告] 要求{width}x{height}，相機實際提供{got[0]}x{got[1]}。{hint}")
-    else:
+        if not quiet:
+            print(f"[警告] 要求{width}x{height}，相機實際提供{got[0]}x{got[1]}。{hint}")
+    elif not quiet:
         print(f"相機 index={index} 解析度 {got[0]}x{got[1]}")
     return cap
 

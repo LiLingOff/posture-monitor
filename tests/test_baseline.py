@@ -259,17 +259,61 @@ def _poor_baseline(**overrides):
     return PostureBaseline(**{**asdict(base), **overrides})
 
 
-def test_a_short_baseline_is_told_to_sample_longer_not_to_move():
-    """取樣不足時，調距離與方位角沒有用，唯一有效的是拉長取樣。"""
+def _with(**overrides):
+    base = _collect(12.0, frames=200).finish("A", 31.0)
+    return PostureBaseline(**{**asdict(base), **overrides})
+
+
+def test_a_short_baseline_is_told_how_long_to_sample_next_time():
+    """取樣不足時，調距離與方位角沒有用，唯一有效的是拉長取樣。
+
+    秒數要算出來。誤差隨獨立樣本數的平方根下降，所以 10 秒拿到 ±3.1°
+    要壓到 ±2° 需要 10×(3.1/2)² 約 24 秒。
+    """
     from geometry.baseline import baseline_quality_warnings
 
-    short = PostureBaseline(**{**asdict(_collect(12.0, frames=200).finish("A", 31.0)),
-                               "frames": 60, "duration_s": 10.0,
-                               "distance_mm": 1796.0, "azimuth_deg": 50.0,
-                               "theta_ca_standard_error_deg": 3.1})
+    short = _with(frames=60, duration_s=10.0, distance_mm=650.0, azimuth_deg=32.0,
+                  theta_ca_standard_error_deg=3.1)
     warning = next(w for w in baseline_quality_warnings(short) if "基準誤差" in w)
-    assert "30 秒" in warning
-    assert "坐到 700mm" not in warning
+    assert "24 秒" in warning
+
+
+def test_the_advice_never_tells_you_to_lengthen_to_what_you_already_did():
+    """2026-09-29 實機：142 幀 / 30 秒的基準收到「拉長到 30 秒以上」。
+
+    當時的判斷用幀數門檻、建議卻寫死成秒數，於是在 5fps 的機器上永遠自相矛盾。
+    """
+    from geometry.baseline import baseline_quality_warnings
+
+    real = _with(frames=142, duration_s=30.1, distance_mm=650.0, azimuth_deg=32.0,
+                 theta_ca_standard_error_deg=2.97, theta_ca_std_deg=11.1)
+    warning = next(w for w in baseline_quality_warnings(real) if "基準誤差" in w)
+    assert "66 秒" in warning
+    assert "30 秒以上" not in warning
+    # 速率要一起講，不然使用者無從判斷那個秒數合不合理
+    assert "4.7 幀" in warning
+
+
+def test_when_lengthening_cannot_help_it_says_so_and_points_elsewhere():
+    """誤差大到要取樣好幾分鐘時，拉長取樣補不回來，因為姿勢本身會漂。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    hopeless = _with(frames=142, duration_s=30.0, distance_mm=650.0,
+                     azimuth_deg=32.0, theta_ca_standard_error_deg=5.0)
+    warning = next(w for w in baseline_quality_warnings(hopeless) if "基準誤差" in w)
+    assert "補不回來" in warning
+    assert "往側面移" in warning
+
+
+def test_sitting_too_far_outranks_sampling_longer():
+    """坐太遠的時候建議取樣兩分鐘是在浪費受試者的時間，椅子往前拉一次就解決。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    far = _with(frames=200, duration_s=31.0, distance_mm=1796.0, azimuth_deg=50.0,
+                theta_ca_standard_error_deg=3.8)
+    warning = next(w for w in baseline_quality_warnings(far) if "基準誤差" in w)
+    assert "坐到 700mm" in warning
+    assert "秒" not in warning.split("這個偏移會留在之後每一次判定裡。")[1]
 
 
 def test_a_poor_baseline_still_warns_when_it_is_loaded_back(tmp_path):
@@ -306,3 +350,30 @@ def test_movement_check_needs_the_expected_noise_to_compare_against():
                             theta_ca_standard_error_deg=0.9, theta_ca_std_deg=30.0)
     assert baseline_quality_warnings(wobbly, None) == []
     assert any("動了" in w for w in baseline_quality_warnings(wobbly, 6.0))
+
+
+def test_an_elevated_spread_is_addressed_before_sampling_longer():
+    """2026-09-29 實機：單幀散佈 ±11.1° 對上該有的 ±6.9°。
+
+    誤差與散佈成正比、與時間的平方根成反比，所以把散佈壓一半等於取樣時間
+    砍到四分之一。叫人坐定再開始比叫人多坐 36 秒有效得多。
+    """
+    from geometry.baseline import baseline_quality_warnings
+
+    jittery = _with(frames=142, duration_s=30.1, distance_mm=650.0, azimuth_deg=32.0,
+                    theta_ca_standard_error_deg=2.97, theta_ca_std_deg=11.1)
+    warning = next(w for w in baseline_quality_warnings(jittery, 6.9)
+                   if "基準誤差" in w)
+    assert "先讓受試者坐定" in warning
+    assert "66 秒" not in warning
+
+
+def test_a_normal_spread_still_gets_the_sampling_length_advice():
+    """散佈正常時誤差就是取樣長度造成的，這時候拉長取樣才是對的建議。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    steady = _with(frames=142, duration_s=30.1, distance_mm=650.0, azimuth_deg=32.0,
+                   theta_ca_standard_error_deg=2.97, theta_ca_std_deg=7.0)
+    warning = next(w for w in baseline_quality_warnings(steady, 6.9) if "基準誤差" in w)
+    assert "66 秒" in warning
+    assert "先讓受試者坐定" not in warning
