@@ -398,15 +398,59 @@ def correlation(a: np.ndarray, b: np.ndarray) -> float | None:
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def compare(a: AngleSummary, b: AngleSummary) -> tuple[float, float | None, float | None]:
-    """兩段量測的差距、合併誤差與顯著性（幾個標準誤差）。"""
+@dataclass(frozen=True)
+class Comparison:
+    """兩個數字差多少，以及該配著它一起講的兩個比值。
+
+    存在的形式是值物件而不是三個回傳值，因為「只報幾個標準誤差會高估可靠度」
+    這件事必須每次都講到。分成 (difference, error, sigma) 三個之後，
+    單一 session 的報表與跨受試者的報表各自決定要不要補上後面那個比值，
+    兩邊就會慢慢講出不一樣的話。
+
+    - `sigma` 的分母是平均值的誤差，看的是「這個差距量得準不準」。
+    - `spread_ratio` 的分母是單幀散佈，看的是「這個差距相對姿勢本身的變異
+      大不大」。跨 session 比較實際面對的是後者。
+    """
+
+    difference: float
+    error: float | None
+    spread: float | None = None
+
+    @property
+    def sigma(self) -> float | None:
+        if self.error is None or self.error == 0:
+            return None
+        return abs(self.difference) / self.error
+
+    @property
+    def spread_ratio(self) -> float | None:
+        if self.spread is None or self.spread == 0:
+            return None
+        return abs(self.difference) / self.spread
+
+    def describe(self) -> str:
+        """差距本身那一句。兩個報表共用，才不會一邊有誤差一邊沒有。"""
+        shown = f"{self.difference:+.2f}°"
+        if self.error is not None:
+            shown += f" ± {self.error:.2f}°"
+        if self.sigma is not None:
+            shown += f"（{self.sigma:.1f} 個標準誤差）"
+        return shown
+
+
+def compare(a: AngleSummary, b: AngleSummary, spread: float | None = None) -> Comparison:
+    """兩段量測差多少。
+
+    spread 沒給的話用兩段裡較大的單幀散佈。取大的是保守的選擇：兩段的穩定度
+    不同時，該拿不穩的那一段當尺。
+    """
     difference = b.mean - a.mean
     error_a, error_b = a.standard_error, b.standard_error
-    if error_a is None or error_b is None:
-        return difference, None, None
-    combined = float(np.hypot(error_a, error_b))
-    sigma = None if combined == 0 else abs(difference) / combined
-    return difference, combined, sigma
+    combined = (None if error_a is None or error_b is None
+                else float(np.hypot(error_a, error_b)))
+    if spread is None:
+        spread = max(a.single_frame_std, b.single_frame_std)
+    return Comparison(difference=difference, error=combined, spread=spread)
 
 
 # 方位角分箱的寬度。太窄每一箱的幀數不夠，太寬看不出劣化從哪裡開始。

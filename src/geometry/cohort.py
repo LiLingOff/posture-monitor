@@ -28,7 +28,8 @@ import numpy as np
 
 from .baseline import REJECTION_LIMIT
 from .judgement import Posture
-from .session_analysis import UNLABELLED, SessionSummary, analyse_session
+from .session_analysis import (UNLABELLED, Comparison, SessionSummary,
+                               analyse_session)
 from .uncertainty import standard_error
 
 # UNLABELLED 與 REJECTION_LIMIT 都從別處 re-export，讓 cohort 的使用者不必
@@ -178,12 +179,17 @@ class Separation:
             return None
         return float(np.std(values, ddof=1) / np.sqrt(len(values)))
 
-    @property
-    def sigma(self) -> float | None:
-        mean, error = self.mean_deg, self.error_deg
-        if mean is None or error is None or error == 0:
+    def comparison(self, spread: float | None = None) -> Comparison | None:
+        """包成與單一 session 同一種值物件，兩邊的敘述才不會走岔。
+
+        `session_analysis.compare` 給的是同一個型別，所以 `describe()` 那一句
+        （差距 ± 誤差、幾個標準誤差）在兩個報表裡永遠一致。差別只在誤差的分母：
+        這裡是人數，那裡是幀數的批次平均。
+        """
+        mean = self.mean_deg
+        if mean is None:
             return None
-        return abs(mean) / error
+        return Comparison(difference=mean, error=self.error_deg, spread=spread)
 
 
 def collect(paths: list[Path]) -> Cohort:

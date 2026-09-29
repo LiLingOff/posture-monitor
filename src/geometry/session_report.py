@@ -201,19 +201,13 @@ def format_comparison(summaries: list[SessionSummary]) -> str:
 
     out = ["", "── 兩段對照 " + "─" * 38]
     for first, second in zip(usable, usable[1:]):
-        difference, error, sigma = compare(first.angles[key], second.angles[key])
-        shown = f"{difference:+.2f}°"
-        if error is not None:
-            shown += f" ± {error:.2f}°"
-        if sigma is not None:
-            shown += f"（{sigma:.1f} 個標準誤差）"
+        comparison = compare(first.angles[key], second.angles[key])
         out.append(f"{first.path.name} → {second.path.name}")
-        out.append(_row("  θ_CA 差距", shown))
-        # 訊號要和基準的變異比才知道分不分得開，只報差距會高估可靠度。
-        spread = max(first.angles[key].single_frame_std,
-                     second.angles[key].single_frame_std)
-        if spread > 0:
-            out.append(_row("  差距 / 單幀散佈", f"{abs(difference) / spread:.1f} 倍"))
+        out.append(_row("  θ_CA 差距", comparison.describe()))
+        # 訊號要和姿勢本身的變異比才知道分不分得開，只報差距會高估可靠度。
+        if comparison.spread_ratio is not None:
+            out.append(_row("  差距 / 單幀散佈",
+                            f"{comparison.spread_ratio:.1f} 倍"))
     return "\n".join(out)
 
 

@@ -209,9 +209,14 @@ def test_correlation_needs_matching_lengths_and_some_variation():
 def test_comparing_two_sessions_reports_the_difference_and_its_significance():
     quiet = AngleSummary("a", np.full(100, 8.0) + np.random.default_rng(2).normal(0, 1, 100))
     lean = AngleSummary("b", np.full(100, 26.0) + np.random.default_rng(3).normal(0, 1, 100))
-    difference, error, sigma = compare(quiet, lean)
-    assert difference == pytest.approx(18.0, abs=0.5)
-    assert error is not None and sigma > 10
+    comparison = compare(quiet, lean)
+    assert comparison.difference == pytest.approx(18.0, abs=0.5)
+    assert comparison.error is not None
+    assert comparison.sigma > 10
+    # 單幀散佈那個比值要一起給。只報 sigma 會高估可靠度：這組資料的
+    # sigma 是 152，而差距只有單幀散佈的 17 倍。
+    assert comparison.sigma > 100
+    assert comparison.spread_ratio == pytest.approx(17.0, abs=1.0)
 
 
 def test_comparison_appears_only_when_there_are_two_sessions(tmp_path):

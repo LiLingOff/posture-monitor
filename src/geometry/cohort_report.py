@@ -159,28 +159,28 @@ def separation_markdown(separation: Separation, cohort: Cohort) -> str:
     for subject, value in separation.per_subject.items():
         out.append(f"| {subject} | {value:+.2f}° |")
 
-    mean, error, sigma = separation.mean_deg, separation.error_deg, separation.sigma
+    # 只需要一欄的最大值，不必重建整份 rows（那會把每個 session 的
+    # standard_error 重算一次）。
+    spreads = [angle.single_frame_std for summary in cohort.sessions
+               if (angle := summary.angle("θ_CA")) is not None]
+    comparison = separation.comparison(max(spreads) if spreads else None)
+
     out.append("")
-    if error is None:
-        out.append(f"**平均差距 {mean:+.2f}°**，但只有 {separation.subjects} 位受試者，"
-                   f"算不出跨受試者的誤差。一個樣本沒有散佈可言。")
+    if comparison.error is None:
+        out.append(f"**平均差距 {comparison.difference:+.2f}°**，"
+                   f"但只有 {separation.subjects} 位受試者，算不出跨受試者的誤差。"
+                   f"一個樣本沒有散佈可言。")
     else:
-        shown = f"**平均差距 {mean:+.2f}° ± {error:.2f}°**"
-        if sigma is not None:
-            shown += f"（{sigma:.1f} 個標準誤差）"
-        out.append(shown + f"，n = {separation.subjects}。")
+        # describe() 與單一 session 的報表共用，兩邊的這一句永遠一致。
+        out.append(f"**平均差距 {comparison.describe()}**，n = {separation.subjects}。")
         out.append("")
         out.append("這裡的誤差是**跨受試者**的：分母是人數，不是幀數。"
                    "θ_CA 的相鄰幀自相關是 0.73，拿幀數當分母會把信賴水準"
                    "講得比實際高。")
 
-    # 只需要一欄的最大值，不必重建整份 rows（那會把每個 session 的
-    # standard_error 重算一次）。
-    spreads = [angle.single_frame_std for summary in cohort.sessions
-               if (angle := summary.angle("θ_CA")) is not None]
-    if mean is not None and spreads:
+    if comparison.spread_ratio is not None:
         out.append("")
-        out.append(f"差距 / 最大單幀散佈 = {abs(mean) / max(spreads):.1f} 倍。"
+        out.append(f"差距 / 最大單幀散佈 = {comparison.spread_ratio:.1f} 倍。"
                    f"只報標準誤差會高估可靠度，因為那個分母是平均值的誤差，"
                    f"而實際比較面對的是姿勢本身的變異。")
     return "\n".join(out)

@@ -124,7 +124,7 @@ def test_a_single_subject_reports_no_error_rather_than_zero(tmp_path):
                             cohort.differences("upright", "forward"))
     assert separation.mean_deg == pytest.approx(20.0)
     assert separation.error_deg is None
-    assert separation.sigma is None
+    assert separation.comparison().sigma is None
     assert "算不出跨受試者的誤差" in separation_markdown(separation, cohort)
 
 
@@ -261,5 +261,49 @@ def test_the_report_states_that_the_error_is_across_subjects(tmp_path):
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
     text = separation_markdown(separation, cohort)
+    assert "分母是人數，不是幀數" in text
+    assert "差距 / 最大單幀散佈" in text
+
+
+def test_both_reports_narrate_the_difference_in_the_same_words(tmp_path):
+    """單一 session 的報表與跨受試者的報表共用 describe()。
+
+    先前兩邊各自拼這一句，於是可以一邊帶誤差、一邊不帶，而讀的人分不出
+    是資料不同還是排版不同。
+    """
+    import numpy as np
+
+    from geometry.session_analysis import AngleSummary, compare
+
+    specs = []
+    for i, subject in enumerate("ABC"):
+        specs.append(dict(subject=subject, condition="upright", ca=0.0))
+        specs.append(dict(subject=subject, condition="forward", ca=20.0 + i))
+    cohort = _cohort(tmp_path, *specs)
+    separation = Separation("upright", "forward",
+                            cohort.differences("upright", "forward"))
+    across = separation.comparison(spread=5.0)
+
+    within = compare(AngleSummary("a", np.zeros(50) + np.arange(50) * 0.01),
+                     AngleSummary("b", np.full(50, 21.0) + np.arange(50) * 0.01),
+                     spread=5.0)
+    # 同一個型別、同一個方法，所以格式必然一致
+    assert type(across) is type(within)
+    for text in (across.describe(), within.describe()):
+        assert "±" in text and "個標準誤差" in text
+
+
+def test_the_cohort_report_still_reads_the_same(tmp_path):
+    """抽出值物件不該改變輸出。"""
+    specs = []
+    for i, subject in enumerate("ABC"):
+        specs.append(dict(subject=subject, condition="upright", ca=0.0))
+        specs.append(dict(subject=subject, condition="forward", ca=20.0 + i))
+    cohort = _cohort(tmp_path, *specs)
+    separation = Separation("upright", "forward",
+                            cohort.differences("upright", "forward"))
+    text = separation_markdown(separation, cohort)
+    assert "平均差距 +21.00°" in text
+    assert "n = 3" in text
     assert "分母是人數，不是幀數" in text
     assert "差距 / 最大單幀散佈" in text
