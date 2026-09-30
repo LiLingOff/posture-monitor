@@ -103,14 +103,14 @@ class AngleJudge:
         name: str,
         two_sided: bool = False,
         margin_factor: float = _MARGIN_FACTOR,
-        minimum_margin_deg: float = _MINIMUM_MARGIN_DEG,
+        minimum_margin: float = _MINIMUM_MARGIN_DEG,
         unit: str = "°",
     ):
         self._threshold = float(threshold_deg)
         self._name = name
         self._two_sided = two_sided
         self._factor = float(margin_factor)
-        self._floor = float(minimum_margin_deg)
+        self._floor = float(minimum_margin)
         # 這個類別的數學與單位無關，只有印出來的字要對。肩高那一項用毫米。
         self._unit = unit
         self._posture = Posture.UNKNOWN
@@ -201,7 +201,7 @@ class PostureJudge:
         self._drop = None if threshold_mm is None else AngleJudge(
             threshold_mm, "肩高", two_sided=False,
             margin_factor=self._factor,
-            minimum_margin_deg=_MINIMUM_DROP_MARGIN_MM, unit="mm",
+            minimum_margin=_MINIMUM_DROP_MARGIN_MM, unit="mm",
         )
 
     def update(self, ca_window, sym_window, drop_window=None):

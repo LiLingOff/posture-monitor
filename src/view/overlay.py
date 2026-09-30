@@ -225,17 +225,12 @@ def panel_rows(view) -> list[list[tuple]]:
         third.append((f"略過：{view.skip_reason}", f"skipped: {reason_tag(view.skip_reason)}",
                       EDGE, TEXT_SIZE, False))
     if view.keys:
-        third.append(("　".join(view.keys), "  ".join(_ascii_keys(view.keys)),
+        third.append(("　".join(k for k, _ in view.keys),
+                      "  ".join(e for _, e in view.keys),
                       DIM, TEXT_SIZE, False))
     if third:
         rows.append(third)
     return rows
-
-
-def _ascii_keys(keys: tuple[str, ...]) -> list[str]:
-    """按鍵提示的英文寫法。中文只在括號外，鍵本身是 ASCII。"""
-    table = {"c": "c zero", "q": "q quit"}
-    return [table.get(k[0], k) if k and k[0].isascii() else k for k in keys]
 
 
 def render_panel(view, width: int, painter: TextPainter) -> np.ndarray:

@@ -8,8 +8,9 @@ import pytest
 
 from geometry.pipeline import rejection_advice
 from geometry.recording import (MAX_CONSECUTIVE_READ_FAILURES,
-                                READ_RETRY_PAUSE_S, Session, Snapshots,
-                                StuckWatcher, camera_lost, snapshot_name)
+                                READ_RETRY_PAUSE_S, CameraRetry, Session,
+                                Snapshots, StuckWatcher, camera_lost,
+                                snapshot_name)
 
 
 def test_a_dropped_frame_does_not_stop_the_measurement():
@@ -193,3 +194,38 @@ def test_the_session_keeps_the_two_angles_apart():
     session.add((None, 2.0))
     assert session.ca == [5.0, 6.0]
     assert session.sym == [1.0, 2.0]
+
+
+# ---- 重試政策 ----------------------------------------------------------
+
+def _dropped(retry) -> str | None:
+    from calibration.capture import CameraReadError
+
+    return retry.failed(CameraReadError("讀取相機影格失敗"))
+
+
+def test_an_occasional_dropped_frame_does_not_count_towards_giving_up():
+    """偶爾掉一幀是正常的，相機不見了則重試多少次都一樣。分不開的話只有
+    兩種壞法：太早放棄，或空轉到把有效資料埋掉。"""
+    retry = CameraRetry(0, pause_s=0.0)
+    for _ in range(100):
+        assert _dropped(retry) is None
+        retry.ok()
+    assert retry.failures == 0
+
+
+def test_enough_consecutive_failures_means_the_camera_is_gone():
+    retry = CameraRetry(0, pause_s=0.0)
+    lost = None
+    for _ in range(MAX_CONSECUTIVE_READ_FAILURES):
+        lost = _dropped(retry)
+    assert lost is not None
+    assert "相機" in lost
+
+
+def test_a_failure_that_is_not_a_read_failure_is_not_counted():
+    """偵測不到人重試沒有意義，但也不代表相機掉線。"""
+    retry = CameraRetry(0, pause_s=0.0)
+    for _ in range(100):
+        assert retry.failed(RuntimeError("左眼沒有偵測到人")) is None
+    assert retry.failures == 0

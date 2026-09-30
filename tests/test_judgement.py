@@ -63,14 +63,14 @@ def test_no_measurement_reports_unknown_rather_than_normal():
 
 def test_a_missing_error_falls_back_to_the_floor_not_to_zero():
     """視窗裡只有一個值時誤差是 None。當成零的話遲滯就消失了。"""
-    judge = _judge(minimum_margin_deg=2.0)
+    judge = _judge(minimum_margin=2.0)
     assert judge.update(11.0, None).posture is Posture.UNKNOWN
     assert judge.update(13.0, None).posture is Posture.OVER
 
 
 def test_a_very_still_subject_still_gets_a_dead_band():
     """誤差趨近 0 時寬度不能跟著趨近 0，否則真實的微幅移動會讓狀態翻來翻去。"""
-    judge = _judge(minimum_margin_deg=1.0)
+    judge = _judge(minimum_margin=1.0)
     judge.update(3.0, 0.0)
     assert judge.update(10.4, 0.0).posture is Posture.OK
 

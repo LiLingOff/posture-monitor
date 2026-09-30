@@ -56,7 +56,9 @@ class LiveView:
     mode: str | None = None
     phase_remaining_s: float | None = None
     notice: str | None = None
-    keys: tuple[str, ...] = field(default_factory=tuple)
+    # (中文, 英文) 成對。先前只存中文、畫英文時從第一個字猜，於是 once 的
+    # 「任意鍵關閉」在退回模式下整段變成問號。成對存的話漏了就編譯不過。
+    keys: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     @classmethod
     def build(
@@ -66,7 +68,7 @@ class LiveView:
         drop_mm: float | None = None, drop_threshold_mm: float | None = None,
         mode: str | None = None, phase_remaining_s: float | None = None,
         notice: str | None = None,
-        keys: tuple[str, ...] = (),
+        keys: tuple[tuple[str, str], ...] = (),
     ) -> LiveView:
         """從量測迴圈手上已經有的東西組一幀。"""
         left_bgr, right_bgr = frames[0], frames[1]

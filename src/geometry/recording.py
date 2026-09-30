@@ -11,12 +11,13 @@
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from calibration.capture import describe_camera_loss
+from calibration.capture import CameraReadError, describe_camera_loss
 
 from .baseline import group_rejection_reason
 from .judgement import windows_are_stale
@@ -87,6 +88,47 @@ class Recording:
     @property
     def usable(self) -> int:
         return len(self.session.ca)
+
+
+class CameraRetry:
+    """連續讀取失敗的計數，以及「還要不要再試」這個判斷。
+
+    這段先前在三個迴圈裡各寫了一次（錄製、取基準、monitor）。改了其中一個的
+    重試預算，另外兩個不會跟著動，而那個預算是 2026-09-29 空轉寫下 162485 筆
+    空記錄之後才訂出來的。
+
+    「相機不見了要怎麼辦」留給呼叫端：錄製那邊要保住已經收到的資料所以跳出
+    迴圈，取基準那邊沒有資料可保所以直接結束程式。
+    """
+
+    def __init__(self, index, pause_s: float = READ_RETRY_PAUSE_S):
+        self._index = index
+        # 間隔開放給測試調成 0。寫死的話光是驗證重試預算就要真的睡十秒。
+        self._pause_s = pause_s
+        self._failures = 0
+
+    @property
+    def failures(self) -> int:
+        return self._failures
+
+    def ok(self) -> None:
+        """讀到了。偶爾掉一幀是正常的，所以要歸零而不是累加。"""
+        self._failures = 0
+
+    def failed(self, exc) -> str | None:
+        """收下這一幀的例外。相機不見了就回傳說明，還有機會就停一下並回傳 None。
+
+        不是讀取失敗（例如偵測不到人）的話不計數：那種失敗重試沒有意義，
+        但也不代表相機掉線。
+        """
+        if not isinstance(exc, CameraReadError):
+            return None
+        self._failures += 1
+        lost = camera_lost(self._index, self._failures)
+        if lost is None:
+            # 相機掉線之後每次讀取都會立刻失敗，不停一下的話迴圈會全速空轉。
+            time.sleep(self._pause_s)
+        return lost
 
 
 def camera_lost(index, failures: int) -> str | None:

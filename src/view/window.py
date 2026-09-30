@@ -106,13 +106,7 @@ class LiveWindow:
             image = overlay.compose(view, self._width, self._painter, self._eyes)
             self._last = image
 
-        try:
-            cv2.imshow(self._title, image)
-            key = cv2.waitKey(1) & 0xFF
-        except cv2.error as exc:
-            self._give_up(exc)
-            return self._take_notice()
-
+        key = self._draw(image, delay=1)
         if key in QUIT_KEYS:
             self.stopped = True
         elif key == BASELINE_KEY:
@@ -123,17 +117,23 @@ class LiveWindow:
         """畫一幀然後等按鍵。`once` 用：畫面是靜止的，不必一直重畫。"""
         if self._dead:
             return self._take_notice()
+        self._last = overlay.compose(view, self._width, self._painter, self._eyes)
+        self._draw(self._last, delay=0)
+        return self._take_notice()
+
+    def _draw(self, image, delay: int) -> int:
+        """畫出去並收一個按鍵。畫不出來就退場，回傳「沒有按鍵」。"""
         try:
-            cv2.imshow(self._title, overlay.compose(
-                view, self._width, self._painter, self._eyes))
-            cv2.waitKey(0)
+            cv2.imshow(self._title, image)
+            return cv2.waitKey(delay) & 0xFF
         except cv2.error as exc:
             self._give_up(exc)
-        return self._take_notice()
+            return NO_KEY
 
     def close(self) -> None:
         # 沒開過就不要呼叫，某些無頭版本的 destroyAllWindows 會拋例外。
-        if not self._opened or self._dead:
+        # 但開過之後才畫不出來的那種，視窗是真的存在的，還是要收掉。
+        if not self._opened:
             return
         try:
             cv2.destroyAllWindows()

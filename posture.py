@@ -44,8 +44,8 @@ from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
                                format_measurement, match_person_pair,
                                measure_posture, unusable_reason)
-from geometry.recording import (READ_RETRY_PAUSE_S, Recording,  # noqa: E402
-                                Session, Snapshots, StuckWatcher, camera_lost,
+from geometry.recording import (CameraRetry, Recording,  # noqa: E402
+                                Session, Snapshots, StuckWatcher,
                                 forget_if_stale, write_frame)
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
@@ -217,7 +217,7 @@ def _run_once(args) -> None:
             corrected=(measurement.theta_ca_deg, measurement.theta_sym_deg),
             ca_window=RollingAngle(1), sym_window=RollingAngle(1),
             state=Posture.UNKNOWN, skip_reason=unusable_reason(measurement),
-            rejected=0, frames_seen=1, keys=("任意鍵關閉",),
+            rejected=0, frames_seen=1, keys=(("任意鍵關閉", "press any key"),),
         )))
     finally:
         display.close()
@@ -267,7 +267,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     rejected = 0
     frames_seen = 0
     consecutive_misses = 0
-    read_failures = 0
+    retry = CameraRetry(args.camera)
     saved_a_rejected_frame = False
     transitions: list[str] = []
     lost: str | None = None
@@ -283,14 +283,11 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
             frames_seen += 1
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
-                read_failures = 0
+                retry.ok()
             except RuntimeError as exc:
-                if isinstance(exc, CameraReadError):
-                    read_failures += 1
-                    lost = camera_lost(args.camera, read_failures)
-                    if lost is not None:
-                        break
-                    time.sleep(READ_RETRY_PAUSE_S)
+                lost = retry.failed(exc)
+                if lost is not None:
+                    break
                 # 讀不到畫面與偵測不到人都是這一幀沒有資料，一樣要計入略過，
                 # 否則結束時印的數字會與實際寫下的筆數對不起來。
                 rejected += 1
@@ -351,22 +348,14 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 corrected=corrected, ca_window=ca_window, sym_window=sym_window,
                 state=Posture.UNKNOWN if verdict is None else verdict.posture,
                 skip_reason=reason, rejected=rejected, frames_seen=frames_seen,
-                remaining_s=remaining, baseline=baseline, keys=("q 離開",),
+                remaining_s=remaining, baseline=baseline, keys=(("q 離開", "q quit"),),
                 drop_mm=drop_window.mean, drop_threshold_mm=_drop_threshold(baseline),
             )))
-            if log is not None:
-                log.write(
-                    measurement, reject_reason=reason, corrected=corrected,
-                    ca_mean=ca_window.mean, sym_mean=sym_window.mean,
-                    ca_standard_error=ca_window.standard_error,
-                    posture="" if verdict is None else verdict.posture.value,
-                    shoulder_height_mm=measurement.shoulder_height_mm,
-                    shoulder_drop_mm=drop, shoulder_drop_mean_mm=drop_window.mean,
-                )
-            snapshots.maybe_save(
-                0 if log is None else log.frames_written,
-                time.perf_counter() - started_at, frames[0], match.left,
-                corrected[0], None if verdict is None else verdict.posture.value,
+            _write_frame_row(
+                log, snapshots, measurement, match, frames, reason=reason,
+                corrected=corrected, ca_window=ca_window, sym_window=sym_window,
+                drop=drop, drop_mean=drop_window.mean, verdict=verdict,
+                elapsed_s=time.perf_counter() - started_at,
             )
     except KeyboardInterrupt:
         pass
@@ -379,6 +368,29 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
         session=session, ca_window=ca_window, sym_window=sym_window,
         rejected=rejected, frames=frames_seen, transitions=transitions,
         camera_lost=lost, log_path=None if log is None else log.path,
+    )
+
+
+def _write_frame_row(log, snapshots, measurement, match, frames, *,
+                     reason, corrected, ca_window, sym_window,
+                     drop, drop_mean, verdict, elapsed_s) -> None:
+    """把這一幀寫進 CSV，時間到了順便存一張畫面。
+
+    錄製與 monitor 兩個迴圈共用。先前各寫一份，於是每加一個 CSV 欄位就要記得
+    改兩個地方，而漏掉的那一邊只會安靜地少一欄。
+    """
+    posture = "" if verdict is None else verdict.posture.value
+    if log is not None:
+        log.write(
+            measurement, reject_reason=reason, corrected=corrected,
+            ca_mean=ca_window.mean, sym_mean=sym_window.mean,
+            ca_standard_error=ca_window.standard_error, posture=posture,
+            shoulder_height_mm=measurement.shoulder_height_mm,
+            shoulder_drop_mm=drop, shoulder_drop_mean_mm=drop_mean,
+        )
+    snapshots.maybe_save(
+        0 if log is None else log.frames_written, elapsed_s,
+        frames[0], match.left, corrected[0], posture,
     )
 
 
@@ -446,7 +458,7 @@ def _run_monitor(args) -> None:
 
     log, run = None, 0
     started_at = time.perf_counter()
-    read_failures = 0
+    retry = CameraRetry(args.camera)
     frames_seen = 0
     rejected = 0
     try:
@@ -455,15 +467,12 @@ def _run_monitor(args) -> None:
             frames_seen += 1
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
-                read_failures = 0
+                retry.ok()
             except RuntimeError as exc:
-                if isinstance(exc, CameraReadError):
-                    read_failures += 1
-                    lost = camera_lost(args.camera, read_failures)
-                    if lost is not None:
-                        _tell(lost)
-                        break
-                    time.sleep(READ_RETRY_PAUSE_S)
+                lost = retry.failed(exc)
+                if lost is not None:
+                    _tell(lost)
+                    break
                 rejected += 1
                 _tell(display.show(None))
                 _print_line(f"{exc}（已略過 {rejected} 幀）")
@@ -494,27 +503,17 @@ def _run_monitor(args) -> None:
                 skip_reason=result.reason, rejected=rejected,
                 frames_seen=frames_seen, baseline=state.baseline,
                 mode=result.mode.value, phase_remaining_s=result.phase_remaining_s,
-                keys=("c 重新歸零", "q 離開"),
+                keys=(("c 重新歸零", "c zero"), ("q 離開", "q quit")),
             )))
             _pump_keys(display, state)
 
-            if log is not None:
-                log.write(
-                    measurement, reject_reason=result.reason,
-                    corrected=result.corrected,
-                    ca_mean=state.ca_window.mean, sym_mean=state.sym_window.mean,
-                    ca_standard_error=state.ca_window.standard_error,
-                    posture=("" if result.verdict is None
-                             else result.verdict.posture.value),
-                    shoulder_height_mm=measurement.shoulder_height_mm,
-                    shoulder_drop_mm=state.shoulder_drop(measurement),
-                    shoulder_drop_mean_mm=state.drop_window.mean,
-                )
-            snapshots.maybe_save(
-                0 if log is None else log.frames_written,
-                time.perf_counter() - started_at, frames[0], match.left,
-                result.corrected[0],
-                None if result.verdict is None else result.verdict.posture.value,
+            _write_frame_row(
+                log, snapshots, measurement, match, frames,
+                reason=result.reason, corrected=result.corrected,
+                ca_window=state.ca_window, sym_window=state.sym_window,
+                drop=state.shoulder_drop(measurement),
+                drop_mean=state.drop_window.mean, verdict=result.verdict,
+                elapsed_s=time.perf_counter() - started_at,
             )
     except KeyboardInterrupt:
         pass
@@ -686,21 +685,17 @@ def _collect_baseline(
     display.begin()
     start = time.perf_counter()
     saved_a_rejected_frame = False
-    read_failures = 0
+    retry = CameraRetry(args.camera)
     while (elapsed := time.perf_counter() - start) < seconds:
         try:
             measurement, match, frames = _measure_once(engine, calib, cap, args)
-            read_failures = 0
+            retry.ok()
         except RuntimeError as exc:
-            if isinstance(exc, CameraReadError):
-                read_failures += 1
-                lost = camera_lost(args.camera, read_failures)
-                if lost is not None:
-                    print()
-                    raise SystemExit(lost)
-                # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
-                # 用滿剩下的取樣時間空轉。
-                time.sleep(READ_RETRY_PAUSE_S)
+            lost = retry.failed(exc)
+            if lost is not None:
+                # 取基準沒有「已經收到的資料」可以保，中斷比留下半份基準好。
+                print()
+                raise SystemExit(lost)
             _tell(display.show(None))
             _print_line(str(exc))
             continue

@@ -223,10 +223,23 @@ def test_the_panel_is_ascii_only_in_the_fallback():
     """沒有字型時整個面板靠英文。中文會被 Hershey 畫成一排問號。"""
     v = view(state=Posture.OVER, turned_deg=25.0,
              skip_reason="right_shoulder 的垂直視差 43.3px，左右配對錯了",
-             keys=("c 重新歸零", "q 離開"), theta_ca_mean_deg=19.6,
+             keys=(("c 重新歸零", "c zero"), ("q 離開", "q quit")),
+             theta_ca_mean_deg=19.6,
              theta_ca_error_deg=0.8, distance_mm=662.0, rejected=12,
              remaining_s=45.0)
     for text in _ascii_texts(v):
+        assert text.isascii(), text
+
+
+@pytest.mark.parametrize("keys", [
+    (("q 離開", "q quit"),),
+    (("任意鍵關閉", "press any key"),),
+    (("c 重新歸零", "c zero"), ("q 離開", "q quit")),
+])
+def test_every_key_hint_the_cli_passes_has_an_ascii_form(keys):
+    """先前只存中文、畫英文時從第一個字猜，於是 once 的「任意鍵關閉」在退回
+    模式下整段變成問號。這裡列的是 posture.py 真正傳進來的那幾組。"""
+    for text in _ascii_texts(view(keys=keys)):
         assert text.isascii(), text
 
 
