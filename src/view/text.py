@@ -161,7 +161,7 @@ class TextPainter:
         """一段字畫出來有多寬，用來排版。"""
         if not self.cjk:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
-            # 下一段字蓋住，而那正是最不能看不清楚的一段。
+            # 下一段字蓋住，而狀態詞就在最前面。
             (w, _), _ = cv2.getTextSize(ascii_text, cv2.FONT_HERSHEY_SIMPLEX,
                                         size / 22.0, 2)
             return int(w)

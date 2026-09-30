@@ -233,8 +233,8 @@ def _prepare(args):
     """載入標定、開相機、暖機。回傳 (calib, engine, cap)。
 
     `study` 只做一次，之後每一段都重用。零間隔就是靠這一點：先前每跑一次
-    `live` 都要重載模型，那段時間就是基準與量測之間的空檔，而那個空檔
-    正是 2026-09-29 量到 63% 誤報率的原因。
+    `live` 都要重載模型，那段時間就是基準與量測之間的空檔，而 2026-09-29
+    量到的 63% 誤報率就是從那裡來的。
     """
     calib = StereoCalibrationResult.load(args.calibration)
     engine = _build_engine(args)
@@ -437,10 +437,9 @@ def _run_live(args) -> None:
 def _run_monitor(args) -> None:
     """一個視窗跑到底：按 c 當場歸零、按 q 離開。
 
-    前作就是這樣用的，而它省掉的那一步正好是本專案最貴的一個教訓：先跑
-    `baseline` 再跑 `live` 的話，中間要重新載入模型，受試者就會站起來活動，
-    而 2026-09-29 的 63% 誤報率正是從那個空檔來的。在同一個視窗裡按 c，
-    基準與量測之間不可能有間隔。
+    前作就是這樣用的。它順帶解決了一件本專案吃過大虧的事：在同一個視窗裡
+    按 c，基準與量測之間不可能有間隔（原因見 `_prepare`）。`study` 用固定
+    流程達成同一件事，這裡用互動達成。
     """
     calib, engine, cap = _prepare(args)
     display = _open_display(args)
@@ -573,7 +572,7 @@ def _rotate_monitor_log(args, baseline, log, run: int):
 
 
 def _save_monitor_baseline(args, baseline) -> None:
-    """當場取的基準也要落地，否則示範完就沒了。"""
+    """當場取的基準也要寫到磁碟，否則示範完就沒了。"""
     if baseline is None:
         return
     stamp = baseline.captured_at.replace(":", "").replace("-", "")
@@ -678,8 +677,8 @@ def _collect_baseline(
 ) -> tuple[PostureBaseline, list[str]]:
     """請受試者保持不動，取這段時間的平均當作他的零點。
 
-    相機與模型由呼叫端準備好。`study` 靠這一點讓取基準與量測之間沒有模型
-    重載的空檔，而那個空檔正是 63% 誤報率的來源。
+    相機與模型由呼叫端準備好。`study` 與 `monitor` 靠這一點讓取基準與量測
+    之間沒有模型重載的空檔（原因見 `_prepare`）。
     """
     collector = BaselineCollector()
     display.begin()

@@ -47,6 +47,8 @@ STATE_WORDS = {
     Posture.UNKNOWN: ("未知", "UNKNOWN"),
 }
 
+# 面板寫的是白話，文件與報告寫的是 θ_CA、θ_sym、肩部垂直位移。刻意不一致：
+# 站在旁邊看畫面的人不必先知道 θ_CA 是什麼，而報告要的是可以對照文獻的名稱。
 PANEL_HEIGHT = 118
 STATE_SIZE = 34
 TEXT_SIZE = 20
@@ -173,11 +175,11 @@ def panel_rows(view) -> list[list[tuple]]:
 
     first: list[tuple] = [
         (word_zh, word_en, STATE_COLOURS[view.state], STATE_SIZE, True),
-        (f"頸部 {ca[0]}", f"Neck {ca[1]}", DIM, TEXT_SIZE, False),
+        (f"頭前傾 {ca[0]}", f"Head {ca[1]}", DIM, TEXT_SIZE, False),
     ]
     if view.theta_ca_error_deg is not None:
         first.append((f"± {ca_err[0]}°", f"+-{ca_err[1]}d", DIM, TEXT_SIZE, False))
-    first.append((f"肩線 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False))
+    first.append((f"肩膀高低 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False))
 
     distance = _fmt(view.distance_mm, 0, "mm")
     second: list[tuple] = [(f"距離 {distance[0]}", f"Dist {distance[1]}", DIM, TEXT_SIZE, False)]
@@ -198,7 +200,7 @@ def panel_rows(view) -> list[list[tuple]]:
         over_drop = (view.drop_threshold_mm is not None
                      and view.drop_mm > view.drop_threshold_mm)
         second.append((
-            f"肩高 -{max(0.0, view.drop_mm):.0f}mm",
+            f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
             f"Drop {max(0.0, view.drop_mm):.0f}mm",
             MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop,
         ))
