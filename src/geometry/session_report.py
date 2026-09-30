@@ -132,13 +132,34 @@ def _azimuth(summary: SessionSummary) -> list[str]:
             + cell(f"{b.shoulder_rejected}", 15)
             + shared
         )
+    dropped = summary.frames - sum(b.frames for b in bins)
+    if dropped:
+        # 量不到方位角的幀不在任何一箱裡，而那些幀往好幾種原因偏：雙肩沒有
+        # 同時偵測到就算不出方位角，而那也正是最容易被略過的情況。不講的話
+        # 表上的略過率會比整段低得莫名其妙。
+        lines.append("")
+        lines.append(f"  另有 {dropped} 幀量不到方位角（雙肩沒有同時偵測到），"
+                     f"不在上表任何一箱裡。整段的略過率是 "
+                     f"{summary.rejection_rate * 100:.0f}%，"
+                     f"與上表的數字對不上就是因為這些幀。")
+
     worst = max(bins, key=lambda b: b.rejection_rate)
     best = min(bins, key=lambda b: b.rejection_rate)
-    if worst.rejection_rate > 2 * max(best.rejection_rate, 0.02):
-        lines.append("")
+    if worst.rejection_rate <= 2 * max(best.rejection_rate, 0.02):
+        return lines
+
+    times = worst.rejection_rate / max(best.rejection_rate, 0.01)
+    lines.append("")
+    if worst.low > best.low:
+        # 方位角愈大愈糟，這才是遮擋的樣子。
         lines.append(f"  {worst.low:.0f}° 以上的略過率是 {best.low:.0f}° 那一段的 "
-                     f"{worst.rejection_rate / max(best.rejection_rate, 0.01):.0f} 倍，"
-                     f"遠側肩膀開始被擋住。這就是方位角的實際上限")
+                     f"{times:.0f} 倍，遠側肩膀開始被擋住。這是方位角上限的證據")
+    else:
+        # 方位角愈小反而愈糟，那就不是遮擋。先前這裡不分方向，一律寫成
+        # 「遠側肩膀開始被擋住」，於是在這種資料上講出與數字相反的結論。
+        lines.append(f"  略過最多的是 {worst.low:.0f}~{worst.high:.0f}° 這一箱"
+                     f"（{best.low:.0f}° 那一段的 {times:.0f} 倍），而它不是"
+                     f"方位角最大的一箱。遮擋解釋不了這個順序，要往別的原因查")
     return lines
 
 

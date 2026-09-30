@@ -286,7 +286,7 @@ def test_rejection_rate_is_broken_down_by_azimuth(tmp_path):
     assert bins[20].rejection_rate == 0.0
     assert bins[50].rejection_rate == pytest.approx(0.8)
     assert bins[50].shoulder_rejected == 16
-    assert "這就是方位角的實際上限" in format_session(summary)
+    assert "方位角上限的證據" in format_session(summary)
 
 
 def test_a_fixed_azimuth_produces_no_breakdown(tmp_path):
@@ -319,3 +319,54 @@ def test_only_shoulder_failures_count_towards_occlusion(tmp_path):
     low = next(b for b in summary.azimuth_bins if b.low == 20.0)
     assert low.rejected == 10
     assert low.shoulder_rejected == 0
+
+
+def test_the_azimuth_story_is_not_told_backwards(tmp_path):
+    """略過最多的那一箱不是方位角最大的時候，遮擋就解釋不了。
+
+    2026-09-30 實機：10~20° 略過 7%，20~30° 略過 3%，也就是角度愈大愈乾淨。
+    先前這段敘述不分方向，一律寫「遠側肩膀開始被擋住。這是方位角上限」，
+    於是講出與數字相反的結論。
+    """
+    rows = []
+    frame = 0
+    for azimuth, bad in ((15.0, 14), (35.0, 1)):
+        for i in range(40):
+            frame += 1
+            rows.append(_azimuth_row(
+                frame, azimuth, usable=i >= bad,
+                reason="right_shoulder 的垂直視差 43.3px，左右配對錯了" if i < bad else "",
+            ))
+    text = format_session(analyse_session(_write(tmp_path, rows)))
+    assert "遮擋解釋不了這個順序" in text
+    assert "方位角上限的證據" not in text
+
+
+def test_the_azimuth_story_still_names_occlusion_when_it_fits(tmp_path):
+    rows = []
+    frame = 0
+    for azimuth, bad in ((15.0, 1), (35.0, 14)):
+        for i in range(40):
+            frame += 1
+            rows.append(_azimuth_row(
+                frame, azimuth, usable=i >= bad,
+                reason="right_shoulder 的垂直視差 43.3px，左右配對錯了" if i < bad else "",
+            ))
+    text = format_session(analyse_session(_write(tmp_path, rows)))
+    assert "方位角上限的證據" in text
+
+
+def test_frames_with_no_azimuth_are_accounted_for(tmp_path):
+    """量不到方位角的幀不在任何一箱裡，而它們正是最容易被略過的那些。
+
+    2026-09-30 實機：153 幀裡有 25 幀不在表上，於是表上寫 7% 與 3%，
+    而整段是 20.9%，兩者差得莫名其妙。
+    """
+    rows = [_azimuth_row(i + 1, 15.0) for i in range(40)]
+    rows += [_azimuth_row(100 + i, 35.0) for i in range(40)]
+    # 雙肩沒同時偵測到，方位角欄位是空的
+    rows += [f"{200 + i},0.5,0,左右只有 3 個共同關鍵點,,,,,,,,660.0,,7.7,3,20.0"
+             for i in range(25)]
+    text = format_session(analyse_session(_write(tmp_path, rows)))
+    assert "另有 25 幀量不到方位角" in text
+    assert "整段的略過率是 24%" in text
