@@ -43,6 +43,7 @@ def _args(tmp_path, **overrides):
         vertical_split=False, swap_lr=False, precision="fp32", device="cpu",
         checkpoint=Path("c"), engine_cache=Path("e"), repo_dir=Path("r"),
         min_confidence=0.0, input_height=256, no_subpixel=False, mode="study",
+        display=False, display_width=1280, display_eyes="both", font=None,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -117,7 +118,8 @@ class _Recorder:
         self.calls = []
         self._rate = rejection_rate
 
-    def __call__(self, engine, calib, cap, args, baseline, log, snapshots, seconds):
+    def __call__(self, engine, calib, cap, args, baseline, log, snapshots,
+                 seconds, display=None):
         self.calls.append(seconds)
         session = Session()
         for _ in range(100):
@@ -135,7 +137,8 @@ def _patch(monkeypatch, recorder, baseline=None):
     monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
     monkeypatch.setattr(
         posture, "_collect_baseline",
-        lambda engine, calib, cap, args, seconds: (baseline or _baseline(), []),
+        lambda engine, calib, cap, args, seconds, display=None: (
+            baseline or _baseline(), []),
     )
     monkeypatch.setattr(posture, "_record", recorder)
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
@@ -228,7 +231,7 @@ def test_a_bad_baseline_stops_and_asks_rather_than_carrying_on(tmp_path, monkeyp
     asked = []
     attempts = []
 
-    def collect(engine, calib, cap, args, seconds):
+    def collect(engine, calib, cap, args, seconds, display=None):
         attempts.append(1)
         # 第一次有警告，第二次乾淨
         return _baseline(), ["略過 41/150 幀（27%）"] if len(attempts) == 1 else []
@@ -249,7 +252,7 @@ def test_no_prompt_never_blocks_on_a_bad_baseline(tmp_path, monkeypatch):
     """沒有人在旁邊的時候不能停在 input() 上等一個永遠不會來的按鍵。"""
     attempts = []
 
-    def collect(engine, calib, cap, args, seconds):
+    def collect(engine, calib, cap, args, seconds, display=None):
         attempts.append(1)
         return _baseline(), ["略過 41/150 幀（27%）"]
 

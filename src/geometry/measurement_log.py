@@ -57,6 +57,7 @@ def metadata_lines(
     trial: int | None = None,
     baseline_file=None,
     baseline=None,
+    display: bool = False,
 ) -> list[str]:
     """標頭的 `# key=value` 區塊。
 
@@ -82,6 +83,10 @@ def metadata_lines(
             f"# baseline_captured_at={baseline.captured_at}",
             f"# baseline_frames={baseline.frames}",
         ])
+    if display:
+        # 開視窗會拉低每秒幀數，而視窗長度、遲滯寬度與標準誤差都是按幀數算的。
+        # 事後要查得到哪幾段是開著視窗量的。
+        lines.append("# display=on")
     return lines
 
 
@@ -101,6 +106,7 @@ class MeasurementLog:
         trial: int | None = None,
         baseline_file: Path | str | None = None,
         baseline=None,
+        display: bool = False,
     ):
         self._path = Path(path)
         if self._path.exists() and not overwrite:
@@ -111,7 +117,8 @@ class MeasurementLog:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
-        for line in metadata_lines(subject, condition, trial, baseline_file, baseline):
+        for line in metadata_lines(subject, condition, trial, baseline_file,
+                                   baseline, display):
             self._file.write(line + "\n")
         self._writer.writerow(_COLUMNS)
         self._start = time.perf_counter()

@@ -1,3 +1,7 @@
 opencv-python>=4.8
 numpy>=1.24
 pytest>=7.4
+
+# 選用。--display 的視窗要靠它畫中文：cv2.putText 的 Hershey 字型只有 ASCII。
+# 沒裝的話畫面上的文字改用英文，量測本身不受影響。
+Pillow>=10.0

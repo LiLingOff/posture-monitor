@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 
 from calibration.capture import describe_camera_loss
-from pose.topology import COCO18_KEYPOINT_NAMES
 
 from .baseline import group_rejection_reason
 from .judgement import windows_are_stale
@@ -181,22 +180,24 @@ class Snapshots:
 
 
 def write_frame(frame, path: Path, keypoints=None) -> None:
-    """把一張畫面寫成 png，偵測到的關鍵點疊上去。
+    """把一張畫面寫成 png，骨架與關鍵點疊上去。
 
-    cv2 延遲匯入。`analyse` 與 `cohort` 不碰畫面，不該為了它們付 OpenCV 的
-    載入時間。
+    繪製與即時視窗共用 `view.overlay`，所以事後翻出來的快照與當場看到的畫面
+    長得一樣。快照存在的理由就是當作獨立的記錄，兩邊畫得不一樣的話對不起來。
+    存檔的版本多標名字，因為它是拿來查「哪一點跑掉」的。
+
+    cv2 與 view 都延遲匯入。`analyse` 與 `cohort` 不碰畫面，不該為了它們付
+    OpenCV 的載入時間。
     """
     import cv2
 
+    from view import overlay
+
     path.parent.mkdir(parents=True, exist_ok=True)
     canvas = frame.copy()
-    if keypoints is not None:
-        for i, (x, y) in enumerate(keypoints.points):
-            if not (np.isfinite(x) and np.isfinite(y)):
-                continue
-            cv2.circle(canvas, (int(x), int(y)), 4, (0, 255, 0), -1)
-            cv2.putText(canvas, COCO18_KEYPOINT_NAMES[i], (int(x) + 6, int(y) - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
+    overlay.draw_bones(canvas, keypoints, 1.0)
+    overlay.draw_keypoints(canvas, keypoints, 1.0)
+    overlay.label_keypoints(canvas, keypoints, 1.0)
     cv2.imwrite(str(path), canvas)
 
 

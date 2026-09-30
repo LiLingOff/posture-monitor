@@ -501,6 +501,21 @@ def unusable_reason(measurement: PostureMeasurement) -> str | None:
     return None
 
 
+def mispaired_keypoints(measurement: PostureMeasurement) -> list[str]:
+    """垂直視差大到只能是左右配錯的那些關鍵點。
+
+    疊圖要標出來，所以門檻得有人讀得到。匯出結果而不是匯出
+    `_MISPAIRED_DISPARITY_PX`：那個值的註解寫明資料變多要回頭校準，
+    複製一份到畫面那邊之後兩邊會各自漂走，於是標紅的點與被略過的幀對不起來。
+    """
+    found: list[str] = []
+    for i, name in enumerate(COCO18_KEYPOINT_NAMES):
+        d = measurement.vertical_disparity_px[i]
+        if np.isfinite(d) and abs(d) > _MISPAIRED_DISPARITY_PX:
+            found.append(name)
+    return found
+
+
 def _worst_disparity(
     measurement: PostureMeasurement, names: tuple[str, ...] | None = None
 ) -> tuple[str, float] | None:

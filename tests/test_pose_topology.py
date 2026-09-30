@@ -60,3 +60,38 @@ def test_keypoint_names_unique_and_complete():
 def test_keypoint_index_roundtrip():
     for i, name in enumerate(COCO18_KEYPOINT_NAMES):
         assert keypoint_index(name) == i
+
+
+# ---- 畫骨架用的連線表 --------------------------------------------------
+
+def test_the_limb_table_is_written_with_names_not_numbers():
+    """索引寫死的話，上面那份名稱清單改順序時連線會默默接到別的地方。"""
+    from pose.topology import COCO18_LIMBS, _LIMB_NAMES, keypoint_index
+
+    for a, b in _LIMB_NAMES:
+        assert a in COCO18_KEYPOINT_NAMES and b in COCO18_KEYPOINT_NAMES
+    assert COCO18_LIMBS == tuple(
+        (keypoint_index(a), keypoint_index(b)) for a, b in _LIMB_NAMES
+    )
+
+
+def test_the_limb_table_is_a_skeleton_that_reaches_every_keypoint():
+    """漏掉或打錯一條會變成一個連不到的點，數一數就抓得到。"""
+    from pose.topology import COCO18_LIMBS
+
+    edges = {frozenset(e) for e in COCO18_LIMBS}
+    assert len(edges) == len(COCO18_LIMBS), "有重複的連線"
+    assert all(len(e) == 2 for e in edges), "有連到自己的線"
+    assert len(COCO18_LIMBS) == len(COCO18_KEYPOINT_NAMES) - 1
+    assert {i for e in COCO18_LIMBS for i in e} == set(range(len(COCO18_KEYPOINT_NAMES)))
+
+
+def test_the_segments_the_angles_use_are_not_in_the_limb_table():
+    """耳到肩與雙肩之間是判定的依據，不是肢體。混進灰色骨架就看不出來
+    哪一段才是現在在判的東西，所以疊圖時單獨用判定顏色畫。"""
+    from pose.topology import COCO18_LIMBS, keypoint_index
+
+    edges = {frozenset(e) for e in COCO18_LIMBS}
+    for a, b in (("right_ear", "right_shoulder"), ("left_ear", "left_shoulder"),
+                 ("left_shoulder", "right_shoulder")):
+        assert frozenset((keypoint_index(a), keypoint_index(b))) not in edges

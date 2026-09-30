@@ -37,7 +37,7 @@ from geometry.baseline import (REJECTION_LIMIT,  # noqa: E402
 from geometry.cohort import Separation, collect  # noqa: E402
 from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
                                     to_text)
-from geometry.judgement import PostureJudge  # noqa: E402
+from geometry.judgement import Posture, PostureJudge  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
@@ -55,6 +55,8 @@ from geometry.terminal import cell, truncate  # noqa: E402
 from geometry.uncertainty import standard_error  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
+from view.live_view import LiveView  # noqa: E402
+from view.window import NO_DISPLAY, open_display  # noqa: E402
 
 
 def _build_engine(args) -> LightweightOpenPoseEngine:
@@ -205,6 +207,20 @@ def _run_once(args) -> None:
     finally:
         cap.release()
 
+    display = _open_display(args)
+    try:
+        # once 量一幀就結束，畫面是靜止的，所以停著等按鍵而不是重畫。
+        # 這是架設相機時最有用的一種：看得出鏡頭到底對到什麼。
+        _tell(display.hold(LiveView.build(
+            frames=(left_frame, right_frame), match=match, measurement=measurement,
+            corrected=(measurement.theta_ca_deg, measurement.theta_sym_deg),
+            ca_window=RollingAngle(1), sym_window=RollingAngle(1),
+            state=Posture.UNKNOWN, skip_reason=unusable_reason(measurement),
+            rejected=0, frames_seen=1, keys=("任意鍵關閉",),
+        )))
+    finally:
+        display.close()
+
     print()
     print(_describe_match(match))
     print(format_measurement(
@@ -235,13 +251,14 @@ def _prepare(args):
 
 
 def _record(engine, calib, cap, args, baseline, log, snapshots,
-            seconds: float | None = None) -> Recording:
+            seconds: float | None = None, display=NO_DISPLAY) -> Recording:
     """錄製一段。seconds 是 None 就跑到 Ctrl-C 為止。
 
     固定秒數是實測逼出來的：2026-09-29 有一次量測跑到受試者忘記維持姿勢，
     整段資料作廢。段落短就不會忘。
     """
     judge = _make_judge(args, baseline)
+    display.begin()
     started_at = time.perf_counter()
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
@@ -256,7 +273,11 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     stuck = StuckWatcher()
 
     try:
-        while seconds is None or (time.perf_counter() - started_at) < seconds:
+        # 結束旗標放在條件裡而不是迴圈裡 break：它同時涵蓋正常路徑與下面那個
+        # continue，而且在 frames_seen += 1 之前，按鍵結束不會灌水到略過率的分母。
+        while not display.stopped and (
+            seconds is None or (time.perf_counter() - started_at) < seconds
+        ):
             frames_seen += 1
             try:
                 measurement, match, frames = _measure_once(engine, calib, cap, args)
@@ -274,6 +295,9 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 consecutive_misses += 1
                 forget_if_stale(ca_window, sym_window, consecutive_misses)
                 _tell(stuck.saw(str(exc)))
+                # waitKey 是視窗處理事件與重繪的地方。相機掉線時這條路要走
+                # 兩秒半，不打點的話畫面會凍住而且按鍵沒反應。
+                _tell(display.show(None))
                 _print_line(f"{exc}（已略過 {rejected} 幀）")
                 if log is not None:
                     log.write(None, reject_reason=str(exc))
@@ -309,10 +333,19 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                     _print_line("")
                     print("\r" + line, flush=True)
 
+            remaining = (None if seconds is None
+                         else seconds - (time.perf_counter() - started_at))
             _print_line(_live_line(
                 ca_window, sym_window, measurement, corrected, rejected, reason,
-                verdict, None if seconds is None else seconds - (time.perf_counter() - started_at)
+                verdict, remaining
             ))
+            _tell(display.show(LiveView.build(
+                frames=frames, match=match, measurement=measurement,
+                corrected=corrected, ca_window=ca_window, sym_window=sym_window,
+                state=Posture.UNKNOWN if verdict is None else verdict.posture,
+                skip_reason=reason, rejected=rejected, frames_seen=frames_seen,
+                remaining_s=remaining, baseline=baseline, keys=("q 離開",),
+            )))
             if log is not None:
                 log.write(
                     measurement, reject_reason=reason, corrected=corrected,
@@ -327,6 +360,10 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
             )
     except KeyboardInterrupt:
         pass
+
+    if display.stopped:
+        # 不記的話，總結只會看到一段莫名其妙的短記錄。
+        transitions.append(f"{_elapsed(started_at)}  按鍵結束這一段")
 
     return Recording(
         session=session, ca_window=ca_window, sym_window=sym_window,
@@ -352,6 +389,7 @@ def _report(recording: Recording, baseline, log) -> None:
 
 def _run_live(args) -> None:
     calib, engine, cap = _prepare(args)
+    display = _open_display(args)
     baseline = _load_baseline(args, calib)
     log = _open_log(args, baseline, args.log, args.condition, args.trial,
                     args.baseline)
@@ -363,11 +401,12 @@ def _run_live(args) -> None:
 
     try:
         recording = _record(engine, calib, cap, args, baseline, log, snapshots,
-                            args.seconds)
+                            args.seconds, display)
         _report(recording, baseline, log)
     finally:
         if log is not None:
             log.close()
+        display.close()
         cap.release()
     if recording.camera_lost is not None:
         raise SystemExit(1)
@@ -387,10 +426,25 @@ def _open_log(args, baseline, path, condition: str, trial: int | None,
     log = MeasurementLog(
         path, subject=args.subject, overwrite=args.overwrite,
         condition=condition, trial=trial,
-        baseline_file=baseline_file, baseline=baseline,
+        baseline_file=baseline_file, baseline=baseline, display=args.display,
     )
     print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     return log
+
+
+def _open_display(args):
+    """要視窗就開一個，並且說清楚它該擺在哪。
+
+    視窗是給操作者看的。受試者盯著螢幕會轉頭，而解剖平面是由雙肩連線定義的，
+    轉頭會把上半身一起帶過去：2026-09-29 誤報率 17% 那次就是這樣來的，而且
+    當場沒有人發現，是事後從資料反推出來的。
+    """
+    display = open_display(args.display, args.display_width,
+                           args.display_eyes, args.font)
+    if args.display:
+        print("視窗已開。螢幕要放在受試者看不到的地方；"
+              "視窗有焦點時按 q 結束這一段，終端機的 Ctrl-C 照常", flush=True)
+    return display
 
 
 def _open_snapshots(args, out_dir):
@@ -439,7 +493,7 @@ def _countdown(seconds: int, message: str = "秒後開始…") -> None:
 
 
 def _collect_baseline(
-    engine, calib, cap, args, seconds: float
+    engine, calib, cap, args, seconds: float, display=NO_DISPLAY
 ) -> tuple[PostureBaseline, list[str]]:
     """請受試者保持不動，取這段時間的平均當作他的零點。
 
@@ -447,6 +501,7 @@ def _collect_baseline(
     重載的空檔，而那個空檔正是 63% 誤報率的來源。
     """
     collector = BaselineCollector()
+    display.begin()
     start = time.perf_counter()
     saved_a_rejected_frame = False
     read_failures = 0
@@ -464,6 +519,7 @@ def _collect_baseline(
                 # 相機掉線時每次讀取都立刻失敗，不停一下的話這個迴圈會
                 # 用滿剩下的取樣時間空轉。
                 time.sleep(READ_RETRY_PAUSE_S)
+            _tell(display.show(None))
             _print_line(str(exc))
             continue
         reason = collector.add(measurement)
@@ -476,6 +532,14 @@ def _collect_baseline(
             + (f"   略過 {collector.rejected}" if collector.rejected else "")
             + (f"   （{reason}）" if reason else "")
         )
+        _tell(display.show(LiveView.build(
+            frames=frames, match=match, measurement=measurement,
+            corrected=(measurement.theta_ca_deg, measurement.theta_sym_deg),
+            ca_window=RollingAngle(1), sym_window=RollingAngle(1),
+            state=Posture.UNKNOWN, skip_reason=reason,
+            rejected=collector.rejected, frames_seen=collector.count,
+            remaining_s=seconds - elapsed, notice="取基準中，請保持不動",
+        )))
     print()
 
     baseline = collector.finish(args.subject, time.perf_counter() - start)
@@ -491,13 +555,16 @@ def _collect_baseline(
 
 def _run_baseline(args) -> None:
     calib, engine, cap = _prepare(args)
+    display = _open_display(args)
     try:
         print()
         print(f"請 {args.subject} 坐正、目視前方、雙肩放鬆，保持不動 {args.seconds:.0f} 秒。")
         _countdown(args.countdown)
         print("\r開始取樣，請保持不動        ", flush=True)
-        baseline, _ = _collect_baseline(engine, calib, cap, args, args.seconds)
+        baseline, _ = _collect_baseline(engine, calib, cap, args, args.seconds,
+                                        display)
     finally:
+        display.close()
         cap.release()
 
     baseline.save(args.out, overwrite=args.overwrite)
@@ -540,21 +607,24 @@ def _run_study(args) -> None:
         raise SystemExit(f"--conditions {exc}")
 
     calib, engine, cap = _prepare(args)
+    display = _open_display(args)
     root = args.out_dir
     recordings = []
     try:
-        baseline = _study_baseline(engine, calib, cap, args, root)
+        baseline = _study_baseline(engine, calib, cap, args, root, display)
         for condition in conditions:
             recordings.append(
-                _study_one(engine, calib, cap, args, baseline, condition, root)
+                _study_one(engine, calib, cap, args, baseline, condition, root,
+                           display)
             )
     finally:
+        display.close()
         cap.release()
 
     _study_summary(recordings, args)
 
 
-def _study_baseline(engine, calib, cap, args, root: Path):
+def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY):
     """取基準，品質不好就問要不要重取。
 
     取完就直接往下走是不行的。2026-09-29 有一份基準略過了 27% 的幀，當時
@@ -568,7 +638,8 @@ def _study_baseline(engine, calib, cap, args, root: Path):
                 not args.no_prompt)
         _countdown(args.countdown)
         print("\r開始取樣，請保持不動        ", flush=True)
-        baseline, warnings = _collect_baseline(engine, calib, cap, args, args.seconds)
+        baseline, warnings = _collect_baseline(engine, calib, cap, args,
+                                               args.seconds, display)
         if not warnings or args.no_prompt:
             break
         print()
@@ -593,7 +664,8 @@ def _ask_yes(question: str) -> bool:
     return answer in ("", "y", "yes")
 
 
-def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path):
+def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
+               display=NO_DISPLAY):
     """量一種姿勢。"""
     trial = next_trial(root, args.subject, condition)
     csv_path, shots_dir = session_paths(root, args.subject, condition, trial)
@@ -605,7 +677,7 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path):
     snapshots = _open_snapshots(args, shots_dir)
     try:
         recording = _record(engine, calib, cap, args, baseline, log, snapshots,
-                            args.seconds_each)
+                            args.seconds_each, display)
         _report(recording, baseline, log)
     finally:
         log.close()
@@ -928,6 +1000,17 @@ def main() -> None:
                        help="把左右兩眼的畫面存成 png，偵測到的關鍵點疊上去。"
                             "診斷訊息說不出相機到底看到什麼，這個看得出來。"
                             "baseline 與 live 存的是第一張被略過的畫面")
+        p.add_argument("--display", action="store_true",
+                       help="開一個視窗，畫面疊上骨架與狀態面板。給操作者架設"
+                            "與示範用，螢幕要放在受試者視野之外。視窗有焦點時"
+                            "按 q 結束這一段，終端機的 Ctrl-C 照常")
+        p.add_argument("--display-width", type=int, default=1280,
+                       help="視窗寬度。低於 640 會拉回 640，再小面板就看不清")
+        p.add_argument("--display-eyes", choices=["both", "left"], default="both",
+                       help="both 左右眼並排，左右配對錯了看得出來；left 只畫左眼")
+        p.add_argument("--font", type=Path, default=None,
+                       help="畫面文字用的中日韓字型。不給的話自動找，"
+                            "找不到就改用英文，量測照常")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
                             "平均N幀把偵測雜訊降到1/√N；30幀約5秒")

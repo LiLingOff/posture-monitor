@@ -64,3 +64,37 @@ NECK_INDEX = COCO18_KEYPOINT_NAMES.index("neck")
 
 def keypoint_index(name: str) -> int:
     return COCO18_KEYPOINT_NAMES.index(name)
+
+
+# 畫骨架用的連線。**只影響畫面**，與上面那兩份清單不同級：上面改順序會讓所有
+# 角度默默錯位，這張表畫錯只是線接錯地方，看一眼就發現。也不必與上游的 PAF
+# 配對表一致，那是組裝用的，這是給人看的。
+#
+# 只有名稱是字面值，索引在匯入時推導，所以 COCO18_KEYPOINT_NAMES 改順序時連線
+# 跟著走，名稱打錯會在匯入當下 ValueError，而不是畫出一條接錯的線。
+#
+# 耳朵到肩膀與左右肩之間**故意不在這裡**。那兩段是量角度用的線段，不是肢體，
+# 疊圖時單獨用判定顏色畫出來，混進灰色骨架反而看不出哪一段才是判定的依據。
+_LIMB_NAMES: tuple[tuple[str, str], ...] = (
+    ("neck", "nose"),
+    ("nose", "right_eye"),
+    ("right_eye", "right_ear"),
+    ("nose", "left_eye"),
+    ("left_eye", "left_ear"),
+    ("neck", "right_shoulder"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("neck", "left_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("neck", "right_hip"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+    ("neck", "left_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+)
+
+COCO18_LIMBS: tuple[tuple[int, int], ...] = tuple(
+    (keypoint_index(a), keypoint_index(b)) for a, b in _LIMB_NAMES
+)
