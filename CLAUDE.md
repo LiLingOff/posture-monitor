@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 目前 538 個
+python -m pytest -q          # 2026-10-01 是 538 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -49,4 +49,5 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 
 1. 姿勢清單還沒定，擋著 doc 10 的受試者指導語與整場實驗設計
 2. `--display`、`monitor`、肩部垂直位移都還沒在 Jetson 上跑過
-3. LED／蜂鳴器**刻意不做**，使用者說過那不是重點
+3. LED／蜂鳴器**先不做**（使用者說那不是重點）。技術上沒有障礙，是排序的
+   決定，不是永久排除。細節見 doc 09 第 8 項
