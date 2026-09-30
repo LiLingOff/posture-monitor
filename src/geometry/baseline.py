@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import MISSING, asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +66,9 @@ _ELEVATED_SPREAD_FACTOR = 1.3
 # 的話，報表可以標某一段乾淨而統計其實把它排除掉了，而圖例還寫著「這些不列入
 # 下面的統計」。文件（實驗操作流程）引用的也是這個數字。
 REJECTION_LIMIT = 0.15
+# 肩高門檻取幾倍的個人標準差，以及它的下限（毫米）。
+_SHOULDER_DROP_SIGMA = 2.0
+_MINIMUM_SHOULDER_DROP_MM = 10.0
 
 
 def group_rejection_reason(reason: str) -> str:
@@ -95,6 +98,37 @@ class PostureBaseline:
     theta_sym_standard_error_deg: float
     distance_mm: float
     azimuth_deg: float
+    # 肩高是後來加的。**一定要有預設值**：沒有的話 load() 的欄位檢查會讓
+    # 所有既有的基準檔全部讀不進來，而那些檔案沒有任何地方能補回這兩個值。
+    shoulder_height_mm: float | None = None
+    shoulder_height_std_mm: float | None = None
+
+    @property
+    def shoulder_drop_threshold_mm(self) -> float | None:
+        """肩膀掉多少才算駝背。從這個人自己的晃動量推，不寫死。
+
+        前作用 20px：他們量了 20 位受試者，坐姿的自然晃動約 ±15px，門檻取
+        1.33 倍。那個值綁在他們 60cm 的架設上，換算成毫米約 13mm。
+
+        我們有這個人自己的標準差，所以直接用它。取 2 倍是比前作保守一點，
+        因為駝背這一項本來就沒有 Hansraj 那種文獻依據，寧可漏報也不要誤報。
+        下限存在的理由與遲滯的下限一樣：受試者很穩的時候標準差會趨近 0，
+        門檻跟著趨近 0，真實的微幅移動就會一直觸發。
+        """
+        if self.shoulder_height_std_mm is None:
+            return None
+        return max(_MINIMUM_SHOULDER_DROP_MM,
+                   _SHOULDER_DROP_SIGMA * self.shoulder_height_std_mm)
+
+    def shoulder_drop_mm(self, height_mm: float | None) -> float | None:
+        """肩膀比端正坐姿低了多少。往下為正，所以門檻是單邊的。
+
+        回傳 None 代表這一項量不到：舊的基準檔沒有肩高，或這一幀雙肩沒有
+        同時偵測到。None 與 0 是兩回事，0 是「高度剛好一樣」。
+        """
+        if self.shoulder_height_mm is None or height_mm is None:
+            return None
+        return float(self.shoulder_height_mm - height_mm)
 
     def correct(self, theta_ca: float | None, theta_sym: float | None):
         """把原始角度換算成相對這個人端正坐姿的偏移量。"""
@@ -117,12 +151,16 @@ class PostureBaseline:
     @classmethod
     def load(cls, path: Path) -> PostureBaseline:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        missing = {f for f in cls.__dataclass_fields__} - set(data)
+        # 只有沒預設值的欄位才是必要的。後來加的欄位有預設值，舊檔案照樣讀
+        # 得進來，那一項就當成量不到而不是整份基準作廢。
+        required = {name for name, f in cls.__dataclass_fields__.items()
+                    if f.default is MISSING and f.default_factory is MISSING}
+        missing = required - set(data)
         if missing:
             raise ValueError(
                 f"{path} 缺少欄位 {sorted(missing)}，可能是舊版存的檔案。請重新取一次基準"
             )
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        return cls(**{k: data[k] for k in cls.__dataclass_fields__ if k in data})
 
     def describe(self) -> str:
         return (
@@ -133,6 +171,11 @@ class PostureBaseline:
             f"（單幀標準差 ±{self.theta_sym_std_deg:.1f}°）\n"
             f"  取樣 {self.frames} 幀 / {self.duration_s:.1f} 秒，略過 {self.rejected} 幀，"
             f"距離 {self.distance_mm:.0f} mm，方位角 {self.azimuth_deg:.0f}°"
+            + ("" if self.shoulder_height_mm is None else
+               f"\n  肩高  "
+               f"晃動 ±{self.shoulder_height_std_mm or 0:.0f} mm，"
+               f"駝背門檻 {self.shoulder_drop_threshold_mm:.0f} mm"
+               f"（絕對值是相機座標，只有相對變化有意義）")
         )
 
 
@@ -225,6 +268,7 @@ class BaselineCollector:
         self._sym: list[float] = []
         self._distance: list[float] = []
         self._azimuth: list[float] = []
+        self._height: list[float] = []
         self._precision: list[float] = []
         self._reasons: Counter[str] = Counter()
         self._reason_examples: dict[str, str] = {}
@@ -255,6 +299,10 @@ class BaselineCollector:
         self._sym.append(measurement.theta_sym_deg)
         self._distance.append(measurement.reference_depth_mm)
         self._azimuth.append(measurement.camera_azimuth_deg)
+        # 肩高要雙肩同時偵測到才算得出來，可能是 None。不收也不影響其他項，
+        # 只會讓這份基準的肩高欄位留白，之後駝背那一項就不判。
+        if measurement.shoulder_height_mm is not None:
+            self._height.append(measurement.shoulder_height_mm)
         if measurement.theta_ca_precision_deg is not None:
             self._precision.append(measurement.theta_ca_precision_deg)
         return None
@@ -292,6 +340,10 @@ class BaselineCollector:
             theta_sym_standard_error_deg=float(standard_error(sym)),
             distance_mm=float(np.mean(self._distance)),
             azimuth_deg=float(np.mean(self._azimuth)),
+            shoulder_height_mm=(float(np.mean(self._height))
+                                if self._height else None),
+            shoulder_height_std_mm=(float(np.std(self._height))
+                                    if len(self._height) > 1 else None),
         )
 
     def _diagnose(self) -> str:

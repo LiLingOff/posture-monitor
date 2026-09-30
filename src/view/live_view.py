@@ -46,6 +46,8 @@ class LiveView:
     window_size: int = 0
     distance_mm: float | None = None
     turned_deg: float | None = None
+    drop_mm: float | None = None
+    drop_threshold_mm: float | None = None
     rejected: int = 0
     frames: int = 0
     remaining_s: float | None = None
@@ -61,6 +63,7 @@ class LiveView:
         cls, *, frames, match, measurement, corrected, ca_window, sym_window,
         state: Posture, skip_reason: str | None, rejected: int, frames_seen: int,
         remaining_s: float | None = None, baseline=None,
+        drop_mm: float | None = None, drop_threshold_mm: float | None = None,
         mode: str | None = None, phase_remaining_s: float | None = None,
         notice: str | None = None,
         keys: tuple[str, ...] = (),
@@ -94,6 +97,8 @@ class LiveView:
             window_size=ca_window.window,
             distance_mm=measurement.reference_depth_mm,
             turned_deg=turned_deg(measurement, baseline),
+            drop_mm=drop_mm,
+            drop_threshold_mm=drop_threshold_mm,
             rejected=rejected,
             frames=frames_seen,
             remaining_s=remaining_s,

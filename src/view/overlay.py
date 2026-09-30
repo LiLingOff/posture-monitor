@@ -194,6 +194,14 @@ def panel_rows(view) -> list[list[tuple]]:
         STATE_SIZE if over_turned else TEXT_SIZE,
         over_turned,
     ))
+    if view.drop_mm is not None:
+        over_drop = (view.drop_threshold_mm is not None
+                     and view.drop_mm > view.drop_threshold_mm)
+        second.append((
+            f"肩高 -{max(0.0, view.drop_mm):.0f}mm",
+            f"Drop {max(0.0, view.drop_mm):.0f}mm",
+            MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop,
+        ))
     second.append((f"{view.window_count}/{view.window_size} 幀",
                    f"{view.window_count}/{view.window_size}", DIM, TEXT_SIZE, False))
     if view.rejected:

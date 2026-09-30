@@ -263,6 +263,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     started_at = time.perf_counter()
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
+    drop_window = RollingAngle(args.window)
     rejected = 0
     frames_seen = 0
     consecutive_misses = 0
@@ -294,7 +295,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 # 否則結束時印的數字會與實際寫下的筆數對不起來。
                 rejected += 1
                 consecutive_misses += 1
-                forget_if_stale(ca_window, sym_window, consecutive_misses)
+                forget_if_stale(ca_window, sym_window, consecutive_misses,
+                                drop_window)
                 _tell(stuck.saw(str(exc)))
                 # waitKey 是視窗處理事件與重繪的地方。相機掉線時這條路要走
                 # 兩秒半，不打點的話畫面會凍住而且按鍵沒反應。
@@ -306,6 +308,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
 
             reason = unusable_reason(measurement)
             corrected = _corrected(baseline, measurement)
+            drop = _shoulder_drop(baseline, measurement)
             if reason is None:
                 consecutive_misses = 0
                 session.add(corrected)
@@ -313,11 +316,14 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                     ca_window.add(corrected[0])
                 if corrected[1] is not None:
                     sym_window.add(corrected[1])
+                if drop is not None:
+                    drop_window.add(drop)
             else:
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
                 consecutive_misses += 1
-                forget_if_stale(ca_window, sym_window, consecutive_misses)
+                forget_if_stale(ca_window, sym_window, consecutive_misses,
+                                drop_window)
                 if args.save_frames and not saved_a_rejected_frame:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
@@ -326,7 +332,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
 
             verdict = None
             if judge is not None:
-                _, _, verdict = judge.update(ca_window, sym_window)
+                *_, verdict = judge.update(ca_window, sym_window, drop_window)
                 if verdict.changed:
                     line = f"{_elapsed(started_at)}  {verdict.posture.value}：{verdict.reason}"
                     transitions.append(line)
@@ -346,6 +352,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 state=Posture.UNKNOWN if verdict is None else verdict.posture,
                 skip_reason=reason, rejected=rejected, frames_seen=frames_seen,
                 remaining_s=remaining, baseline=baseline, keys=("q 離開",),
+                drop_mm=drop_window.mean, drop_threshold_mm=_drop_threshold(baseline),
             )))
             if log is not None:
                 log.write(
@@ -353,6 +360,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                     ca_mean=ca_window.mean, sym_mean=sym_window.mean,
                     ca_standard_error=ca_window.standard_error,
                     posture="" if verdict is None else verdict.posture.value,
+                    shoulder_height_mm=measurement.shoulder_height_mm,
+                    shoulder_drop_mm=drop, shoulder_drop_mean_mm=drop_window.mean,
                 )
             snapshots.maybe_save(
                 0 if log is None else log.frames_written,
@@ -478,6 +487,8 @@ def _run_monitor(args) -> None:
                 frames=frames, match=match, measurement=measurement,
                 corrected=result.corrected, ca_window=state.ca_window,
                 sym_window=state.sym_window,
+                drop_mm=state.drop_window.mean,
+                drop_threshold_mm=state.drop_threshold_mm,
                 state=(Posture.UNKNOWN if result.verdict is None
                        else result.verdict.posture),
                 skip_reason=result.reason, rejected=rejected,
@@ -495,6 +506,9 @@ def _run_monitor(args) -> None:
                     ca_standard_error=state.ca_window.standard_error,
                     posture=("" if result.verdict is None
                              else result.verdict.posture.value),
+                    shoulder_height_mm=measurement.shoulder_height_mm,
+                    shoulder_drop_mm=state.shoulder_drop(measurement),
+                    shoulder_drop_mean_mm=state.drop_window.mean,
                 )
             snapshots.maybe_save(
                 0 if log is None else log.frames_written,
@@ -628,6 +642,17 @@ def _load_baseline(args, calib) -> PostureBaseline | None:
         print(f"  需要注意：{warning}", flush=True)
     print("以下的角度都已扣除這個基準，也就是相對這個人端正坐姿的偏移量", flush=True)
     return baseline
+
+
+def _shoulder_drop(baseline: PostureBaseline | None, measurement) -> float | None:
+    """肩膀比端正坐姿低了多少。沒有基準、或基準沒記肩高，就不算。"""
+    if baseline is None:
+        return None
+    return baseline.shoulder_drop_mm(measurement.shoulder_height_mm)
+
+
+def _drop_threshold(baseline: PostureBaseline | None) -> float | None:
+    return None if baseline is None else baseline.shoulder_drop_threshold_mm
 
 
 def _corrected(baseline: PostureBaseline | None, measurement):
@@ -946,8 +971,11 @@ def _make_judge(args, baseline: PostureBaseline | None) -> PostureJudge | None:
         print("沒有個人基準，不做超標判定。門檻套在原始角度上會因人而異", flush=True)
         return None
     judge = PostureJudge(margin_factor=args.margin)
+    judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
+    extra = ("" if judge.shoulder_drop is None else
+             f"、肩高下沉 {judge.shoulder_drop.threshold_deg:.0f}mm")
     print(f"判定門檻 θ_CA {judge.theta_ca.threshold_deg:.0f}°（只看前傾）、"
-          f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算），"
+          f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算）{extra}，"
           f"遲滯寬度 {args.margin:.1f} 倍標準誤差", flush=True)
     return judge
 

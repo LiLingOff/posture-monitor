@@ -46,6 +46,9 @@ _MARGIN_FACTOR = 1.0
 # 遲滯寬度的下限。受試者很穩的時候標準誤差會趨近 0，寬度跟著趨近 0，
 # 那就退化成單一門檻，真實的微幅移動也會讓狀態翻來翻去。
 _MINIMUM_MARGIN_DEG = 1.0
+# 肩高那一項的遲滯下限，單位毫米。理由與上面一樣，只是換了單位：
+# 1mm 大約是這個距離下單幀定位誤差換算出來的量級。
+_MINIMUM_DROP_MARGIN_MM = 2.0
 
 
 def windows_are_stale(consecutive_misses: int, window: int) -> bool:
@@ -101,12 +104,15 @@ class AngleJudge:
         two_sided: bool = False,
         margin_factor: float = _MARGIN_FACTOR,
         minimum_margin_deg: float = _MINIMUM_MARGIN_DEG,
+        unit: str = "°",
     ):
         self._threshold = float(threshold_deg)
         self._name = name
         self._two_sided = two_sided
         self._factor = float(margin_factor)
         self._floor = float(minimum_margin_deg)
+        # 這個類別的數學與單位無關，只有印出來的字要對。肩高那一項用毫米。
+        self._unit = unit
         self._posture = Posture.UNKNOWN
         self._frames_in_state = 0
 
@@ -140,7 +146,8 @@ class AngleJudge:
         value = abs(mean_deg) if self._two_sided else mean_deg
         # 誤差算不出來（視窗裡只有一個值）時退回下限，不能當成零。
         margin = max(self._floor, self._factor * (standard_error_deg or 0.0))
-        shown = f"{value:+.1f}° ± {margin:.1f}°，門檻 {self._threshold:.0f}°"
+        shown = (f"{value:+.1f}{self._unit} ± {margin:.1f}{self._unit}，"
+                 f"門檻 {self._threshold:.0f}{self._unit}")
 
         if value - margin > self._threshold:
             return self._settle(Posture.OVER, f"{self._name} {shown}")
@@ -166,10 +173,14 @@ class PostureJudge:
         self.theta_ca = AngleJudge(
             theta_ca_threshold_deg, "θ_CA", two_sided=False, margin_factor=margin_factor
         )
+        self._factor = margin_factor
         # θ_sym 往左往右都算歪。
         self.theta_sym = AngleJudge(
             theta_sym_threshold_deg, "θ_sym", two_sided=True, margin_factor=margin_factor
         )
+        # 肩高是第三項，門檻由個人基準的晃動量決定，所以建構時還不知道。
+        # 沒給門檻就完全不參與判定，於是舊的基準檔與舊的 CSV 行為不變。
+        self._drop: AngleJudge | None = None
         self._posture = Posture.UNKNOWN
         self._frames_in_state = 0
 
@@ -177,28 +188,57 @@ class PostureJudge:
     def posture(self) -> Posture:
         return self._posture
 
-    def update(self, ca_window, sym_window) -> tuple[Judgement, Judgement, Judgement]:
-        """收下兩個 RollingAngle，回傳 (θ_CA 判定, θ_sym 判定, 合併判定)。"""
+    @property
+    def shoulder_drop(self) -> AngleJudge | None:
+        return self._drop
+
+    def watch_shoulder_drop(self, threshold_mm: float | None) -> None:
+        """把肩高這一項打開，門檻取自這個人自己的晃動量。
+
+        呼叫端只有拿得到基準的時候才會呼叫，所以「沒有基準」與「基準沒有
+        肩高」兩種情況都自動退化成不判這一項。
+        """
+        self._drop = None if threshold_mm is None else AngleJudge(
+            threshold_mm, "肩高", two_sided=False,
+            margin_factor=self._factor,
+            minimum_margin_deg=_MINIMUM_DROP_MARGIN_MM, unit="mm",
+        )
+
+    def update(self, ca_window, sym_window, drop_window=None):
+        """收下移動平均，回傳 (θ_CA, θ_sym, 肩高, 合併)。
+
+        肩高那一項在沒開或沒資料時是 None，而 None 不參與合併，所以既有的
+        記錄重播出來的結果與加這一項之前完全一樣。
+
+        回傳四個而不是三個，呼叫端一律寫 `*_, verdict =`：再加第四項判定
+        的時候就不必回頭改每一個呼叫點。
+        """
         ca = self.theta_ca.update(
             ca_window.mean, ca_window.standard_error, ca_window.is_full
         )
         sym = self.theta_sym.update(
             sym_window.mean, sym_window.standard_error, sym_window.is_full
         )
-
-        if ca.posture is Posture.OVER or sym.posture is Posture.OVER:
-            combined, reason = Posture.OVER, "、".join(
-                j.reason for j in (ca, sym) if j.posture is Posture.OVER
+        drop = None
+        if self._drop is not None and drop_window is not None:
+            drop = self._drop.update(
+                drop_window.mean, drop_window.standard_error, drop_window.is_full
             )
-        elif ca.posture is Posture.OK and sym.posture is Posture.OK:
-            combined, reason = Posture.OK, "兩項都在門檻內"
+
+        parts = [j for j in (ca, sym, drop) if j is not None]
+        if any(j.posture is Posture.OVER for j in parts):
+            combined, reason = Posture.OVER, "、".join(
+                j.reason for j in parts if j.posture is Posture.OVER
+            )
+        elif all(j.posture is Posture.OK for j in parts):
+            combined, reason = Posture.OK, f"{len(parts)} 項都在門檻內"
         else:
             # 有一項還不知道就不能說正常，另一項正常不代表整體正常。
             combined, reason = Posture.UNKNOWN, "、".join(
-                j.reason for j in (ca, sym) if j.posture is Posture.UNKNOWN
+                j.reason for j in parts if j.posture is Posture.UNKNOWN
             )
 
         changed = combined is not self._posture
         self._frames_in_state = 1 if changed else self._frames_in_state + 1
         self._posture = combined
-        return ca, sym, Judgement(combined, changed, self._frames_in_state, reason)
+        return ca, sym, drop, Judgement(combined, changed, self._frames_in_state, reason)

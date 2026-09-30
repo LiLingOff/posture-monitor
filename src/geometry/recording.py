@@ -202,12 +202,18 @@ def write_frame(frame, path: Path, keypoints=None) -> None:
 
 
 def forget_if_stale(
-    ca_window: RollingAngle, sym_window: RollingAngle, consecutive_misses: int
+    ca_window: RollingAngle, sym_window: RollingAngle, consecutive_misses: int,
+    *more: RollingAngle,
 ) -> None:
     """偵測連續失敗久了就把移動平均清掉，讓狀態回到未知。
 
     不清的話，受試者離開座位之後裝置會對著空椅子繼續回報上一個狀態。
+
+    後面的視窗用 *more 收：判定軸會再增加，而漏掉其中一個的後果是那一項
+    自己繼續用過期的資料判定，合併之後看起來完全正常。
     """
     if windows_are_stale(consecutive_misses, ca_window.window):
         ca_window.clear()
         sym_window.clear()
+        for window in more:
+            window.clear()

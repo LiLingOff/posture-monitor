@@ -1,48 +1,13 @@
 """monitor 的狀態機。假的量測，沒有相機也沒有視窗。"""
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from geometry.baseline import PostureBaseline
 from geometry.judgement import Posture
 from geometry.monitor import Mode, MonitorState
-from geometry.pipeline import PostureMeasurement
-from geometry.keypoints3d import PersonKeypoints3D
-from pose.topology import COCO18_KEYPOINT_NAMES, NUM_KEYPOINTS, keypoint_index
-
-_USED = ("left_shoulder", "right_shoulder", "left_ear", "right_ear", "neck",
-         "nose", "left_eye", "right_eye")
-
-
-def measurement(theta_ca=5.0, theta_sym=1.0, usable=True) -> PostureMeasurement:
-    """一幀量測。usable=False 會踩到深度的合理範圍檢查而被略過。"""
-    points = np.full((NUM_KEYPOINTS, 3), np.nan)
-    for name in _USED:
-        points[keypoint_index(name)] = (0.0, 0.0, 650.0)
-    disparity = np.full(NUM_KEYPOINTS, np.nan)
-    for name in _USED:
-        disparity[keypoint_index(name)] = 0.5
-    return PostureMeasurement(
-        keypoints_3d=PersonKeypoints3D(points=points),
-        vertical_disparity_px=disparity,
-        shared_count=len(_USED),
-        theta_ca_deg=theta_ca, theta_sym_deg=theta_sym,
-        theta_ca_precision_deg=0.5,
-        reference_depth_mm=650.0 if usable else -900.0,
-        camera_azimuth_deg=20.0, theta_ca_side="right",
-        edge_keypoints=[], angle_errors=[],
-    )
-
-
-def _baseline(theta_ca=3.0) -> PostureBaseline:
-    return PostureBaseline(
-        subject="chenyue", captured_at="2026-09-30T19:00:00", frames=120,
-        rejected=2, duration_s=20.0, theta_ca_deg=theta_ca, theta_sym_deg=1.0,
-        theta_ca_std_deg=3.0, theta_sym_std_deg=0.5,
-        theta_ca_standard_error_deg=0.5, theta_sym_standard_error_deg=0.1,
-        distance_mm=650.0, azimuth_deg=20.0,
-    )
+from monitor_fakes import USED, measurement
+from monitor_fakes import baseline as _baseline
+from pose.topology import COCO18_KEYPOINT_NAMES
 
 
 def _zero(state: MonitorState, t0: float = 0.0, theta_ca: float = 5.0,
@@ -81,7 +46,7 @@ def test_waiting_shows_the_raw_angle_not_an_offset_from_nothing():
 
 
 def test_a_preloaded_baseline_goes_straight_to_monitoring():
-    state = MonitorState("chenyue", baseline=_baseline(theta_ca=3.0))
+    state = MonitorState("chenyue", baseline=_baseline(theta_ca_deg=3.0))
     assert state.mode is Mode.MONITORING
     assert state.feed(measurement(theta_ca=5.0), 0.0).corrected[0] == pytest.approx(2.0)
 
@@ -200,7 +165,7 @@ def test_rezeroing_clears_the_moving_average():
 # ---- 監測 --------------------------------------------------------------
 
 def test_monitoring_judges_against_the_baseline():
-    state = MonitorState("chenyue", baseline=_baseline(theta_ca=0.0), window=3)
+    state = MonitorState("chenyue", baseline=_baseline(theta_ca_deg=0.0), window=3)
     for i in range(5):
         result = state.feed(measurement(theta_ca=25.0), float(i))
     assert result.verdict.posture is Posture.OVER
@@ -251,5 +216,5 @@ def test_every_mode_has_a_word_for_the_panel():
 
 def test_every_keypoint_name_is_known():
     """_USED 打錯字的話這整份測試會在一個假的拓撲上跑。"""
-    for name in _USED:
+    for name in USED:
         assert name in COCO18_KEYPOINT_NAMES

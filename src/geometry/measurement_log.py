@@ -42,6 +42,9 @@ _COLUMNS = (
     "shared_keypoints",
     "max_vertical_disparity_px",        # 所有共同關鍵點裡最差的，手腕腳踝也算進來
     "angle_max_vertical_disparity_px",  # 只看算角度用到的那幾點，門檻擋的是這個
+    "shoulder_height_mm",               # 雙肩中點的高度，往上為正（相機座標）
+    "shoulder_drop_mm",                 # 比端正坐姿低了多少，往下為正
+    "shoulder_drop_mean_mm",            # 當下的移動平均，駝背判定看的是這個
     "posture",                          # 當下的判定：正常／超標／未知
 )
 
@@ -141,6 +144,9 @@ class MeasurementLog:
         sym_mean: float | None = None,
         ca_standard_error: float | None = None,
         posture: str = "",
+        shoulder_height_mm: float | None = None,
+        shoulder_drop_mm: float | None = None,
+        shoulder_drop_mean_mm: float | None = None,
     ) -> None:
         self._frame += 1
         worst = None
@@ -167,6 +173,9 @@ class MeasurementLog:
             "" if measurement is None else measurement.shared_count,
             _number(worst, 2),
             _number(worst_angle, 2),
+            _number(shoulder_height_mm, 1),
+            _number(shoulder_drop_mm, 1),
+            _number(shoulder_drop_mean_mm, 1),
             posture,
         ])
         self._file.flush()

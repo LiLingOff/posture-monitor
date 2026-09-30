@@ -60,7 +60,10 @@ class MonitorState:
 
         self.ca_window = RollingAngle(window)
         self.sym_window = RollingAngle(window)
+        self.drop_window = RollingAngle(window)
         self._judge = PostureJudge(margin_factor=margin)
+        self._judge.watch_shoulder_drop(
+            None if baseline is None else baseline.shoulder_drop_threshold_mm)
         self._misses = 0
 
         self._collector: BaselineCollector | None = None
@@ -96,7 +99,7 @@ class MonitorState:
         if self._mode is Mode.COLLECTING:
             return self._collect(measurement, corrected, now)
         if self._mode is Mode.MONITORING:
-            return self._monitor(corrected, reason)
+            return self._monitor(measurement, corrected, reason)
         return FrameResult(mode=self._mode, corrected=corrected, reason=reason,
                            notice=None)
 
@@ -160,23 +163,28 @@ class MonitorState:
                            reason=reason, phase_remaining_s=None,
                            notice=notice, baseline_changed=True)
 
-    def _monitor(self, corrected, reason) -> FrameResult:
+    def _monitor(self, measurement, corrected, reason) -> FrameResult:
+        drop = self.shoulder_drop(measurement)
         if reason is None:
             self._misses = 0
             if corrected[0] is not None:
                 self.ca_window.add(corrected[0])
             if corrected[1] is not None:
                 self.sym_window.add(corrected[1])
+            if drop is not None:
+                self.drop_window.add(drop)
         else:
             self._misses += 1
             if windows_are_stale(self._misses, self.ca_window.window):
                 # 不清的話，受試者離開座位之後會對著空椅子繼續回報上一個狀態。
                 self.ca_window.clear()
                 self.sym_window.clear()
+                self.drop_window.clear()
 
         verdict = None
         if not self._no_judge:
-            _, _, verdict = self._judge.update(self.ca_window, self.sym_window)
+            *_, verdict = self._judge.update(self.ca_window, self.sym_window,
+                                            self.drop_window)
         return FrameResult(mode=self._mode, corrected=corrected, reason=reason,
                            verdict=verdict)
 
@@ -198,9 +206,22 @@ class MonitorState:
         self._baseline = baseline
         self.ca_window.clear()
         self.sym_window.clear()
+        self.drop_window.clear()
         self._judge = PostureJudge(margin_factor=self._margin)
+        self._judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
         self._misses = 0
         self._mode = Mode.MONITORING
+
+    def shoulder_drop(self, measurement) -> float | None:
+        """肩膀比端正坐姿低了多少。沒有基準或基準沒記肩高就不算。"""
+        if self._baseline is None:
+            return None
+        return self._baseline.shoulder_drop_mm(measurement.shoulder_height_mm)
+
+    @property
+    def drop_threshold_mm(self) -> float | None:
+        return (None if self._baseline is None
+                else self._baseline.shoulder_drop_threshold_mm)
 
     def _correct(self, measurement) -> tuple[float | None, float | None]:
         """扣掉個人基準。還沒有基準就給原始角度。

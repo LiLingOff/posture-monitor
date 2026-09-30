@@ -117,21 +117,21 @@ def test_the_reason_carries_the_numbers_that_produced_the_verdict():
 
 def test_either_angle_over_the_threshold_makes_the_whole_posture_over():
     judge = PostureJudge()
-    _, _, combined = judge.update(_Window(3.0, 0.5), _Window(9.0, 0.5))
+    *_, combined = judge.update(_Window(3.0, 0.5), _Window(9.0, 0.5))
     assert combined.posture is Posture.OVER
     assert "θ_sym" in combined.reason
 
 
 def test_both_angles_under_the_threshold_is_normal():
     judge = PostureJudge()
-    _, _, combined = judge.update(_Window(3.0, 0.5), _Window(1.0, 0.5))
+    *_, combined = judge.update(_Window(3.0, 0.5), _Window(1.0, 0.5))
     assert combined.posture is Posture.OK
 
 
 def test_one_angle_unknown_is_not_reported_as_normal():
     """另一項正常不代表整體正常，少了一半的資訊就是判斷不出來。"""
     judge = PostureJudge()
-    _, _, combined = judge.update(_Window(3.0, 0.5), _Window(None, None))
+    *_, combined = judge.update(_Window(3.0, 0.5), _Window(None, None))
     assert combined.posture is Posture.UNKNOWN
 
 
@@ -139,7 +139,7 @@ def test_the_two_angles_keep_separate_hysteresis():
     """門檻、方向、量測誤差都不同，共用一個狀態機會把兩者的遲滯綁在一起。"""
     judge = PostureJudge()
     judge.update(_Window(3.0, 0.5), _Window(1.0, 0.5))
-    ca, sym, _ = judge.update(_Window(15.0, 0.5), _Window(1.0, 0.5))
+    ca, sym, *_ = judge.update(_Window(15.0, 0.5), _Window(1.0, 0.5))
     assert ca.posture is Posture.OVER
     assert sym.posture is Posture.OK
 
@@ -151,7 +151,7 @@ def test_it_works_with_a_real_rolling_window():
     for _ in range(4):
         ca_window.add(25.0)
         sym_window.add(0.5)
-    _, _, combined = judge.update(ca_window, sym_window)
+    *_, combined = judge.update(ca_window, sym_window)
     assert combined.posture is Posture.OVER
 
 
@@ -160,7 +160,7 @@ def test_a_half_filled_real_window_is_unknown():
     ca_window, sym_window = RollingAngle(30), RollingAngle(30)
     ca_window.add(25.0)
     sym_window.add(0.5)
-    _, _, combined = judge.update(ca_window, sym_window)
+    *_, combined = judge.update(ca_window, sym_window)
     assert combined.posture is Posture.UNKNOWN
 
 
@@ -185,7 +185,7 @@ def test_clearing_the_window_puts_the_judgement_back_to_unknown():
     for _ in range(4):
         ca_window.add(25.0)
         sym_window.add(0.5)
-    assert judge.update(ca_window, sym_window)[2].posture is Posture.OVER
+    assert judge.update(ca_window, sym_window)[-1].posture is Posture.OVER
     ca_window.clear()
     sym_window.clear()
-    assert judge.update(ca_window, sym_window)[2].posture is Posture.UNKNOWN
+    assert judge.update(ca_window, sym_window)[-1].posture is Posture.UNKNOWN

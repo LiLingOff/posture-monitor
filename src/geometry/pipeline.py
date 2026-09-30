@@ -72,6 +72,7 @@ class PostureMeasurement:
     theta_ca_precision_deg: float | None = None
     reference_depth_mm: float | None = None
     camera_azimuth_deg: float | None = None
+    shoulder_height_mm: float | None = None  # 雙肩中點的高度，往上為正
     theta_ca_side: str | None = None  # θ_CA 實際用了哪一側的耳朵
     edge_keypoints: list[str] = field(default_factory=list)
     angle_errors: list[str] = field(default_factory=list)
@@ -98,6 +99,30 @@ class PostureMeasurement:
         """算角度實際用到的那幾點裡最差的一個。判定看的是這個。"""
         worst = _worst_disparity(self, angle_keypoints(self.theta_ca_side))
         return None if worst is None else worst[1]
+
+
+def shoulder_height_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
+    """雙肩中點的高度，單位毫米，往上為正。
+
+    前作的第四個演算法「肩部垂直位移」量的是同一件事，但用像素：固定相機、
+    固定距離，肩峰點的 y 掉超過 20px 就判駝背。那個門檻只在他們那個 60cm
+    的架設下成立，受試者往前坐一點就不對了。**有真實 3D 就直接量毫米，
+    距離變了也不受影響**，這是同一個指標換成雙目之後最直接的好處。
+
+    取中點而不是前作的「較低的那一側」。他們取低的是為了靈敏，代價是單側
+    偵測失誤會直接變成一次誤報；我們另外有 θ_sym 在管左右不對稱，這一項
+    只要管整體有沒有沉下去。
+
+    垂直方向取相機的 Y 軸（OpenCV 的 Y 向下為正，所以這裡取負號）。這一項
+    量的是軀幹相對重力有沒有沉下去，不是相對身體自己的軸，所以不能用
+    `anatomical_axes`：那會變成拿肩膀去量肩膀。前提是相機大致水平，而那
+    本來就是這套系統的前提。
+    """
+    left = keypoints_3d.get("left_shoulder")
+    right = keypoints_3d.get("right_shoulder")
+    if left is None or right is None:
+        return None
+    return float(-(left[1] + right[1]) / 2.0)
 
 
 def reference_depth_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
@@ -351,6 +376,7 @@ def measure_posture(
     measurement.edge_keypoints = keypoints_at_frame_edge(left, right, calib.image_size)
     measurement.reference_depth_mm = reference_depth_mm(keypoints_3d)
     measurement.camera_azimuth_deg = camera_azimuth_deg(keypoints_3d)
+    measurement.shoulder_height_mm = shoulder_height_mm(keypoints_3d)
     if measurement.reference_depth_mm is not None:
         # 方位角量不到時用 0，那是 θ_CA 精度最差的情況，估計誤差取保守值。
         measurement.theta_ca_precision_deg = estimate_theta_ca_precision_deg(
