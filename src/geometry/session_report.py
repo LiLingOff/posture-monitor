@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from .session_analysis import SessionSummary, compare, correlation
-from .terminal import cell
+from .terminal import cell, display_width
 
 _LABEL = 22
 
@@ -205,7 +205,8 @@ def format_session(summary: SessionSummary) -> str:
         if not lines:
             continue
         out.append("")
-        out.append(f"── {heading} " + "─" * max(0, 46 - len(heading) * 2))
+        # 橫線照顯示寬度算，不是字元數：中英混排的標題會算錯。
+        out.append(f"── {heading} " + "─" * max(0, 46 - display_width(heading)))
         out.extend(lines)
     return "\n".join(out)
 

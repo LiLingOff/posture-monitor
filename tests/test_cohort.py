@@ -7,8 +7,8 @@
 import pytest
 
 from geometry.cohort import UNLABELLED, Cohort, Separation, collect
-from geometry.cohort_report import (separation_markdown, session_rows,
-                                    sessions_markdown, to_csv, to_markdown)
+from geometry.cohort_report import (separation_text, session_rows,
+                                    sessions_table, to_csv, to_text)
 
 _HEADER = (
     "frame,elapsed_s,usable,reject_reason,theta_ca_deg,theta_sym_deg,"
@@ -125,7 +125,7 @@ def test_a_single_subject_reports_no_error_rather_than_zero(tmp_path):
     assert separation.mean_deg == pytest.approx(20.0)
     assert separation.error_deg is None
     assert separation.comparison().sigma is None
-    assert "算不出跨受試者的誤差" in separation_markdown(separation, cohort)
+    assert "算不出跨受試者的誤差" in separation_text(separation, cohort)
 
 
 def test_only_subjects_with_both_conditions_contribute(tmp_path):
@@ -150,16 +150,17 @@ def test_a_high_rejection_session_is_shown_but_not_counted(tmp_path):
     assert len(result.sessions) == 2
     assert len(result.usable_sessions) == 1
     assert result.theta_ca_deg == pytest.approx(0.0, abs=0.1)
-    table = sessions_markdown(session_rows(cohort))
-    assert "⚠" in table
-    assert table.count("| A |") == 2, "兩段都要列出來"
+    table = sessions_table(session_rows(cohort))
+    assert "偏高" in table
+    rows_for_a = [line for line in table.splitlines() if line.startswith("A")]
+    assert len(rows_for_a) == 2, "兩段都要列出來"
 
 
 def test_a_clean_session_is_not_flagged(tmp_path):
-    """圖例也不該出現。沒有東西被標卻印一行解釋，讀的人會回頭找那個符號。"""
+    """說明也不該出現。沒有東西被標卻印一行解釋，讀的人會回頭找它在哪裡。"""
     cohort = _cohort(tmp_path, dict(subject="A", condition="upright",
                                     ca=0.0, frames=60, rejected=2))
-    assert "⚠" not in sessions_markdown(session_rows(cohort))
+    assert "偏高" not in sessions_table(session_rows(cohort))
 
 
 # ---- 判定 --------------------------------------------------------------
@@ -211,7 +212,7 @@ def test_a_missing_condition_name_is_named(tmp_path):
     )
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
-    text = separation_markdown(separation, cohort)
+    text = separation_text(separation, cohort)
     assert "forward" in text
     assert "slouch" in text
 
@@ -220,7 +221,7 @@ def test_unlabelled_files_are_explained_rather_than_silently_dropped(tmp_path):
     cohort = _cohort(tmp_path, dict(subject="A", condition=None, ca=5.0))
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
-    text = separation_markdown(separation, cohort)
+    text = separation_text(separation, cohort)
     assert "沒有記錄姿勢條件" in text
     assert "事後補標會變成猜" in text
 
@@ -248,7 +249,7 @@ def test_a_missing_value_is_an_empty_cell_not_a_zero(tmp_path):
 
 def test_the_whole_report_renders_without_a_separation(tmp_path):
     cohort = _cohort(tmp_path, dict(subject="A", condition="upright", ca=0.0))
-    assert "量測結果彙整" in to_markdown(cohort, None)
+    assert "量測結果彙整" in to_text(cohort, None)
 
 
 def test_the_report_states_that_the_error_is_across_subjects(tmp_path):
@@ -260,7 +261,7 @@ def test_the_report_states_that_the_error_is_across_subjects(tmp_path):
     cohort = _cohort(tmp_path, *specs)
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
-    text = separation_markdown(separation, cohort)
+    text = separation_text(separation, cohort)
     assert "分母是人數，不是幀數" in text
     assert "差距 / 最大單幀散佈" in text
 
@@ -302,7 +303,7 @@ def test_the_cohort_report_still_reads_the_same(tmp_path):
     cohort = _cohort(tmp_path, *specs)
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
-    text = separation_markdown(separation, cohort)
+    text = separation_text(separation, cohort)
     assert "平均差距 +21.00°" in text
     assert "n = 3" in text
     assert "分母是人數，不是幀數" in text

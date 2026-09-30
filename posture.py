@@ -36,7 +36,7 @@ from geometry.baseline import (REJECTION_LIMIT,  # noqa: E402
                                baseline_quality_warnings)
 from geometry.cohort import Separation, collect  # noqa: E402
 from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
-                                    to_markdown)
+                                    to_text)
 from geometry.judgement import PostureJudge  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
@@ -828,17 +828,17 @@ def _run_cohort(args) -> None:
         other=args.condition,
         per_subject=cohort.differences(args.baseline_condition, args.condition),
     )
-    # 逐段的數字只算一次，Markdown 與 CSV 共用。每個 session 的標準誤差要掃
+    # 逐段的數字只算一次，文字報告與 CSV 共用。每個 session 的標準誤差要掃
     # 過它所有的幀，重建三次就是三倍的工，而這個指令的用途正是吃一整個資料夾。
     rows = session_rows(cohort)
-    markdown = to_markdown(cohort, separation, rows)
-    print(markdown)
+    report = to_text(cohort, separation, rows)
+    print(report)
 
     if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
-        (args.out / "cohort.md").write_text(markdown, encoding="utf-8")
+        (args.out / "cohort.txt").write_text(report, encoding="utf-8")
         (args.out / "cohort.csv").write_text(to_csv(rows), encoding="utf-8")
-        print(f"已寫到 {args.out / 'cohort.md'} 與 {args.out / 'cohort.csv'}")
+        print(f"已寫到 {args.out / 'cohort.txt'} 與 {args.out / 'cohort.csv'}")
 
 
 def _run_analyse(args) -> None:
@@ -871,7 +871,8 @@ def main() -> None:
     ch.add_argument("--condition", default="forward",
                     help="要與基準比較的姿勢名稱")
     ch.add_argument("--out", type=Path, default=None,
-                    help="把 Markdown 與 CSV 寫到這個資料夾。不給就只印出來")
+                    help="把報告與 CSV 寫到這個資料夾。不給就只印出來。"
+                         "要放進報告的表格從 CSV 匯入")
 
     # analyse 不開相機，所以那些硬體參數對它沒有意義，單獨建 parser。
     ap = sub.add_parser("analyse", help="分析 live 留下的逐幀 CSV，不需要相機")

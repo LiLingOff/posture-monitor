@@ -43,3 +43,27 @@ def test_truncate_leaves_short_text_alone():
 @pytest.mark.parametrize("text", ["", "a", "中", "θ_CA +12.3±1.7(單幀 -2.7)"])
 def test_truncating_to_its_own_width_is_a_no_op(text):
     assert truncate(text, display_width(text)) == text
+
+
+def test_a_mixed_heading_line_is_measured_by_display_width():
+    """中英混排的標題用字元數估寬度會算錯，橫線就短一截。
+
+    「逐受試者的 θ_CA」是 5 個中文字（各佔兩欄）加空白與 θ_CA：顯示寬度 15，
+    而 len() 是 10，乘二得 20。差的那 5 欄就是線短掉的長度。
+
+    θ 的 east_asian_width 是 Ambiguous，這裡當一欄算，那是多數終端機的行為。
+    """
+    from geometry.terminal import display_width
+
+    assert display_width("逐受試者的 θ_CA") == 15
+    assert len("逐受試者的 θ_CA") == 10
+
+
+def test_headings_in_both_reports_come_out_the_same_length():
+    """兩個報表的區段標題要對齊，不然同一份輸出看起來像兩個程式拼的。"""
+    from geometry.cohort_report import _heading
+    from geometry.terminal import display_width
+
+    widths = {display_width(_heading(t))
+              for t in ("逐段", "逐受試者的 θ_CA", "姿勢之間的差距")}
+    assert len(widths) == 1, f"標題長度不一致：{widths}"
