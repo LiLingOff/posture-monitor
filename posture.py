@@ -39,6 +39,7 @@ from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
                                     to_text)
 from geometry.judgement import Posture, PostureJudge  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
+from geometry.monitor import MonitorState  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
                                estimate_theta_ca_precision_deg,
                                format_measurement, match_person_pair,
@@ -410,6 +411,162 @@ def _run_live(args) -> None:
         cap.release()
     if recording.camera_lost is not None:
         raise SystemExit(1)
+
+
+def _run_monitor(args) -> None:
+    """一個視窗跑到底：按 c 當場歸零、按 q 離開。
+
+    前作就是這樣用的，而它省掉的那一步正好是本專案最貴的一個教訓：先跑
+    `baseline` 再跑 `live` 的話，中間要重新載入模型，受試者就會站起來活動，
+    而 2026-09-29 的 63% 誤報率正是從那個空檔來的。在同一個視窗裡按 c，
+    基準與量測之間不可能有間隔。
+    """
+    calib, engine, cap = _prepare(args)
+    display = _open_display(args)
+    if not args.display:
+        print("沒有視窗就收不到 c，這一場只能用 --baseline 預載的基準。"
+              "要當場歸零的話加上 --display", flush=True)
+    state = MonitorState(
+        subject=args.subject, window=args.window, margin=args.margin,
+        countdown_s=args.countdown, baseline_s=args.baseline_seconds,
+        baseline=_load_baseline(args, calib), no_judge=args.no_judge,
+    )
+    snapshots = _open_snapshots(args, args.snapshots)
+    print(f"視窗裡按 c 取基準（倒數 {args.countdown:.0f} 秒、取樣 "
+          f"{args.baseline_seconds:.0f} 秒），按 q 離開", flush=True)
+
+    log, run = None, 0
+    started_at = time.perf_counter()
+    read_failures = 0
+    frames_seen = 0
+    rejected = 0
+    try:
+        log, run = _rotate_monitor_log(args, state.baseline, log, run)
+        while not state.stopped:
+            frames_seen += 1
+            try:
+                measurement, match, frames = _measure_once(engine, calib, cap, args)
+                read_failures = 0
+            except RuntimeError as exc:
+                if isinstance(exc, CameraReadError):
+                    read_failures += 1
+                    lost = camera_lost(args.camera, read_failures)
+                    if lost is not None:
+                        _tell(lost)
+                        break
+                    time.sleep(READ_RETRY_PAUSE_S)
+                rejected += 1
+                _tell(display.show(None))
+                _print_line(f"{exc}（已略過 {rejected} 幀）")
+                if log is not None:
+                    log.write(None, reject_reason=str(exc))
+                _pump_keys(display, state)
+                continue
+
+            result = state.feed(measurement, time.perf_counter())
+            if result.reason is not None:
+                rejected += 1
+            _tell(result.notice)
+            if result.baseline_changed:
+                # 換了零點，之後的列與之前的列不在同一個基準上，而 analyse 與
+                # cohort 都假設一個檔案一個基準，所以換一個檔案。
+                _save_monitor_baseline(args, state.baseline)
+                log, run = _rotate_monitor_log(args, state.baseline, log, run)
+
+            _print_line(_monitor_line(state, result, rejected))
+            _tell(display.show(LiveView.build(
+                frames=frames, match=match, measurement=measurement,
+                corrected=result.corrected, ca_window=state.ca_window,
+                sym_window=state.sym_window,
+                state=(Posture.UNKNOWN if result.verdict is None
+                       else result.verdict.posture),
+                skip_reason=result.reason, rejected=rejected,
+                frames_seen=frames_seen, baseline=state.baseline,
+                mode=result.mode.value, phase_remaining_s=result.phase_remaining_s,
+                keys=("c 重新歸零", "q 離開"),
+            )))
+            _pump_keys(display, state)
+
+            if log is not None:
+                log.write(
+                    measurement, reject_reason=result.reason,
+                    corrected=result.corrected,
+                    ca_mean=state.ca_window.mean, sym_mean=state.sym_window.mean,
+                    ca_standard_error=state.ca_window.standard_error,
+                    posture=("" if result.verdict is None
+                             else result.verdict.posture.value),
+                )
+            snapshots.maybe_save(
+                0 if log is None else log.frames_written,
+                time.perf_counter() - started_at, frames[0], match.left,
+                result.corrected[0],
+                None if result.verdict is None else result.verdict.posture.value,
+            )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if log is not None:
+            log.close()
+        display.close()
+        cap.release()
+
+    print()
+    if frames_seen:
+        print(f"共 {frames_seen} 幀，略過 {rejected} 幀"
+              f"（{rejected / frames_seen * 100:.0f}%）")
+    else:
+        print("沒有量到任何一幀")
+
+
+def _pump_keys(display, state: MonitorState) -> None:
+    """把視窗收到的按鍵轉成狀態機的動作。
+
+    分開寫是因為讀取失敗那條路也要處理按鍵：相機掉線時按 q 應該還能離開。
+    """
+    if display.take_baseline_request():
+        state.request_baseline(time.perf_counter())
+    if display.stopped:
+        state.stop()
+
+
+def _monitor_line(state: MonitorState, result, rejected: int) -> str:
+    """終端機那一行。看不到視窗的時候，這裡仍然要說得出現在在做什麼。"""
+    head = result.mode.value
+    if result.phase_remaining_s is not None:
+        head += f" 剩 {max(0.0, result.phase_remaining_s):3.0f}s"
+    if result.reason is not None:
+        return f"{head}  略過：{result.reason}（已略過 {rejected} 幀）"
+    return (f"{head}  θ_CA {_angle_text(state.ca_window, result.corrected[0])}"
+            f"  θ_sym {_angle_text(state.sym_window, result.corrected[1])}"
+            + (f"  {result.verdict.posture.value}" if result.verdict else "")
+            + (f"  略過{rejected}" if rejected else ""))
+
+
+def _rotate_monitor_log(args, baseline, log, run: int):
+    """換一個 CSV 檔。回傳 (新的 log, 第幾份)。"""
+    if log is not None:
+        log.close()
+    if args.log is None:
+        return None, run
+    run += 1
+    path = args.log.with_name(f"{args.log.stem}-{run}{args.log.suffix or '.csv'}")
+    new_log = MeasurementLog(
+        path, subject=args.subject, overwrite=args.overwrite,
+        condition=args.condition, trial=run, baseline_file=None,
+        baseline=baseline, display=args.display,
+    )
+    print(f"逐幀記錄到 {new_log.path}", flush=True)
+    return new_log, run
+
+
+def _save_monitor_baseline(args, baseline) -> None:
+    """當場取的基準也要落地，否則示範完就沒了。"""
+    if baseline is None:
+        return
+    stamp = baseline.captured_at.replace(":", "").replace("-", "")
+    path = args.baseline_dir / f"{args.subject}-{stamp}.json"
+    baseline.save(path, overwrite=True)
+    _tell(f"基準存到 {path}")
 
 
 def _open_log(args, baseline, path, condition: str, trial: int | None,
@@ -867,6 +1024,11 @@ def _refuse_to_overwrite(args) -> None:
         target, flag = args.out, "--out"
     elif args.mode == "live":
         target, flag = args.log, "--log"
+    elif args.mode == "monitor" and args.log is not None:
+        # monitor 每次重新歸零就換一個檔，實際寫的是 <stem>-1、-2…，
+        # 所以要檢查的是第一份而不是 --log 本身。
+        target = args.log.with_name(f"{args.log.stem}-1{args.log.suffix or '.csv'}")
+        flag = "--log"
     if target is not None and Path(target).exists() and not args.overwrite:
         raise SystemExit(
             f"{target} 已經存在。用這個名字，或確定要覆蓋的話加上 --overwrite：\n"
@@ -964,6 +1126,7 @@ def main() -> None:
         ("live", "持續量測，印移動平均"),
         ("baseline", "請受試者坐正保持不動，取個人基準（θ_offset）"),
         ("study", "一個行程跑完整套實驗流程：取基準，接著逐一量各種姿勢"),
+        ("monitor", "一個視窗跑到底：按 c 當場取基準歸零，按 q 離開"),
     )
     for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
@@ -1017,10 +1180,10 @@ def main() -> None:
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
-        if name in ("live", "baseline", "study"):
+        if name in ("live", "baseline", "study", "monitor"):
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")
-        if name == "live":
+        if name in ("live", "monitor"):
             p.add_argument("--baseline", type=Path, default=None,
                            help="個人基準檔，由 baseline 子指令產生。"
                                 "指定之後印出的是相對這個人端正坐姿的偏移量")
@@ -1031,15 +1194,26 @@ def main() -> None:
                            help="每隔一段時間存一張左眼畫面到這個資料夾。"
                                 "姿勢事後查證不了，沒有畫面的話量到的數字"
                                 "既不能當誤報率、也不能當正確偵測的證據")
-            p.add_argument("--seconds", type=float, default=None,
-                           help="量測長度。不給就跑到 Ctrl-C 為止。"
-                                "固定秒數的段落比較不會發生受試者忘記維持姿勢")
             p.add_argument("--condition", default="",
                            help="姿勢條件的名稱，例如 upright 或 forward。"
                                 "寫進 CSV 標頭，彙整時靠它分組")
+        if name == "live":
+            p.add_argument("--seconds", type=float, default=None,
+                           help="量測長度。不給就跑到 Ctrl-C 為止。"
+                                "固定秒數的段落比較不會發生受試者忘記維持姿勢")
             p.add_argument("--trial", type=int, default=None,
                            help="同一個人同一種姿勢的第幾次，寫進 CSV 標頭")
-        if name in ("live", "study"):
+        if name == "monitor":
+            p.add_argument("--baseline-seconds", type=float, default=20.0,
+                           help="按 c 之後取樣多久。一幀的零點沒有用，"
+                                "單幀散佈與判定門檻是同一個量級")
+            p.add_argument("--countdown", type=float, default=5.0,
+                           help="按 c 之後先倒數幾秒讓受試者坐定。"
+                                "這段時間的幀不進基準")
+            p.add_argument("--baseline-dir", type=Path,
+                           default=Path("data/baselines"),
+                           help="當場取的基準存到這裡，檔名帶時間")
+        if name in ("live", "study", "monitor"):
             p.add_argument("--margin", type=float, default=1.0,
                            help="遲滯寬度，單位是標準誤差的倍數。調高會減少誤報但"
                                 "反應變慢、不動作的區間變寬")
@@ -1047,7 +1221,7 @@ def main() -> None:
                            help="只印角度不做超標判定，用來收集原始資料")
             p.add_argument("--snapshot-every", type=float, default=10.0,
                            help="存畫面的間隔秒數。study 一定會存，live 要搭配 --snapshots")
-        if name in ("live", "baseline", "study"):
+        if name in ("live", "baseline", "study", "monitor"):
             p.add_argument("--overwrite", action="store_true",
                            help="允許覆蓋既有的基準檔或記錄檔")
         if name == "baseline":
@@ -1100,8 +1274,8 @@ def main() -> None:
         args.out = Path("data/baselines") / f"{args.subject}.json"
     _refuse_to_overwrite(args)
 
-    {"once": _run_once, "live": _run_live,
-     "baseline": _run_baseline, "study": _run_study}[args.mode](args)
+    {"once": _run_once, "live": _run_live, "baseline": _run_baseline,
+     "study": _run_study, "monitor": _run_monitor}[args.mode](args)
 
 
 if __name__ == "__main__":

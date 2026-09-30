@@ -52,6 +52,7 @@ class LiveView:
 
     # 第二階段的 monitor 會用到，第一階段一律留空
     mode: str | None = None
+    phase_remaining_s: float | None = None
     notice: str | None = None
     keys: tuple[str, ...] = field(default_factory=tuple)
 
@@ -60,7 +61,8 @@ class LiveView:
         cls, *, frames, match, measurement, corrected, ca_window, sym_window,
         state: Posture, skip_reason: str | None, rejected: int, frames_seen: int,
         remaining_s: float | None = None, baseline=None,
-        mode: str | None = None, notice: str | None = None,
+        mode: str | None = None, phase_remaining_s: float | None = None,
+        notice: str | None = None,
         keys: tuple[str, ...] = (),
     ) -> LiveView:
         """從量測迴圈手上已經有的東西組一幀。"""
@@ -96,6 +98,7 @@ class LiveView:
             frames=frames_seen,
             remaining_s=remaining_s,
             mode=mode,
+            phase_remaining_s=phase_remaining_s,
             notice=notice,
             keys=keys,
         )

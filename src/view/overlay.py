@@ -33,6 +33,14 @@ STATE_COLOURS = {
     Posture.OVER: (60, 60, 235),
     Posture.UNKNOWN: (150, 150, 150),
 }
+# monitor 的階段。用字串當鍵而不是 import Mode：疊圖不該相依於流程。
+# 少一個的話面板會直接印中文，退回英文時就變成一排問號，所以有測試盯著。
+MODE_WORDS = {
+    "待命": ("按 c 取基準", "press c to zero"),
+    "倒數": ("請坐正，倒數", "sit up, starting in"),
+    "取基準": ("取基準中，請保持不動", "zeroing, hold still"),
+    "監測": ("", ""),
+}
 STATE_WORDS = {
     Posture.OK: ("正常", "OK"),
     Posture.OVER: ("超標", "OVER"),
@@ -198,12 +206,16 @@ def panel_rows(view) -> list[list[tuple]]:
     rows = [first, second]
 
     third: list[tuple] = []
+    if view.mode:
+        zh, en = MODE_WORDS.get(view.mode, (view.mode, view.mode))
+        if zh:
+            if view.phase_remaining_s is not None:
+                zh += f" {max(0.0, view.phase_remaining_s):.0f}s"
+                en += f" {max(0.0, view.phase_remaining_s):.0f}s"
+            third.append((zh, en, (90, 205, 90), TEXT_SIZE, True))
     if view.skip_reason is not None:
         third.append((f"略過：{view.skip_reason}", f"skipped: {reason_tag(view.skip_reason)}",
                       EDGE, TEXT_SIZE, False))
-    if view.notice:
-        third.append((view.notice, view.notice if view.notice.isascii() else "",
-                      DIM, TEXT_SIZE, False))
     if view.keys:
         third.append(("　".join(view.keys), "  ".join(_ascii_keys(view.keys)),
                       DIM, TEXT_SIZE, False))
