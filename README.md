@@ -241,8 +241,12 @@ fp32 的網路是全卷積的，同一個模型吃任何尺寸。fp16 的 Tensor
 | 取個人基準 | `python posture.py baseline --subject chenyue --out data/baselines/chenyue.json` |
 | 量測並記錄 | `python posture.py live --baseline data/baselines/chenyue.json --log data/sessions/0923.csv` |
 | 調整平均視窗 | 加上 `--window 60`（預設 30 幀，約 5 秒）|
+| 開畫面看骨架與狀態 | 任何一個量測指令加上 `--display` |
+| 一個視窗跑到底，按 c 歸零 | `python posture.py monitor --subject chenyue --display` |
 
 `once` 會列出每個關鍵點的左右像素座標、3D座標、校正後的垂直視差，以及深度範圍、單幀誤差與兩個角度。加 `--all-keypoints` 可以看全部18點。
+
+`--display` 開一個視窗：左右眼並排、骨架疊在畫面上、下面一條狀態面板。粗線是判定實際看的那兩段，橘圈是貼在畫面邊緣的點，紅圈是左右配對錯的點。視窗是給操作者看的，**螢幕要放在受試者視野之外**：盯著螢幕會轉頭，而解剖平面是由雙肩連線定義的。中文字靠 Pillow，沒裝或找不到字型就自動改用英文。SSH 進去沒有顯示器時不開視窗也不中斷。詳見 [docs 08](../posture-monitor-docs/08-操作手冊.md)。
 
 `live` 印的是**平均值**，單幀值放在括號裡：
 
@@ -567,7 +571,8 @@ src/geometry/
   session_analysis.py    讀回逐幀 CSV，算品質、統計、相關性與判定
   session_report.py      把上面的結果排成可讀的報告
   terminal.py            終端機顯示寬度（中日韓字元佔兩欄）
-posture.py               端到端 CLI：once / live / baseline / analyse
+posture.py               端到端 CLI：once / live / baseline / study / monitor
+                         / analyse / cohort
 tests/
   synthetic.py           合成測試影像（棋盤格標定）
   charuco_synthetic.py   合成測試影像（ChArUco標定）
