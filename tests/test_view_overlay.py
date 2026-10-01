@@ -209,7 +209,7 @@ def test_the_state_word_comes_first_and_is_bigger_than_the_numbers():
     assert word == "超標" and ascii_word == "OVER"
     assert colour == overlay.STATE_COLOURS[Posture.OVER]
     assert bold
-    assert size > rows[0][1][3]
+    assert size > rows[1][0][3]
 
 
 def test_a_missing_angle_is_a_dash_not_a_zero():
@@ -254,29 +254,40 @@ def test_turned_is_blank_without_a_baseline():
     assert "轉身 —" in texts
 
 
-def test_a_big_turn_is_as_loud_as_the_state_word():
-    """這個視窗本身就是引人轉頭去看的東西，提示比狀態詞小等於沒提示。"""
-    small = overlay.panel_rows(view(turned_deg=2.0))[1][1]
-    big = overlay.panel_rows(view(turned_deg=40.0))[1][0]
-    assert big[3] == overlay.STATE_SIZE > small[3]
-    assert big[2] == overlay.MISPAIRED
-    assert "請轉回正面" in big[0]
+def test_a_big_turn_shouts_in_colour_not_in_size():
+    """放大會把後面的欄位推走，而受試者正對著這個視窗。顏色講得一樣清楚。"""
+    small = overlay.panel_rows(view(turned_deg=2.0))[2][1]
+    big = overlay.panel_rows(view(turned_deg=40.0))[2][1]
+    assert big[3] == small[3] == overlay.TEXT_SIZE
+    assert big[2] == overlay.MISPAIRED and big[4]
+    assert small[2] == overlay.DIM and not small[4]
 
 
-def test_an_alert_gets_its_own_row_and_leaves_the_conditions_alone():
-    """一個 34 級的紅字旁邊接著「30/30 幀」，會把整列撐高又讓警告讀起來像雜項。"""
-    calm = overlay.panel_rows(view(turned_deg=2.0, distance_mm=660.0))
-    loud = overlay.panel_rows(view(turned_deg=40.0, distance_mm=660.0))
-    assert len(loud) == len(calm) + 1
-    assert all(cell[3] == overlay.TEXT_SIZE for cell in loud[2])
-    assert "轉身" not in " ".join(cell[0] for cell in loud[2])
+def test_the_action_to_take_goes_last_so_nothing_moves_when_it_appears():
+    rows = overlay.panel_rows(view(turned_deg=40.0, keys=(("q 離開", "q quit"),)))
+    assert rows[-1][-1][0] == "請轉回正面"
+    assert "請轉回正面" not in " ".join(
+        cell[0] for row in rows[:-1] for cell in row)
 
 
-def test_both_alerts_share_one_row_at_one_size():
-    row = overlay.panel_rows(view(turned_deg=40.0, drop_mm=18.0,
-                                  drop_threshold_mm=12.0))[1]
-    assert len(row) == 2
-    assert {cell[3] for cell in row} == {overlay.STATE_SIZE}
+def test_the_layout_does_not_move_when_something_goes_over():
+    """同一個視窗在受試者眼前忽大忽小、欄位忽有忽無，是先前最明顯的毛病。"""
+    calm = overlay.panel_rows(view(turned_deg=2.0, drop_mm=4.0,
+                                   drop_threshold_mm=12.0, distance_mm=660.0))
+    loud = overlay.panel_rows(view(turned_deg=40.0, drop_mm=18.0,
+                                   drop_threshold_mm=12.0, distance_mm=660.0))
+    # 數值那幾列一格都不能動。動作提示只會接在最後面，後面沒有東西。
+    assert [len(row) for row in calm[:3]] == [len(row) for row in loud[:3]]
+    assert ([[cell[3] for cell in row] for row in calm[:3]]
+            == [[cell[3] for cell in row] for row in loud[:3]])
+    assert len(calm) == 3 and len(loud) == 4
+
+
+def test_a_column_that_cannot_be_measured_keeps_its_place():
+    """整欄消失的話後面全部位移，而量不量得到是逐幀在變的。"""
+    texts = _texts(view())
+    for label in ("頭前傾", "肩膀高低", "肩膀下沉", "距離", "轉身"):
+        assert any(cell.startswith(label) and "—" in cell for cell in texts), label
 
 
 def test_the_panel_grows_instead_of_clipping_the_last_row():
@@ -301,12 +312,16 @@ def test_a_judging_mode_still_says_unknown():
     assert "未知" in " ".join(_texts(view(state=Posture.UNKNOWN)))
 
 
-def test_a_skipped_frame_still_shows_the_distance_and_the_reason():
-    """調整架設位置時正是略過最多的時候，那幾個數字不能跟著消失。"""
+def test_a_skipped_frame_still_shows_the_numbers_it_has():
+    """調整架設位置時正是略過最多的時候，那幾個數字不能跟著消失。
+
+    略過原因本身改成只印在終端機那一行：它長度不定，擺進面板會把一整列推開，
+    而面板的版面是固定的。
+    """
     texts = " ".join(_texts(view(distance_mm=662.0,
                                  skip_reason="左右只有 3 個共同關鍵點")))
     assert "662" in texts
-    assert "共同關鍵點" in texts
+    assert "共同關鍵點" not in texts
 
 
 @pytest.mark.parametrize("reason,tag", [
@@ -351,14 +366,6 @@ def test_a_single_frame_value_is_shown_when_there_is_no_average_yet():
     assert "12.3" in texts and "-2.1" in texts
 
 
-def test_a_single_frame_value_says_so():
-    """單幀誤差與判定門檻同量級，看的人必須知道這個數字還沒被平均過。"""
-    assert "單幀" in " ".join(_texts(view(theta_ca_mean_deg=None,
-                                          theta_ca_instant_deg=12.3)))
-    assert "單幀" not in " ".join(_texts(view(theta_ca_mean_deg=8.0,
-                                              theta_ca_instant_deg=12.3)))
-
-
 def test_the_zero_point_is_shown_so_the_zeroing_can_be_checked():
     """畫面上的角度都是扣完基準的值，不印零點就看不出歸零生效沒有。"""
     texts = " ".join(_texts(view(theta_ca_offset_deg=3.8)))
@@ -368,7 +375,8 @@ def test_the_zero_point_is_shown_so_the_zeroing_can_be_checked():
 
 def test_the_new_panel_fields_have_an_ascii_form():
     v = view(theta_ca_mean_deg=None, theta_ca_instant_deg=12.3,
-             theta_ca_offset_deg=3.8)
+             theta_ca_offset_deg=3.8, turned_deg=40.0, drop_mm=18.0,
+             drop_threshold_mm=12.0)
     for text in _ascii_texts(v):
         assert text.isascii(), text
 

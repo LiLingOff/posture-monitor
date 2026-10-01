@@ -181,6 +181,16 @@ def _fmt(value: float | None, digits: int = 1, suffix: str = "") -> tuple[str, s
 def panel_rows(view) -> list[list[tuple]]:
     """面板每一列的內容：(中文, 英文, 顏色, 字級, 粗體)。
 
+    **版面固定。** 欄位永遠都在，量不到印破折號而不是整欄消失；字級全場統一，
+    只有最上面的狀態詞比較大，而它一定在。超標靠顏色講，不靠放大。
+
+    先前警告超標時放大到狀態詞的級數、而且只在超標時才出現，結果是同一個視窗
+    在受試者眼前忽大忽小、欄位忽有忽無，每次變化後面的東西全部跟著位移。前作
+    的面板從頭到尾就是固定幾行，變的只有數值與顏色，那才看得住。
+
+    只有「整段跑完都不會變」的欄位可以不存在：沒給秒數就沒有剩餘秒數、不判定
+    就沒有視窗進度。逐幀會變的一律留著位子。
+
     排版與繪製分開，因為排版的斷言只能確認字串裡有某段文字，那擋不住排錯欄。
     """
     # once 只量一幀、沒有基準也沒有視窗，判定在那裡結構上不可能成立，印一個
@@ -188,101 +198,78 @@ def panel_rows(view) -> list[list[tuple]]:
     word_zh, word_en = (STATE_WORDS[view.state] if view.judging
                         else ("單幀量測", "SINGLE FRAME"))
     word_colour = STATE_COLOURS[view.state] if view.judging else DIM
+    first = [(word_zh, word_en, word_colour, STATE_SIZE, True)]
+
     # 沒有平均值就退回單幀值。once 只量一幀，視窗結構上永遠是空的，而角度本身
-    # 量到了，印破折號等於把手上的數字丟掉。退回去的時候一定要標「單幀」：
-    # 單幀誤差與判定門檻同量級，看的人必須知道這個數字還沒有被平均過。
-    ca_value, sym_value = view.theta_ca_mean_deg, view.theta_sym_mean_deg
-    ca_instant = ca_value is None and view.theta_ca_instant_deg is not None
-    sym_instant = sym_value is None and view.theta_sym_instant_deg is not None
-    if ca_instant:
+    # 量到了，印破折號等於把手上的數字丟掉。
+    ca_value = view.theta_ca_mean_deg
+    if ca_value is None:
         ca_value = view.theta_ca_instant_deg
-    if sym_instant:
+    sym_value = view.theta_sym_mean_deg
+    if sym_value is None:
         sym_value = view.theta_sym_instant_deg
     ca = _fmt(ca_value, 1, "°")
     ca_err = _fmt(view.theta_ca_error_deg, 1, "")
     sym = _fmt(sym_value, 1, "°")
 
-    first: list[tuple] = [
-        (word_zh, word_en, word_colour, STATE_SIZE, True),
-        (f"頭前傾 {ca[0]}", f"Head {ca[1]}", DIM, TEXT_SIZE, False),
+    # 誤差與角度同一欄：分成兩欄的話視窗還沒填滿時那一欄不存在，後面全部位移。
+    second = [
+        (f"頭前傾 {ca[0]} ± {ca_err[0]}°", f"Head {ca[1]} +-{ca_err[1]}d",
+         DIM, TEXT_SIZE, False),
+        (f"肩膀高低 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False),
     ]
-    if view.theta_ca_error_deg is not None:
-        first.append((f"± {ca_err[0]}°", f"+-{ca_err[1]}d", DIM, TEXT_SIZE, False))
-    first.append((f"肩膀高低 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False))
-    # 不判定的模式已經由狀態詞說了是單幀，再標一次是重複。judging 的時候
-    # 退回單幀值是意外狀況，那才需要標出來。
-    if view.judging and (ca_instant or sym_instant):
-        first.append(("單幀", "single frame", EDGE, TEXT_SIZE, False))
+
+    over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None
+                 and view.drop_mm > view.drop_threshold_mm)
+    drop = _fmt(None if view.drop_mm is None else max(0.0, view.drop_mm), 0, "mm")
+    second.append((f"肩膀下沉 {drop[0]}", f"Drop {drop[1]}",
+                   MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop))
 
     distance = _fmt(view.distance_mm, 0, "mm")
-    second: list[tuple] = [(f"距離 {distance[0]}", f"Dist {distance[1]}", DIM, TEXT_SIZE, False)]
-
-    # 畫面上的角度是扣掉基準之後的值，所以零點本身不印的話，歸零有沒有生效、
-    # 扣掉的是多少，站在旁邊的人完全看不出來。前作把 Raw 與 Off 一直印著。
-    if view.theta_ca_offset_deg is not None:
-        zero = _fmt(view.theta_ca_offset_deg, 1, "°")
-        second.append((f"零點 {zero[0]}", f"Zero {zero[1]}", DIM, TEXT_SIZE, False))
-
     turned = _fmt(view.turned_deg, 0, "°")
     over_turned = (view.turned_deg is not None
                    and abs(view.turned_deg) > TURNED_LIMIT_DEG)
-    over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None
-                 and view.drop_mm > view.drop_threshold_mm)
-
-    # 要人當場做一件事的訊息自己一列，而且只在該做的時候才出現。先前它們混在
-    # 條件那一列裡：一個 34 級的紅字旁邊接著「30/30 幀」「剩 45s」，把整列撐高
-    # 又讓警告讀起來像雜項。同一列裡字級不一致就是排版壞掉的樣子。
-    alerts: list[tuple] = []
-    if over_turned:
-        alerts.append((f"轉身 {turned[0]}　請轉回正面",
-                       f"Turned {turned[1]}  FACE FRONT",
-                       MISPAIRED, STATE_SIZE, True))
-    if over_drop:
-        alerts.append((f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
-                       f"Drop {max(0.0, view.drop_mm):.0f}mm",
-                       MISPAIRED, STATE_SIZE, True))
-
-    # 沒超標的時候這些是背景資訊，一律同一個字級、同一個顏色。
-    if not over_turned:
-        second.append((f"轉身 {turned[0]}", f"Turned {turned[1]}",
-                       DIM, TEXT_SIZE, False))
-    if view.drop_mm is not None and not over_drop:
-        second.append((f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
-                       f"Drop {max(0.0, view.drop_mm):.0f}mm",
-                       DIM, TEXT_SIZE, False))
-    # 視窗的進度只有在平均得起來的時候才有意義。once 的「0/1 幀」看起來像
-    # 一幀都沒量到，實際上那一幀好好的，只是沒有視窗可以填。
+    third = [
+        (f"距離 {distance[0]}", f"Dist {distance[1]}", DIM, TEXT_SIZE, False),
+        (f"轉身 {turned[0]}", f"Turned {turned[1]}",
+         MISPAIRED if over_turned else DIM, TEXT_SIZE, over_turned),
+    ]
+    # 畫面上的角度是扣掉基準之後的值，所以零點本身不印的話，歸零有沒有生效、
+    # 扣掉的是多少，站在旁邊的人完全看不出來。前作把 Raw 與 Off 一直印著。
+    # 有沒有基準整段不會變，所以這一欄可以不存在。
+    if view.theta_ca_offset_deg is not None:
+        zero = _fmt(view.theta_ca_offset_deg, 1, "°")
+        third.append((f"零點 {zero[0]}", f"Zero {zero[1]}", DIM, TEXT_SIZE, False))
+    # 視窗的進度只有在平均得起來的時候才有意義。once 的「0/1 幀」看起來像一幀
+    # 都沒量到，實際上那一幀好好的，只是沒有視窗可以填。
     if view.judging:
-        second.append((f"{view.window_count}/{view.window_size} 幀",
-                       f"{view.window_count}/{view.window_size}", DIM, TEXT_SIZE, False))
-    if view.rejected:
-        second.append((f"略過 {view.rejected}", f"skip {view.rejected}",
-                       DIM, TEXT_SIZE, False))
+        third.append((f"{view.window_count}/{view.window_size} 幀",
+                      f"{view.window_count}/{view.window_size}", DIM, TEXT_SIZE, False))
     if view.remaining_s is not None:
         left = max(0.0, view.remaining_s)
-        second.append((f"剩 {left:.0f}s", f"{left:.0f}s left", DIM, TEXT_SIZE, False))
+        third.append((f"剩 {left:.0f}s", f"{left:.0f}s left", DIM, TEXT_SIZE, False))
 
-    rows = [first, second] if not alerts else [first, alerts, second]
-
-    third: list[tuple] = []
+    # 要人當場做一件事的話擺在最後一欄，後面沒有東西，所以它出現與消失都不會
+    # 把別的欄位推走。
+    fourth: list[tuple] = []
     if view.mode:
         zh, en = MODE_WORDS.get(view.mode, (view.mode, view.mode))
         if zh:
             if view.phase_remaining_s is not None:
                 zh += f" {max(0.0, view.phase_remaining_s):.0f}s"
                 en += f" {max(0.0, view.phase_remaining_s):.0f}s"
-            third.append((zh, en, (90, 205, 90), TEXT_SIZE, True))
-    if view.skip_reason is not None:
-        third.append((f"略過：{view.skip_reason}", f"skipped: {reason_tag(view.skip_reason)}",
-                      EDGE, TEXT_SIZE, False))
+            fourth.append((zh, en, (90, 205, 90), TEXT_SIZE, True))
     if view.keys:
-        third.append(("　".join(k for k, _ in view.keys),
-                      "  ".join(e for _, e in view.keys),
-                      DIM, TEXT_SIZE, False))
-    if third:
-        rows.append(third)
-    return rows
+        fourth.append(("　".join(k for k, _ in view.keys),
+                       "  ".join(e for _, e in view.keys),
+                       DIM, TEXT_SIZE, False))
+    if over_turned:
+        fourth.append(("請轉回正面", "FACE FRONT", MISPAIRED, TEXT_SIZE, True))
 
+    rows = [first, second, third]
+    if fourth:
+        rows.append(fourth)
+    return rows
 
 def panel_height(view) -> int:
     """這一幀的面板要多高。列數會變，所以不能是常數。"""
