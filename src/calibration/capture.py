@@ -144,9 +144,18 @@ def describe_camera_open_failure(index: int) -> str:
         if available:
             lines.append(f"  目前存在的是 {'、'.join(available)}。")
             lowest = available[0][len("video"):]
+            # 不要叫人記下這個編號。2026-10-01 實機連續兩次：掉線時訊息說改用
+            # --camera 1，照做之後 video1 又不見了、訊息改說用 0。裝置每重新
+            # 列舉一次編號就移位一次，所以當下量到的編號在被讀到的時候已經過期。
+            # auto 本來就是預設值，照著這裡的編號去指定反而比不指定更糟。
             lines.append(
-                "  重新插拔或重開機之後編號會整組移位。一顆雙目模組佔用兩個節點，"
-                f"只有編號較小的那個能取像，所以改用 --camera {lowest}"
+                "  重新插拔、重開機、或裝置自己重新列舉之後，編號都會整組移位，"
+                "所以上面這個編號你讀到的時候可能又變了。改用 --camera auto"
+                "（那本來就是預設值），它會逐一試到讀得出畫面為止。"
+            )
+            lines.append(
+                f"  一顆雙目模組佔用兩個節點，只有編號較小的那個能取像；"
+                f"現在編號最小的是 video{lowest}。"
             )
         else:
             lines.append("  一個 /dev/video* 都沒有。裝置沒接上，或 USB 沒認到。用 dmesg | tail -30 看看。")

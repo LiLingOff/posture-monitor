@@ -81,8 +81,19 @@ def test_reports_the_nodes_that_do_exist_when_the_number_shifted(linux, monkeypa
     message = linux.describe_camera_open_failure(0)
     assert "/dev/video0 不存在" in message
     assert "video2、video3" in message
-    assert "--camera 2" in message, "要直接說出該改成哪個編號"
+    assert "video2" in message, "現在有哪些節點是程式看得到的，要講出來"
     assert "posture.py live" not in message, "訊息寫死子指令的話，跑 baseline 的人會被誤導"
+
+
+def test_the_advice_is_auto_not_a_number_that_will_have_moved(linux, monkeypatch):
+    """2026-10-01 實機：訊息叫人改用 --camera 1，照做之後 video1 又不見了，
+    訊息改說用 0。當下量到的編號在被讀到的時候已經過期，照著指定比不指定更糟。"""
+    monkeypatch.setattr(linux.Path, "exists", lambda self: False)
+    monkeypatch.setattr(linux, "_video_nodes", lambda: ["video2", "video3"])
+
+    message = linux.describe_camera_open_failure(0)
+    assert "--camera auto" in message
+    assert "--camera 2" not in message
 
 
 def test_says_the_device_is_absent_when_nothing_is_plugged_in(linux, monkeypatch):
