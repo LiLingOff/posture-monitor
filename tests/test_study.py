@@ -368,3 +368,11 @@ def test_the_briefs_have_no_markdown_in_them():
         brief = condition_brief(condition)
         for mark in ("**", "__", "`"):
             assert mark not in brief, (condition, mark)
+
+
+def test_head_forward_is_not_the_same_instruction_as_forward():
+    """forward 是軀幹倒下去，肩膀跟著沉；head-forward 是肩膀不動只有頭往前。
+    2026-10-01 實機：forward 的肩高下沉 58mm 而 θ_CA 幾乎沒反應。"""
+    brief = condition_brief("head-forward")
+    assert "肩膀不要動" in brief
+    assert brief != condition_brief("forward")
