@@ -28,11 +28,16 @@ GUIDE = (90, 90, 90)
 EDGE = (0, 165, 255)        # 橘：關鍵點貼在畫面邊緣
 MISPAIRED = (60, 60, 235)   # 紅：左右配對錯了
 DIM = (190, 190, 190)
+# 未知刻意不是灰的：判定那一段用這裡的顏色畫，而骨架也是灰的，兩者撞色的話
+# 整張圖只剩一種顏色，連現在在判哪一段都看不出來。未知正是最需要看清楚的狀態。
 STATE_COLOURS = {
     Posture.OK: (90, 205, 90),
     Posture.OVER: (60, 60, 235),
-    Posture.UNKNOWN: (150, 150, 150),
+    Posture.UNKNOWN: (245, 245, 245),
 }
+# 每一條線先描一圈深色再畫本體。辦公室的背景同時有白牆與黑螢幕，單一顏色
+# 一定會在其中一種背景上消失，描邊之後兩種都看得見。
+HALO = (20, 20, 20)
 # monitor 的階段。用字串當鍵而不是 import Mode：疊圖不該相依於流程。
 # 少一個的話面板會直接印中文，退回英文時就變成一排問號，所以有測試盯著。
 MODE_WORDS = {
@@ -49,7 +54,11 @@ STATE_WORDS = {
 
 # 面板寫的是白話，文件與報告寫的是 θ_CA、θ_sym、肩部垂直位移。刻意不一致：
 # 站在旁邊看畫面的人不必先知道 θ_CA 是什麼，而報告要的是可以對照文獻的名稱。
+# 底線而不是固定值。列數會變（警告列只在有警告時出現），寫死的話超出的那一列
+# 會被裁掉半個字，而被裁掉的正好是只在出事時才出現的那一列。
 PANEL_HEIGHT = 118
+PANEL_PAD = 8
+ROW_GAP = 6
 STATE_SIZE = 34
 TEXT_SIZE = 20
 MIN_WIDTH = 640
@@ -88,7 +97,13 @@ def _point(points: np.ndarray, index: int, scale: float):
     return int(round(x * scale)), int(round(y * scale))
 
 
-def draw_bones(canvas, keypoints, scale: float, colour=SKELETON, thickness: int = 2) -> None:
+def _stroke(canvas, pa, pb, colour, thickness: int) -> None:
+    """描邊再畫線。"""
+    cv2.line(canvas, pa, pb, HALO, thickness + 3, cv2.LINE_AA)
+    cv2.line(canvas, pa, pb, colour, thickness, cv2.LINE_AA)
+
+
+def draw_bones(canvas, keypoints, scale: float, colour=SKELETON, thickness: int = 3) -> None:
     """灰色骨架。任一端沒偵測到的那條線就不畫。"""
     if keypoints is None:
         return
@@ -97,7 +112,7 @@ def draw_bones(canvas, keypoints, scale: float, colour=SKELETON, thickness: int 
         pb = _point(keypoints.points, b, scale)
         if pa is None or pb is None:
             continue
-        cv2.line(canvas, pa, pb, colour, thickness, cv2.LINE_AA)
+        _stroke(canvas, pa, pb, colour, thickness)
 
 
 def draw_segment(canvas, keypoints, name_a: str, name_b: str, scale: float,
@@ -113,7 +128,7 @@ def draw_segment(canvas, keypoints, name_a: str, name_b: str, scale: float,
     pb = _point(keypoints.points, keypoint_index(name_b), scale)
     if pa is None or pb is None:
         return False
-    cv2.line(canvas, pa, pb, colour, thickness, cv2.LINE_AA)
+    _stroke(canvas, pa, pb, colour, thickness)
     return True
 
 
@@ -168,44 +183,78 @@ def panel_rows(view) -> list[list[tuple]]:
 
     排版與繪製分開，因為排版的斷言只能確認字串裡有某段文字，那擋不住排錯欄。
     """
-    word_zh, word_en = STATE_WORDS[view.state]
-    ca = _fmt(view.theta_ca_mean_deg, 1, "°")
+    # once 只量一幀、沒有基準也沒有視窗，判定在那裡結構上不可能成立，印一個
+    # 大大的「未知」會讓人以為是姿勢看不出來，實際上是這個模式根本不判。
+    word_zh, word_en = (STATE_WORDS[view.state] if view.judging
+                        else ("單幀量測", "SINGLE FRAME"))
+    word_colour = STATE_COLOURS[view.state] if view.judging else DIM
+    # 沒有平均值就退回單幀值。once 只量一幀，視窗結構上永遠是空的，而角度本身
+    # 量到了，印破折號等於把手上的數字丟掉。退回去的時候一定要標「單幀」：
+    # 單幀誤差與判定門檻同量級，看的人必須知道這個數字還沒有被平均過。
+    ca_value, sym_value = view.theta_ca_mean_deg, view.theta_sym_mean_deg
+    ca_instant = ca_value is None and view.theta_ca_instant_deg is not None
+    sym_instant = sym_value is None and view.theta_sym_instant_deg is not None
+    if ca_instant:
+        ca_value = view.theta_ca_instant_deg
+    if sym_instant:
+        sym_value = view.theta_sym_instant_deg
+    ca = _fmt(ca_value, 1, "°")
     ca_err = _fmt(view.theta_ca_error_deg, 1, "")
-    sym = _fmt(view.theta_sym_mean_deg, 1, "°")
+    sym = _fmt(sym_value, 1, "°")
 
     first: list[tuple] = [
-        (word_zh, word_en, STATE_COLOURS[view.state], STATE_SIZE, True),
+        (word_zh, word_en, word_colour, STATE_SIZE, True),
         (f"頭前傾 {ca[0]}", f"Head {ca[1]}", DIM, TEXT_SIZE, False),
     ]
     if view.theta_ca_error_deg is not None:
         first.append((f"± {ca_err[0]}°", f"+-{ca_err[1]}d", DIM, TEXT_SIZE, False))
     first.append((f"肩膀高低 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False))
+    # 不判定的模式已經由狀態詞說了是單幀，再標一次是重複。judging 的時候
+    # 退回單幀值是意外狀況，那才需要標出來。
+    if view.judging and (ca_instant or sym_instant):
+        first.append(("單幀", "single frame", EDGE, TEXT_SIZE, False))
 
     distance = _fmt(view.distance_mm, 0, "mm")
     second: list[tuple] = [(f"距離 {distance[0]}", f"Dist {distance[1]}", DIM, TEXT_SIZE, False)]
 
+    # 畫面上的角度是扣掉基準之後的值，所以零點本身不印的話，歸零有沒有生效、
+    # 扣掉的是多少，站在旁邊的人完全看不出來。前作把 Raw 與 Off 一直印著。
+    if view.theta_ca_offset_deg is not None:
+        zero = _fmt(view.theta_ca_offset_deg, 1, "°")
+        second.append((f"零點 {zero[0]}", f"Zero {zero[1]}", DIM, TEXT_SIZE, False))
+
     turned = _fmt(view.turned_deg, 0, "°")
     over_turned = (view.turned_deg is not None
                    and abs(view.turned_deg) > TURNED_LIMIT_DEG)
-    # 轉身超標要跟狀態詞一樣顯眼。這個視窗本身就是引人轉頭去看的東西，
-    # 提示比狀態詞小的話等於沒提示。
-    second.append((
-        f"轉身 {turned[0]}" + ("　請轉回正面" if over_turned else ""),
-        f"Turned {turned[1]}" + ("  FACE FRONT" if over_turned else ""),
-        MISPAIRED if over_turned else DIM,
-        STATE_SIZE if over_turned else TEXT_SIZE,
-        over_turned,
-    ))
-    if view.drop_mm is not None:
-        over_drop = (view.drop_threshold_mm is not None
-                     and view.drop_mm > view.drop_threshold_mm)
-        second.append((
-            f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
-            f"Drop {max(0.0, view.drop_mm):.0f}mm",
-            MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop,
-        ))
-    second.append((f"{view.window_count}/{view.window_size} 幀",
-                   f"{view.window_count}/{view.window_size}", DIM, TEXT_SIZE, False))
+    over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None
+                 and view.drop_mm > view.drop_threshold_mm)
+
+    # 要人當場做一件事的訊息自己一列，而且只在該做的時候才出現。先前它們混在
+    # 條件那一列裡：一個 34 級的紅字旁邊接著「30/30 幀」「剩 45s」，把整列撐高
+    # 又讓警告讀起來像雜項。同一列裡字級不一致就是排版壞掉的樣子。
+    alerts: list[tuple] = []
+    if over_turned:
+        alerts.append((f"轉身 {turned[0]}　請轉回正面",
+                       f"Turned {turned[1]}  FACE FRONT",
+                       MISPAIRED, STATE_SIZE, True))
+    if over_drop:
+        alerts.append((f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
+                       f"Drop {max(0.0, view.drop_mm):.0f}mm",
+                       MISPAIRED, STATE_SIZE, True))
+
+    # 沒超標的時候這些是背景資訊，一律同一個字級、同一個顏色。
+    if not over_turned:
+        second.append((f"轉身 {turned[0]}", f"Turned {turned[1]}",
+                       DIM, TEXT_SIZE, False))
+    if view.drop_mm is not None and not over_drop:
+        second.append((f"肩膀下沉 {max(0.0, view.drop_mm):.0f}mm",
+                       f"Drop {max(0.0, view.drop_mm):.0f}mm",
+                       DIM, TEXT_SIZE, False))
+    # 視窗的進度只有在平均得起來的時候才有意義。once 的「0/1 幀」看起來像
+    # 一幀都沒量到，實際上那一幀好好的，只是沒有視窗可以填。
+    if view.judging:
+        second.append((f"{view.window_count}/{view.window_size} 幀",
+                       f"{view.window_count}/{view.window_size}", DIM, TEXT_SIZE, False))
     if view.rejected:
         second.append((f"略過 {view.rejected}", f"skip {view.rejected}",
                        DIM, TEXT_SIZE, False))
@@ -213,7 +262,7 @@ def panel_rows(view) -> list[list[tuple]]:
         left = max(0.0, view.remaining_s)
         second.append((f"剩 {left:.0f}s", f"{left:.0f}s left", DIM, TEXT_SIZE, False))
 
-    rows = [first, second]
+    rows = [first, second] if not alerts else [first, alerts, second]
 
     third: list[tuple] = []
     if view.mode:
@@ -235,12 +284,20 @@ def panel_rows(view) -> list[list[tuple]]:
     return rows
 
 
+def panel_height(view) -> int:
+    """這一幀的面板要多高。列數會變，所以不能是常數。"""
+    rows = panel_rows(view)
+    needed = PANEL_PAD * 2 - ROW_GAP + sum(
+        max(size for _, _, _, size, _ in row) + ROW_GAP for row in rows)
+    return max(PANEL_HEIGHT, needed)
+
+
 def render_panel(view, width: int, painter: TextPainter) -> np.ndarray:
     """面板那一條帶子。"""
-    band = np.zeros((PANEL_HEIGHT, width, 3), dtype=np.uint8)
+    band = np.zeros((panel_height(view), width, 3), dtype=np.uint8)
     band[:, :] = (28, 28, 28)
     items: list[TextItem] = []
-    y = 8
+    y = PANEL_PAD
     for row in panel_rows(view):
         x = 14
         height = max(size for _, _, _, size, _ in row)
@@ -249,7 +306,7 @@ def render_panel(view, width: int, painter: TextPainter) -> np.ndarray:
                                   ascii_text=ascii_text, colour=colour,
                                   size=size, bold=bold))
             x += painter.width(text, ascii_text, size) + 22
-        y += height + 6
+        y += height + ROW_GAP
     painter.paint(band, items)
     return band
 

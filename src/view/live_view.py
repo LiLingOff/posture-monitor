@@ -34,6 +34,9 @@ class LiveView:
     # 狀態詞
     state: Posture = Posture.UNKNOWN
     skip_reason: str | None = None
+    # 這個模式判不判定。once 只量一幀、沒有基準也沒有視窗，判定結構上不可能
+    # 成立，印「未知」會被讀成「姿勢看不出來」，而實際上是根本沒有判。
+    judging: bool = True
 
     # 數字
     theta_ca_mean_deg: float | None = None
@@ -46,6 +49,9 @@ class LiveView:
     window_size: int = 0
     distance_mm: float | None = None
     turned_deg: float | None = None
+    # 這次扣掉的零點。畫面上的角度都是扣完的值，不印零點就看不出歸零生效沒有。
+    theta_ca_offset_deg: float | None = None
+    theta_sym_offset_deg: float | None = None
     drop_mm: float | None = None
     drop_threshold_mm: float | None = None
     rejected: int = 0
@@ -64,6 +70,7 @@ class LiveView:
     def build(
         cls, *, frames, match, measurement, corrected, ca_window, sym_window,
         state: Posture, skip_reason: str | None, rejected: int, frames_seen: int,
+        judging: bool = True,
         remaining_s: float | None = None, baseline=None,
         drop_mm: float | None = None, drop_threshold_mm: float | None = None,
         mode: str | None = None, phase_remaining_s: float | None = None,
@@ -89,6 +96,7 @@ class LiveView:
             mispaired=tuple(mispaired_keypoints(measurement)),
             state=state,
             skip_reason=skip_reason,
+            judging=judging,
             theta_ca_mean_deg=ca_window.mean,
             theta_ca_error_deg=ca_window.standard_error,
             theta_ca_instant_deg=corrected[0],
@@ -99,6 +107,8 @@ class LiveView:
             window_size=ca_window.window,
             distance_mm=measurement.reference_depth_mm,
             turned_deg=turned_deg(measurement, baseline),
+            theta_ca_offset_deg=None if baseline is None else baseline.theta_ca_deg,
+            theta_sym_offset_deg=None if baseline is None else baseline.theta_sym_deg,
             drop_mm=drop_mm,
             drop_threshold_mm=drop_threshold_mm,
             rejected=rejected,

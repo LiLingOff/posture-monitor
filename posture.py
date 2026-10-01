@@ -216,7 +216,8 @@ def _run_once(args) -> None:
             frames=(left_frame, right_frame), match=match, measurement=measurement,
             corrected=(measurement.theta_ca_deg, measurement.theta_sym_deg),
             ca_window=RollingAngle(1), sym_window=RollingAngle(1),
-            state=Posture.UNKNOWN, skip_reason=unusable_reason(measurement),
+            state=Posture.UNKNOWN, judging=False,
+            skip_reason=unusable_reason(measurement),
             rejected=0, frames_seen=1, keys=(("任意鍵關閉", "press any key"),),
         )))
     finally:
@@ -1191,8 +1192,9 @@ def main() -> None:
                             "按 q 結束這一段，終端機的 Ctrl-C 照常")
         p.add_argument("--display-width", type=int, default=1280,
                        help="視窗寬度。低於 640 會拉回 640，再小面板就看不清")
-        p.add_argument("--display-eyes", choices=["both", "left"], default="both",
-                       help="both 左右眼並排，左右配對錯了看得出來；left 只畫左眼")
+        p.add_argument("--display-eyes", choices=["both", "left"], default="left",
+                       help="left 只畫左眼，受試者佔滿整個寬度；both 左右眼並排，"
+                            "配對錯了看得出來，但兩張幾乎一樣，各只剩一半寬")
         p.add_argument("--font", type=Path, default=None,
                        help="畫面文字用的中日韓字型。不給的話自動找，"
                             "找不到就改用英文，量測照常")

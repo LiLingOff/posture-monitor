@@ -257,10 +257,48 @@ def test_turned_is_blank_without_a_baseline():
 def test_a_big_turn_is_as_loud_as_the_state_word():
     """這個視窗本身就是引人轉頭去看的東西，提示比狀態詞小等於沒提示。"""
     small = overlay.panel_rows(view(turned_deg=2.0))[1][1]
-    big = overlay.panel_rows(view(turned_deg=40.0))[1][1]
+    big = overlay.panel_rows(view(turned_deg=40.0))[1][0]
     assert big[3] == overlay.STATE_SIZE > small[3]
     assert big[2] == overlay.MISPAIRED
     assert "請轉回正面" in big[0]
+
+
+def test_an_alert_gets_its_own_row_and_leaves_the_conditions_alone():
+    """一個 34 級的紅字旁邊接著「30/30 幀」，會把整列撐高又讓警告讀起來像雜項。"""
+    calm = overlay.panel_rows(view(turned_deg=2.0, distance_mm=660.0))
+    loud = overlay.panel_rows(view(turned_deg=40.0, distance_mm=660.0))
+    assert len(loud) == len(calm) + 1
+    assert all(cell[3] == overlay.TEXT_SIZE for cell in loud[2])
+    assert "轉身" not in " ".join(cell[0] for cell in loud[2])
+
+
+def test_both_alerts_share_one_row_at_one_size():
+    row = overlay.panel_rows(view(turned_deg=40.0, drop_mm=18.0,
+                                  drop_threshold_mm=12.0))[1]
+    assert len(row) == 2
+    assert {cell[3] for cell in row} == {overlay.STATE_SIZE}
+
+
+def test_the_panel_grows_instead_of_clipping_the_last_row():
+    """列數會變，高度寫死的話被裁掉的正好是只在出事時才出現的那一列。"""
+    calm = view(distance_mm=660.0)
+    loud = view(turned_deg=40.0, drop_mm=18.0, drop_threshold_mm=12.0,
+                distance_mm=660.0, keys=(("q 離開", "q quit"),))
+    assert overlay.panel_height(calm) == overlay.PANEL_HEIGHT
+    assert overlay.panel_height(loud) > overlay.PANEL_HEIGHT
+    assert overlay.render_panel(loud, 1280, ASCII).shape[0] == overlay.panel_height(loud)
+
+
+def test_once_says_single_frame_rather_than_unknown():
+    """once 結構上不可能判定，印「未知」會被讀成姿勢看不出來。"""
+    word = overlay.panel_rows(view(judging=False, state=Posture.UNKNOWN))[0][0]
+    assert word[0] == "單幀量測" and word[1] == "SINGLE FRAME"
+    assert word[2] != overlay.STATE_COLOURS[Posture.OVER]
+    assert "未知" not in " ".join(_texts(view(judging=False)))
+
+
+def test_a_judging_mode_still_says_unknown():
+    assert "未知" in " ".join(_texts(view(state=Posture.UNKNOWN)))
 
 
 def test_a_skipped_frame_still_shows_the_distance_and_the_reason():
@@ -304,3 +342,52 @@ def test_keypoint_labels_are_only_for_saved_frames():
     canvas = blank()
     overlay.label_keypoints(canvas, person(), 1.0)
     assert painted(canvas, 40)
+
+
+def test_a_single_frame_value_is_shown_when_there_is_no_average_yet():
+    """once 只量一幀，視窗結構上永遠是空的。印破折號等於把量到的數字丟掉。"""
+    texts = " ".join(_texts(view(theta_ca_mean_deg=None, theta_ca_instant_deg=12.3,
+                                 theta_sym_mean_deg=None, theta_sym_instant_deg=-2.1)))
+    assert "12.3" in texts and "-2.1" in texts
+
+
+def test_a_single_frame_value_says_so():
+    """單幀誤差與判定門檻同量級，看的人必須知道這個數字還沒被平均過。"""
+    assert "單幀" in " ".join(_texts(view(theta_ca_mean_deg=None,
+                                          theta_ca_instant_deg=12.3)))
+    assert "單幀" not in " ".join(_texts(view(theta_ca_mean_deg=8.0,
+                                              theta_ca_instant_deg=12.3)))
+
+
+def test_the_zero_point_is_shown_so_the_zeroing_can_be_checked():
+    """畫面上的角度都是扣完基準的值，不印零點就看不出歸零生效沒有。"""
+    texts = " ".join(_texts(view(theta_ca_offset_deg=3.8)))
+    assert "零點" in texts and "3.8" in texts
+    assert "零點" not in " ".join(_texts(view(theta_ca_offset_deg=None)))
+
+
+def test_the_new_panel_fields_have_an_ascii_form():
+    v = view(theta_ca_mean_deg=None, theta_ca_instant_deg=12.3,
+             theta_ca_offset_deg=3.8)
+    for text in _ascii_texts(v):
+        assert text.isascii(), text
+
+
+def test_unknown_is_not_the_same_colour_as_the_skeleton():
+    """判定那一段用狀態色畫，撞到骨架色的話整張圖只剩一種顏色，而未知
+    正是最需要看清楚現在在判哪一段的時候。"""
+    assert overlay.STATE_COLOURS[Posture.UNKNOWN] != overlay.SKELETON
+
+
+def test_bones_are_outlined_so_they_survive_a_bright_background():
+    """辦公室的背景同時有白牆與黑螢幕，單一顏色一定會在其中一種上消失。"""
+    canvas = blank(fill=245)
+    overlay.draw_bones(canvas, person(), 1.0)
+    assert (canvas < 60).any()
+
+
+def test_the_window_progress_is_hidden_when_nothing_is_averaged():
+    """once 的「0/1 幀」看起來像一幀都沒量到，其實那一幀好好的。"""
+    assert "0/1" not in " ".join(_texts(view(judging=False, window_count=0,
+                                             window_size=1)))
+    assert "30/30" in " ".join(_texts(view(window_count=30, window_size=30)))
