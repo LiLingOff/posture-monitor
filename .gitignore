@@ -12,3 +12,8 @@ data/pose_models/*.json
 
 # clone 下來的 Lightweight OpenPose（沒有 setup.py，只能放路徑上）
 third_party/
+
+# 逐幀記錄、快照與個人基準。快照是左眼原始畫面，裡面有受試者的臉，
+# 而這個 repo 是 public；從 Jetson 拷回來的檔案不能跟著進版控。
+data/sessions/
+data/baselines/
