@@ -376,3 +376,16 @@ def test_head_forward_is_not_the_same_instruction_as_forward():
     brief = condition_brief("head-forward")
     assert "肩膀不要動" in brief
     assert brief != condition_brief("forward")
+
+
+def test_every_judgement_axis_has_a_condition_that_targets_it():
+    """三軸各自要有一個會動到它的條件，否則那一軸的靈敏度沒有數據。
+    2026-10-01 為止只有肩高有證據，因為沒有一個條件瞄準 θ_sym。"""
+    briefs = {
+        "head-forward": "肩膀不要動",   # θ_CA：頭相對於軀幹
+        "shoulder-tilt": "右邊肩膀",     # θ_sym：兩肩高低差
+        "forward": "上半身往前",         # 肩高：軀幹整個沉下去
+    }
+    for condition, marker in briefs.items():
+        assert marker in condition_brief(condition), condition
+    assert len({condition_brief(c) for c in briefs}) == len(briefs)
