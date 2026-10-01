@@ -811,7 +811,7 @@ def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY):
     while True:
         _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
                 + condition_brief("upright")
-                + "\n  取完之後**不要起身**，會直接接著量測。",
+                + "\n  取完之後不要起身，會直接接著量測。",
                 not args.no_prompt)
         _countdown(args.countdown)
         print("\r開始取樣，請保持不動        ", flush=True)

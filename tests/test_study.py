@@ -359,3 +359,12 @@ def test_review_survives_a_segment_with_no_usable_frames():
     segments = review([_recording("upright", 1, ca=0.0, rejected=50, frames=50)])
     assert segments[0].theta_ca_deg is None
     assert segments[0].rejection_rate == pytest.approx(1.0)
+
+
+def test_the_briefs_have_no_markdown_in_them():
+    """指導語是逐字念給受試者聽的，而終端機不會把 ** 變成粗體，只會原樣印
+    出來，念的人就跟著把星號念進去了。"""
+    for condition in ("upright", "forward", "沒寫死的姿勢"):
+        brief = condition_brief(condition)
+        for mark in ("**", "__", "`"):
+            assert mark not in brief, (condition, mark)
