@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ..calibration.capture import (_open_camera, describe_camera_open_failure,
-                                   split_merged_frame)
+from ..calibration.device import (describe_camera_open_failure, open_camera,
+                                  split_merged_frame)
 from .benchmark import compare_precision_rmse, measure_latency, measure_sequential_multi_camera
 from .engine import LightweightOpenPoseModelPaths
 
@@ -14,7 +14,7 @@ from .engine import LightweightOpenPoseModelPaths
 def _grab_frames(
     camera_index: int, count: int, width: int | None = None, height: int | None = None
 ) -> list[np.ndarray]:
-    cap = _open_camera(camera_index, width, height)
+    cap = open_camera(camera_index, width, height)
     if not cap.isOpened():
         raise RuntimeError(describe_camera_open_failure(camera_index))
     frames = []

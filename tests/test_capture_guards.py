@@ -27,7 +27,7 @@ def forbid_camera(monkeypatch):
     def _boom(index, width=None, height=None):
         raise AssertionError(f"不應開啟相機（index={index}）")
 
-    monkeypatch.setattr(capture, "_open_camera", _boom)
+    monkeypatch.setattr(capture, "open_camera", _boom)
 
 
 def test_capture_mono_returns_early_when_already_enough(tmp_path, forbid_camera, capsys):
@@ -116,7 +116,7 @@ def test_capture_still_opens_camera_when_images_missing(tmp_path, monkeypatch):
         opened.append(index)
         raise RuntimeError("stop here")  # 確認有開啟相機即可，不必真的進入迴圈
 
-    monkeypatch.setattr(capture, "_open_camera", _fake_open)
+    monkeypatch.setattr(capture, "open_camera", _fake_open)
 
     with pytest.raises(RuntimeError):
         capture.capture_mono(0, out_dir, SPEC, target_count=40)
@@ -172,7 +172,7 @@ def test_capture_does_not_overwrite_when_numbering_has_gaps(tmp_path, monkeypatc
     (out_dir / "frame_0003.png").unlink()
 
     before = {p.name: int(cv2.imread(str(p))[0, 0, 0]) for p in out_dir.glob("*.png")}
-    monkeypatch.setattr(capture, "_open_camera", lambda *a, **k: _AlwaysOnCamera(fill=99))
+    monkeypatch.setattr(capture, "open_camera", lambda *a, **k: _AlwaysOnCamera(fill=99))
 
     capture.capture_mono(0, out_dir, SPEC, target_count=6)
 
@@ -225,7 +225,7 @@ def test_stereo_grabs_both_cameras_before_retrieving(tmp_path, monkeypatch, auto
             return super().read()
 
     cams = {0: _TracingCamera("l"), 1: _TracingCamera("r")}
-    monkeypatch.setattr(capture, "_open_camera", lambda index, *a, **k: cams[index])
+    monkeypatch.setattr(capture, "open_camera", lambda index, *a, **k: cams[index])
 
     capture.capture_stereo(0, 1, left_out, right_out, SPEC, target_count=1)
 

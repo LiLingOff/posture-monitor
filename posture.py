@@ -24,10 +24,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from calibration.capture import (CameraReadError, _open_camera,  # noqa: E402
-                                 describe_camera_open_failure,
-                                 describe_resolution_mismatch, find_camera_index,
-                                 merged_capture_size, split_merged_frame)
+from calibration.device import (CameraReadError,  # noqa: E402
+                                describe_camera_open_failure,
+                                describe_resolution_mismatch,
+                                find_camera_index, merged_capture_size,
+                                open_camera, split_merged_frame)
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline, baseline_quality_warnings)
@@ -99,7 +100,7 @@ def _open_selected_camera(args, calib=None):
     if args.camera == "auto":
         args.camera, how = find_camera_index(args.width, args.height)
         _step(how)
-    cap = _open_camera(args.camera, args.width, args.height)
+    cap = open_camera(args.camera, args.width, args.height)
     if not cap.isOpened():
         raise RuntimeError(describe_camera_open_failure(args.camera))
     return cap
@@ -834,7 +835,7 @@ def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
             index, how = find_camera_index(args.width, args.height)
         except RuntimeError:
             continue
-        cap = _open_camera(index, args.width, args.height)
+        cap = open_camera(index, args.width, args.height)
         if not cap.isOpened():
             cap.release()
             continue

@@ -32,7 +32,7 @@ def test_a_camera_that_is_gone_stops_the_measurement():
 
 def test_a_read_failure_is_a_different_kind_of_error_from_no_person():
     """兩者該有的反應相反：偵測失敗值得繼續跑，相機不見了不值得。"""
-    from calibration.capture import CameraReadError
+    from calibration.device import CameraReadError
 
     assert issubclass(CameraReadError, RuntimeError)
     assert not isinstance(RuntimeError("左眼沒有偵測到人"), CameraReadError)
@@ -199,7 +199,7 @@ def test_the_session_keeps_the_two_angles_apart():
 # ---- 重試政策 ----------------------------------------------------------
 
 def _dropped(retry) -> str | None:
-    from calibration.capture import CameraReadError
+    from calibration.device import CameraReadError
 
     return retry.failed(CameraReadError("讀取相機影格失敗"))
 

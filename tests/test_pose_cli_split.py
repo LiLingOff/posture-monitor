@@ -6,7 +6,7 @@
 """
 import numpy as np
 
-from calibration.capture import split_merged_frame
+from calibration.device import split_merged_frame
 
 
 def _side_by_side() -> np.ndarray:

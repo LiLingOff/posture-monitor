@@ -466,7 +466,7 @@ def test_reopening_searches_again_instead_of_reusing_the_old_number(monkeypatch)
             return True
 
     monkeypatch.setattr(posture, "find_camera_index", find)
-    monkeypatch.setattr(posture, "_open_camera", lambda i, w, h: _Opened())
+    monkeypatch.setattr(posture, "open_camera", lambda i, w, h: _Opened())
     monkeypatch.setattr(posture, "_discard_frames", lambda cap, n: None)
     args = SimpleNamespace(camera=0, width=2560, height=720, discard=0)
 

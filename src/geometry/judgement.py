@@ -85,10 +85,6 @@ class Judgement:
     frames_in_state: int    # 維持現在這個狀態多久了
     reason: str
 
-    @property
-    def should_warn(self) -> bool:
-        return self.posture is Posture.OVER
-
 
 class AngleJudge:
     """單一角度的判定，含遲滯。

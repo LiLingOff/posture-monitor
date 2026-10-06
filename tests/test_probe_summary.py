@@ -5,7 +5,7 @@
 """
 import pytest
 
-from calibration.capture import _summarize_side_by_side
+from calibration.device import _summarize_side_by_side
 
 
 # 2026-09-21 在 Jetson 上實際測到的結果：(實際寬, 實際高, fps, 是否為直接要到的模式)
@@ -67,7 +67,7 @@ class _FakePlatform(str):
 
 @pytest.fixture
 def linux(monkeypatch):
-    from calibration import capture
+    from calibration import device as capture
 
     monkeypatch.setattr(capture.sys, "platform", _FakePlatform("linux"))
     return capture
@@ -139,13 +139,13 @@ def test_holder_scan_never_raises_on_a_machine_without_proc():
     """這段在錯誤處理路徑上跑，自己壞掉的話會蓋掉真正的錯誤訊息。"""
     from pathlib import Path
 
-    from calibration.capture import _own_processes_holding
+    from calibration.device import _own_processes_holding
 
     assert _own_processes_holding(Path("/dev/video0")) == [] or True
 
 
 def test_stereo_open_failure_says_which_camera_is_the_problem():
-    from calibration.capture import describe_stereo_open_failure
+    from calibration.device import describe_stereo_open_failure
 
     only_right = describe_stereo_open_failure((1, True), (2, False))
     assert "index=2" in only_right
@@ -167,7 +167,7 @@ def test_skips_the_node_that_opens_but_never_delivers_a_frame():
 
     所以「開得起來」不算數，要真的讀到一幀。
     """
-    from calibration.capture import find_camera_index
+    from calibration.device import find_camera_index
 
     index, how = find_camera_index(
         2560, 720,
@@ -180,7 +180,7 @@ def test_skips_the_node_that_opens_but_never_delivers_a_frame():
 
 def test_prefers_the_node_that_gives_the_resolution_that_was_asked_for():
     """尺寸不符時畫面多半是單眼或裁切過的，切成兩半會得到兩塊不重疊的區域。"""
-    from calibration.capture import find_camera_index
+    from calibration.device import find_camera_index
 
     index, _ = find_camera_index(
         2560, 720,
@@ -191,7 +191,7 @@ def test_prefers_the_node_that_gives_the_resolution_that_was_asked_for():
 
 
 def test_falls_back_to_anything_readable_when_nothing_matches():
-    from calibration.capture import find_camera_index
+    from calibration.device import find_camera_index
 
     index, how = find_camera_index(
         2560, 720,
@@ -205,7 +205,7 @@ def test_falls_back_to_anything_readable_when_nothing_matches():
 
 
 def test_takes_the_lowest_readable_node_when_no_size_was_requested():
-    from calibration.capture import find_camera_index
+    from calibration.device import find_camera_index
 
     index, _ = find_camera_index(
         probe=_fake_probe({1: (True, (640, 480)), 2: (True, (640, 480))}),
@@ -215,21 +215,21 @@ def test_takes_the_lowest_readable_node_when_no_size_was_requested():
 
 
 def test_reports_every_node_it_tried_when_none_work():
-    from calibration.capture import find_camera_index
+    from calibration.device import find_camera_index
 
     with pytest.raises(RuntimeError, match="1、2、3"):
         find_camera_index(probe=_fake_probe({}), candidates=[1, 2, 3])
 
 
 def test_merged_size_doubles_the_axis_the_module_splits_on():
-    from calibration.capture import merged_capture_size
+    from calibration.device import merged_capture_size
 
     assert merged_capture_size((1280, 720)) == (2560, 720)
     assert merged_capture_size((1280, 720), vertical_split=True) == (1280, 1440)
 
 
 def test_a_matching_resolution_says_nothing():
-    from calibration.capture import describe_resolution_mismatch
+    from calibration.device import describe_resolution_mismatch
 
     assert describe_resolution_mismatch((1280, 720), (1280, 720)) is None
 
@@ -240,7 +240,7 @@ def test_the_resolution_the_camera_fell_back_to_is_caught():
     當時程式照樣跑完 192 幀，每一幀都算出深度 104mm，印出的原因卻指向左右
     配對錯誤。訊息要直接給出該加的參數，因為那是唯一要做的事。
     """
-    from calibration.capture import describe_resolution_mismatch
+    from calibration.device import describe_resolution_mismatch
 
     problem = describe_resolution_mismatch((1280, 720), (320, 480))
     assert problem is not None
@@ -251,7 +251,7 @@ def test_the_resolution_the_camera_fell_back_to_is_caught():
 
 def test_the_suggested_parameters_follow_the_split_direction():
     """上下併排的模組要求的是兩倍高而不是兩倍寬，給錯了照樣拿不到。"""
-    from calibration.capture import describe_resolution_mismatch
+    from calibration.device import describe_resolution_mismatch
 
     problem = describe_resolution_mismatch((1280, 720), (640, 240), vertical_split=True)
     assert "--width 1280 --height 1440" in problem

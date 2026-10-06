@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from calibration.capture import CameraReadError, describe_camera_loss
+from calibration.device import CameraReadError, describe_camera_loss
 
 from .baseline import group_rejection_reason
 from .judgement import windows_are_stale
