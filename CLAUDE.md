@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-10-06 是 555 個
+python -m pytest -q          # 2026-10-06 是 570 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -51,7 +51,8 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
    left-shoulder-up、right-shoulder-up，分兩趟跑（頭一趟、肩膀一趟）。
    θ_CA 改成前傾後仰都判。**不補**動到肩部垂直位移的條件，那一軸在報告
    裡只引用 2026-10-01 的 forward 資料，這是使用者的決定
-2. 相機在量測中途掉線過三次，原因沒定（PhotonVision 停掉之後沒再發生，但
-   沒有 dmesg 佐證）。再掉的話第一件事是 `dmesg | tail -40`
+2. 相機在量測中途掉線過四次，原因沒定。**不是 PhotonVision**：2026-10-06
+   確認服務沒在跑還是掉了。一直沒拿到 dmesg，再掉的話第一件事是
+   `dmesg | tail -40`。study 現在掉線後會重新找節點並重量那一段
 3. LED／蜂鳴器**先不做**（使用者說那不是重點）。技術上沒有障礙，是排序的
    決定，不是永久排除。細節見 doc 09 第 8 項
