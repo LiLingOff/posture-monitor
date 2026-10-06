@@ -126,6 +126,8 @@ class SegmentReview:
     # 這一段的平均方位角減掉基準的方位角。沒有基準或量不到方位角時是 None。
     turned_deg: float | None = None
     camera_lost: bool = False
+    # 相機掉線之後同一種姿勢在這一趟裡又量了一次，所以這一段是殘缺的那份。
+    retaken: bool = False
 
     @property
     def too_many_rejected(self) -> bool:
@@ -137,7 +139,19 @@ class SegmentReview:
 
     @property
     def needs_redo(self) -> bool:
+        """要叫人重量。已經在這一趟裡重量過的那份不算,重量的是後面那一份。"""
+        if self.retaken:
+            return False
         return self.too_many_rejected or self.turned_too_far or self.camera_lost
+
+    @property
+    def usable_data(self) -> bool:
+        """這一段的 CSV 值不值得丟進 analyse。
+
+        殘缺的那份不值得：相機掉線時往往只留下幾秒，跟後面完整的那份平均在
+        一起只會把結果拉偏。
+        """
+        return not self.retaken
 
 
 def review(recordings, baseline=None) -> list[SegmentReview]:
@@ -145,8 +159,10 @@ def review(recordings, baseline=None) -> list[SegmentReview]:
 
     判斷寫在這裡而不是印出來的地方，因為同一條政策（略過率上限）另外有三個
     使用者：取基準時的警告、`cohort` 的統計、報表上的 ⚠ 標記。四處各自寫一遍
-    的話，總結可以說某一段乾淨而彙整其實把它排除掉了。
+    的話，總結可以說某一段乾淨而彙整其實把它排除掉了。「哪一段被重量過」
+    同理,先前它寫在印出來的地方，而那正是這段說明在講的事。
     """
+    later = [r.condition for r in recordings]
     return [
         SegmentReview(
             condition=r.condition, trial=r.trial,
@@ -154,8 +170,10 @@ def review(recordings, baseline=None) -> list[SegmentReview]:
             frames=r.frames, rejection_rate=r.rejection_rate,
             turned_deg=_turned(r, baseline),
             camera_lost=r.camera_lost is not None,
+            retaken=(r.camera_lost is not None
+                     and r.condition in later[i + 1:]),
         )
-        for r in recordings
+        for i, r in enumerate(recordings)
     ]
 
 

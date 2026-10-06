@@ -515,25 +515,32 @@ def test_without_a_baseline_the_turn_is_unknown_not_zero():
     assert not segments[0].turned_too_far
 
 
-def test_the_summary_says_the_subject_turned(tmp_path, capsys):
+def test_a_segment_that_was_retaken_in_this_run_is_marked(tmp_path):
+    """掉線之後同一種姿勢在這一趟裡又量了一次，殘缺的那份不該再叫人重量，
+    也不該丟進 analyse：那往往只有幾秒，跟完整那份平均在一起會把結果拉偏。
+
+    這是政策，所以判斷在 review 裡，不在印出來的地方。排版怎麼呈現它另外在
+    test_live_report.py。"""
+    segments = review(
+        [_turning("head-forward", 2, [27.0], camera_lost="相機掉線"),
+         _turning("head-forward", 3, [27.0])],
+        _baseline(azimuth_deg=27.0))
+    assert segments[0].retaken and not segments[0].needs_redo
+    assert not segments[0].usable_data
+    assert not segments[1].retaken and segments[1].usable_data
+
+
+def test_a_lost_camera_with_no_retake_still_needs_redoing(tmp_path):
+    segments = review([_turning("upright", 1, [27.0], camera_lost="相機掉線")],
+                      _baseline(azimuth_deg=27.0))
+    assert not segments[0].retaken
+    assert segments[0].needs_redo
+
+
+def test_the_summary_reaches_the_terminal(tmp_path, capsys):
+    """排版本身在 test_live_report.py，這一條只確認接線沒斷。"""
     posture._study_summary([_turning("upright", 2, [55.0])],
                            _args(tmp_path), _baseline(azimuth_deg=27.0))
     printed = capsys.readouterr().out
     assert "轉身 +28°" in printed
-    assert "盯著牆上那個點" in printed
     assert "upright #2" in printed
-
-
-def test_a_retaken_segment_is_not_asked_to_be_redone_or_analysed(tmp_path, capsys):
-    """掉線之後同一種姿勢已經在這一趟裡重量了，殘缺的那段再叫人重量是錯的，
-    混進分析會被那六秒拉偏。"""
-    lost = _turning("head-forward", 2, [27.0], camera_lost="相機掉線")
-    lost.log_path = tmp_path / "head-forward-2.csv"
-    retake = _turning("head-forward", 3, [27.0])
-    retake.log_path = tmp_path / "head-forward-3.csv"
-    posture._study_summary([lost, retake], _args(tmp_path), _baseline(azimuth_deg=27.0))
-    printed = capsys.readouterr().out
-    assert "後面重量了" in printed
-    assert "建議重量" not in printed
-    assert "head-forward-2.csv" not in printed.split("posture.py analyse")[1]
-    assert "head-forward-3.csv" in printed
