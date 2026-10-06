@@ -75,10 +75,25 @@ def test_a_very_still_subject_still_gets_a_dead_band():
     assert judge.update(10.4, 0.0).posture is Posture.OK
 
 
-def test_theta_ca_only_warns_about_leaning_forward():
-    """往後靠不是這個系統要提醒的事，前作的門檻也是單邊的。"""
-    judge = AngleJudge(10.0, "θ_CA", two_sided=False)
+def test_a_one_sided_judge_ignores_the_other_direction():
+    """肩高用的就是這種：坐得比基準挺不是駝背。"""
+    judge = AngleJudge(10.0, "肩高", two_sided=False)
     assert judge.update(-20.0, 1.0).posture is Posture.OK
+
+
+def test_theta_ca_warns_about_the_head_going_back_too():
+    """2026-10-06 頭部後仰列入姿勢清單。單邊的話那一段永遠判正常。"""
+    judge = PostureJudge()
+    ca, *_ = judge.update(_Window(-20.0, 1.0), _Window(1.0, 0.5))
+    assert ca.posture is Posture.OVER
+
+
+def test_the_reason_keeps_the_sign_when_judging_both_ways():
+    """比的是絕對值，但印絕對值的話後仰會讀起來像前傾。"""
+    judge = PostureJudge()
+    ca, sym, *_ = judge.update(_Window(-20.0, 1.0), _Window(-8.0, 0.5))
+    assert "-20.0" in ca.reason
+    assert "-8.0" in sym.reason
 
 
 def test_theta_sym_warns_about_either_shoulder_being_higher():

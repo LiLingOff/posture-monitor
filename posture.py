@@ -969,7 +969,7 @@ def _make_judge(args, baseline: PostureBaseline | None) -> PostureJudge | None:
     judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
     extra = ("" if judge.shoulder_drop is None else
              f"、肩高下沉 {judge.shoulder_drop.threshold_deg:.0f}mm")
-    print(f"判定門檻 θ_CA {judge.theta_ca.threshold_deg:.0f}°（只看前傾）、"
+    print(f"判定門檻 θ_CA {judge.theta_ca.threshold_deg:.0f}°（前傾後仰都算）、"
           f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算）{extra}，"
           f"遲滯寬度 {args.margin:.1f} 倍標準誤差", flush=True)
     return judge

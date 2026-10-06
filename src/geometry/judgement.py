@@ -146,7 +146,9 @@ class AngleJudge:
         value = abs(mean_deg) if self._two_sided else mean_deg
         # 誤差算不出來（視窗裡只有一個值）時退回下限，不能當成零。
         margin = max(self._floor, self._factor * (standard_error_deg or 0.0))
-        shown = (f"{value:+.1f}{self._unit} ± {margin:.1f}{self._unit}，"
+        # 印帶號的平均，比的是絕對值。雙邊判定時印絕對值的話，後仰 12° 會被印成
+        # +12.0°，讀起來像前傾；左肩高與右肩高也分不出來。
+        shown = (f"{mean_deg:+.1f}{self._unit} ± {margin:.1f}{self._unit}，"
                  f"門檻 {self._threshold:.0f}{self._unit}")
 
         if value - margin > self._threshold:
@@ -160,7 +162,8 @@ class AngleJudge:
 class PostureJudge:
     """θ_CA 與 θ_sym 一起判定。
 
-    任一項超標就算超標，因為兩者量的是不同的問題：θ_CA 是前傾，θ_sym 是肩膀歪。
+    任一項超標就算超標，因為兩者量的是不同的問題：θ_CA 是頭往前或往後，
+    θ_sym 是肩膀歪。
     """
 
     def __init__(
@@ -169,9 +172,13 @@ class PostureJudge:
         theta_sym_threshold_deg: float = _THETA_SYM_THRESHOLD_DEG,
         margin_factor: float = _MARGIN_FACTOR,
     ):
-        # θ_CA 只看前傾。往後靠不是這個系統要提醒的事，前作的門檻也是單邊的。
+        # θ_CA 前傾後仰都算。原本是單邊的，理由是「往後靠不是這個系統要提醒的
+        # 事，前作的門檻也是單邊的」；2026-10-06 姿勢清單定案時頭部後仰被列為
+        # 要偵測的不良坐姿之一，單邊的話那一段永遠判正常，沒辦法算進靈敏度。
+        # 文件記錄過的實機資料裡沒有一份扣基準後的平均低於 −10°，所以重播舊
+        # 記錄的結果實際上不受影響。
         self.theta_ca = AngleJudge(
-            theta_ca_threshold_deg, "θ_CA", two_sided=False, margin_factor=margin_factor
+            theta_ca_threshold_deg, "θ_CA", two_sided=True, margin_factor=margin_factor
         )
         self._factor = margin_factor
         # θ_sym 往左往右都算歪。
