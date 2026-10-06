@@ -378,12 +378,26 @@ def test_head_forward_is_not_the_same_instruction_as_forward():
     assert brief != condition_brief("forward")
 
 
+def test_every_posture_on_the_list_has_a_written_brief():
+    """2026-10-06 定案的五種。沒寫死的話程式只印一句通用的，而 doc 10 要求
+    逐字念出來、不要自己改寫,口頭給的指導語就是基準變異的來源。"""
+    generic = condition_brief("清單以外的名稱")
+    for condition in ("upright", "head-forward", "head-back",
+                      "left-shoulder-up", "right-shoulder-up"):
+        assert condition_brief(condition) != generic, condition
+
+
+def test_left_and_right_shoulder_are_not_the_same_instruction():
+    left, right = condition_brief("left-shoulder-up"), condition_brief("right-shoulder-up")
+    assert left.startswith("請把左邊") and right.startswith("請把右邊")
+
+
 def test_every_judgement_axis_has_a_condition_that_targets_it():
     """三軸各自要有一個會動到它的條件，否則那一軸的靈敏度沒有數據。
     2026-10-01 為止只有肩高有證據，因為沒有一個條件瞄準 θ_sym。"""
     briefs = {
         "head-forward": "肩膀不要動",   # θ_CA：頭相對於軀幹
-        "shoulder-tilt": "右邊肩膀",     # θ_sym：兩肩高低差
+        "right-shoulder-up": "右邊肩膀",  # θ_sym：兩肩高低差
         "forward": "上半身往前",         # 肩高：軀幹整個沉下去
     }
     for condition, marker in briefs.items():

@@ -6,7 +6,7 @@
 |---|---|---|
 | `src/calibration` | 可用 | 棋盤格／ChArUco，單眼＋雙目，已用合成資料驗證準確度 |
 | `src/pose` | 可用（fp32） | Lightweight OpenPose。Jetson 實測 123.7ms/幀，權重載入與拓樸核對都已確認；fp16/TensorRT 尚未啟用 |
-| `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym；θ_KA 公式未定 |
+| `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym、肩部垂直位移 |
 | 個人基準／平均／記錄 | 可用 | θ_offset 校正、移動平均、逐幀 CSV |
 | 閾值判定 | 可用 | 正常／超標／未知，遲滯寬度取自當下的量測誤差 |
 | 回饋裝置 | 未開始 | LED／蜂鳴器 |
@@ -531,7 +531,7 @@ chenyue     upright     1   12.37° ± 1.22°      ±7.8°       1.00°     408/
 
 角度採用 `atan2` 而非 `arccos(內積)`，因為後者只給出0~180°的大小、無法區分方向，而右肩比左肩高5°與左肩比右肩高5°是兩件不同的事。
 
-θ_KA 在前作中完全沒有提及，公式尚未定案，`theta_ka()` 目前拋出 `NotImplementedError`。不以推測的公式填入，因為猜錯不會有人發現，但整份研究結論會建立在錯誤的定義上。個人校正基準（θ_offset）與 10°/5°/20px 這類判定門檻屬於執行期監測邏輯，不在這個模組的範圍內。
+個人校正基準（θ_offset）與 10°/5°/20px 這類判定門檻屬於執行期監測邏輯，不在這個模組的範圍內。
 
 ### 資料退化時會拋出例外，不會回傳0度
 
@@ -561,7 +561,7 @@ src/geometry/
   triangulation.py       雙目3D三角測量核心
   keypoints3d.py         PersonKeypoints3D + 單人關鍵點三角測量
   angles.py              通用角度數學（與研究主題無關的純幾何運算）
-  posture_angles.py      θ_CA/θ_sym實作，θ_KA尚未實作
+  posture_angles.py      θ_CA/θ_sym實作
   pipeline.py            把偵測、三角測量、角度串成一次量測＋品質指標
   smoothing.py           移動平均（單幀誤差與判定門檻同量級）
   uncertainty.py         平均值的誤差（批次平均法，因為相鄰幀是相關的）

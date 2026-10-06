@@ -86,7 +86,7 @@ def test_the_angle_accessor_falls_back_to_raw(tmp_path):
 
 def test_an_unknown_angle_name_is_none_not_a_crash(tmp_path):
     summary = analyse_session(_old_format_session(tmp_path))
-    assert summary.angle("θ_KA") is None
+    assert summary.angle("不存在的角度") is None
 
 
 def test_a_file_with_only_a_header_says_so_rather_than_dividing_by_zero(tmp_path):

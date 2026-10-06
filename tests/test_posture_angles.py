@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from geometry.keypoints3d import PersonKeypoints3D
-from geometry.posture_angles import theta_ca, theta_ka, theta_sym
+from geometry.posture_angles import theta_ca, theta_sym
 from pose.topology import NUM_KEYPOINTS, keypoint_index
 
 
@@ -76,12 +76,6 @@ def test_theta_ca_raises_when_keypoints_coincide():
     kp = _make_keypoints3d({"right_shoulder": same_point, "right_ear": same_point.copy()})
     with pytest.raises(ValueError):
         theta_ca(kp)
-
-
-def test_theta_ka_not_implemented():
-    kp = _make_keypoints3d({})
-    with pytest.raises(NotImplementedError):
-        theta_ka(kp)
 
 
 def test_theta_ca_sign_forward_is_positive():

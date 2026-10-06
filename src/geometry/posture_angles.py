@@ -1,4 +1,4 @@
-"""坐姿角度計算。θ_CA、θ_sym依前作公式的3D版本實作；θ_KA公式未定，尚未實作。
+"""坐姿角度計算。θ_CA、θ_sym依前作公式的3D版本實作。
 
 假設雙目校正後(rectified)座標系採OpenCV慣例：X右、Y下、Z深度(遠離相機方向)。
 唯一的架設要求是**相機大致水平、沒有明顯翻滾角**，因為程式直接把相機的 Y 軸
@@ -27,9 +27,6 @@ _CAMERA_DEPTH_AXIS = np.array([0.0, 0.0, 1.0])
 # 雙肩連線的水平投影短於這個長度就無法定義方向。正常肩寬約350mm，
 # 只有兩點被算到同一位置、或身體幾乎躺平時才會落到這個範圍。
 _MIN_SHOULDER_SPAN_MM = 20.0
-
-_MISSING_DEFINITION_MSG = "尚未取得θ_KA的精確定義（哪些關節點、參考平面/軸、正負號慣例），無法實作"
-
 
 def anatomical_axes(keypoints_3d: PersonKeypoints3D) -> tuple[np.ndarray, np.ndarray]:
     """從雙肩算出受試者自己的左右軸與前後軸，回傳 (lateral, backward)。
@@ -133,6 +130,3 @@ def theta_sym(keypoints_3d: PersonKeypoints3D) -> float:
     lateral, backward = anatomical_axes(keypoints_3d)
     return signed_angle_in_plane(left - right, lateral, plane_normal=backward)
 
-
-def theta_ka(keypoints_3d: PersonKeypoints3D) -> float:
-    raise NotImplementedError(_MISSING_DEFINITION_MSG)
