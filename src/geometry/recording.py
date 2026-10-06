@@ -74,6 +74,8 @@ class Recording:
     log_path: Path | None = None
     condition: str = ""      # study 用，live 留空
     trial: int | None = None
+    # 可用幀的方位角。拿來跟基準比，看受試者在這一段裡有沒有轉身。
+    azimuths: list = field(default_factory=list)
 
     @property
     def rejection_rate(self) -> float:

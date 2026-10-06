@@ -410,3 +410,29 @@ def test_a_normal_rejection_rate_says_nothing():
     baseline = _with(frames=146, theta_ca_standard_error_deg=0.63,
                      theta_ca_std_deg=4.2, distance_mm=579.0, azimuth_deg=20.0)
     assert not any("略過" in w for w in collector.quality_warnings(baseline))
+
+
+def test_a_jittery_shoulder_height_is_called_out():
+    """2026-10-06 實機：肩高晃動 ±41mm，駝背門檻因此變成 82mm，而 2026-10-01
+    刻意前傾量到的是 58mm。那一軸等於被安靜地關掉了，沒有任何提示。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    jittery = _with(shoulder_height_mm=300.0, shoulder_height_std_mm=41.0)
+    warning = next(w for w in baseline_quality_warnings(jittery) if "肩高晃動" in w)
+    assert "±41mm" in warning
+    assert "82mm" in warning
+
+
+def test_a_steady_shoulder_height_is_not_nagged_about():
+    from geometry.baseline import baseline_quality_warnings
+
+    steady = _with(shoulder_height_mm=300.0, shoulder_height_std_mm=6.0)
+    assert not any("肩高晃動" in w for w in baseline_quality_warnings(steady))
+
+
+def test_an_old_baseline_without_shoulder_height_is_not_warned_about():
+    """舊的基準檔沒有肩高欄位，那不是晃動，是沒量。"""
+    from geometry.baseline import baseline_quality_warnings
+
+    old = _with(shoulder_height_mm=None, shoulder_height_std_mm=None)
+    assert not any("肩高晃動" in w for w in baseline_quality_warnings(old))

@@ -114,9 +114,11 @@ def test_an_unnamed_condition_still_gets_something_usable():
 class _Recorder:
     """把 _record 換掉，記下每一次被要求量什麼。"""
 
-    def __init__(self, rejection_rate=0.04):
+    def __init__(self, rejection_rate=0.04, lost_on=()):
         self.calls = []
         self._rate = rejection_rate
+        # 第幾次呼叫（從 1 起算）要回報相機掉線。
+        self._lost_on = set(lost_on)
 
     def __call__(self, engine, calib, cap, args, baseline, log, snapshots,
                  seconds, display=None):
@@ -125,10 +127,11 @@ class _Recorder:
         for _ in range(100):
             session.add((5.0, 1.0))
         rejected = int(round(self._rate * 100 / (1 - self._rate)))
+        lost = "相機連續 25 次讀不到畫面" if len(self.calls) in self._lost_on else None
         return Recording(
             session=session, ca_window=RollingAngle(30),
             sym_window=RollingAngle(30), rejected=rejected,
-            frames=100 + rejected, transitions=[],
+            frames=100 + rejected, transitions=[], camera_lost=lost,
             log_path=None if log is None else log.path,
         )
 
@@ -403,3 +406,134 @@ def test_every_judgement_axis_has_a_condition_that_targets_it():
     for condition, marker in briefs.items():
         assert marker in condition_brief(condition), condition
     assert len({condition_brief(c) for c in briefs}) == len(briefs)
+
+
+
+# ---- 相機掉線 ----------------------------------------------------------
+
+def test_a_lost_camera_is_found_again_and_that_condition_is_measured_again(
+        tmp_path, monkeypatch):
+    """2026-10-06 實機：head-forward 掉線之後，head-back 拿著已經消失的節點
+    繼續跑，一幀都沒讀到。重新找到相機之後，掉線的那一種要在同一份基準下重量。"""
+    recorder = _Recorder(lost_on={2})
+    _patch(monkeypatch, recorder)
+    reopened = []
+    monkeypatch.setattr(posture, "_reopen_camera",
+                        lambda args: (reopened.append(1), _FakeCap())[1])
+    posture._run_study(_args(tmp_path, conditions="upright,head-forward,head-back"))
+
+    assert len(reopened) == 1
+    assert len(recorder.calls) == 4
+    folder = tmp_path / "chenyue"
+    for name in ("upright-1", "head-forward-1", "head-forward-2", "head-back-1"):
+        assert (folder / f"{name}.csv").exists(), name
+
+
+def test_if_the_camera_cannot_be_found_the_rest_is_skipped(tmp_path, monkeypatch, capsys):
+    """拿死掉的相機量下一段只會得到一份空記錄，還讓人以為那一段量過了。"""
+    recorder = _Recorder(lost_on={1})
+    _patch(monkeypatch, recorder)
+    monkeypatch.setattr(posture, "_reopen_camera", lambda args: None)
+    posture._run_study(_args(tmp_path, conditions="upright,head-forward,head-back"))
+
+    assert len(recorder.calls) == 1
+    assert "找不到相機" in capsys.readouterr().out
+
+
+def test_a_camera_that_keeps_dropping_is_given_up_on(tmp_path, monkeypatch, capsys):
+    """掉兩次以上就不是偶發，硬撐只會讓受試者坐著一直等。"""
+    recorder = _Recorder(lost_on={1, 2, 3, 4, 5, 6})
+    _patch(monkeypatch, recorder)
+    monkeypatch.setattr(posture, "_reopen_camera", lambda args: _FakeCap())
+    posture._run_study(_args(tmp_path, conditions="upright,head-forward"))
+
+    assert len(recorder.calls) == posture._STUDY_REOPEN_BUDGET + 1
+    assert "dmesg" in capsys.readouterr().out
+
+
+def test_reopening_searches_again_instead_of_reusing_the_old_number(monkeypatch):
+    """掉線時節點編號每一次都會移位，原本的編號不可能再讀到東西。"""
+    tries = []
+
+    def find(width, height):
+        tries.append(1)
+        if len(tries) == 1:
+            raise RuntimeError("還沒列舉回來")
+        return 1, "自動挑到 index=1"
+
+    class _Opened(_FakeCap):
+        def isOpened(self):
+            return True
+
+    monkeypatch.setattr(posture, "find_camera_index", find)
+    monkeypatch.setattr(posture, "_open_camera", lambda i, w, h: _Opened())
+    monkeypatch.setattr(posture, "_discard_frames", lambda cap, n: None)
+    args = SimpleNamespace(camera=0, width=2560, height=720, discard=0)
+
+    cap = posture._reopen_camera(args, attempts=3, pause_s=0)
+    assert cap is not None
+    assert args.camera == 1
+    assert len(tries) == 2
+
+
+def test_reopening_gives_up_after_its_attempts(monkeypatch):
+    def find(width, height):
+        raise RuntimeError("沒有相機")
+
+    monkeypatch.setattr(posture, "find_camera_index", find)
+    args = SimpleNamespace(camera=0, width=2560, height=720, discard=0)
+    assert posture._reopen_camera(args, attempts=2, pause_s=0) is None
+
+
+# ---- 轉身 --------------------------------------------------------------
+
+def _turning(condition, trial, azimuths, camera_lost=None):
+    recording = _recording(condition, trial, ca=0.0, rejected=2, frames=100)
+    recording.azimuths = list(azimuths)
+    recording.camera_lost = camera_lost
+    return recording
+
+
+def test_a_segment_that_turned_away_from_the_baseline_is_flagged():
+    """2026-10-06 實機：基準 27°、upright 那段 55°。受試者轉身了，而總結只標
+    了略過率，沒有人當場發現。"""
+    segments = review([_turning("upright", 2, [54.0, 55.0, 56.0])],
+                      _baseline(azimuth_deg=27.0))
+    assert segments[0].turned_deg == pytest.approx(28.0)
+    assert segments[0].turned_too_far
+    assert segments[0].needs_redo
+
+
+def test_a_small_drift_is_not_a_turn():
+    segments = review([_turning("upright", 1, [42.0, 44.0])], _baseline(azimuth_deg=45.0))
+    assert not segments[0].turned_too_far
+
+
+def test_without_a_baseline_the_turn_is_unknown_not_zero():
+    segments = review([_turning("upright", 1, [55.0])])
+    assert segments[0].turned_deg is None
+    assert not segments[0].turned_too_far
+
+
+def test_the_summary_says_the_subject_turned(tmp_path, capsys):
+    posture._study_summary([_turning("upright", 2, [55.0])],
+                           _args(tmp_path), _baseline(azimuth_deg=27.0))
+    printed = capsys.readouterr().out
+    assert "轉身 +28°" in printed
+    assert "盯著牆上那個點" in printed
+    assert "upright #2" in printed
+
+
+def test_a_retaken_segment_is_not_asked_to_be_redone_or_analysed(tmp_path, capsys):
+    """掉線之後同一種姿勢已經在這一趟裡重量了，殘缺的那段再叫人重量是錯的，
+    混進分析會被那六秒拉偏。"""
+    lost = _turning("head-forward", 2, [27.0], camera_lost="相機掉線")
+    lost.log_path = tmp_path / "head-forward-2.csv"
+    retake = _turning("head-forward", 3, [27.0])
+    retake.log_path = tmp_path / "head-forward-3.csv"
+    posture._study_summary([lost, retake], _args(tmp_path), _baseline(azimuth_deg=27.0))
+    printed = capsys.readouterr().out
+    assert "後面重量了" in printed
+    assert "建議重量" not in printed
+    assert "head-forward-2.csv" not in printed.split("posture.py analyse")[1]
+    assert "head-forward-3.csv" in printed

@@ -14,6 +14,11 @@ from pathlib import Path
 
 from .baseline import REJECTION_LIMIT
 
+# 方位角相對基準漂超過這麼多度就算轉身。方位角是從雙肩連線算的，受試者轉身
+# 就會跟著變；轉身之後扣基準不再有意義，而且遠側肩膀開始被擋住。
+# 2026-09-29 與 2026-10-06 各有一段因為這個作廢，兩次都是事後才發現。
+TURN_LIMIT_DEG = 10.0
+
 # 每種姿勢的指導語。2026-10-06 定案的五種：upright、head-forward、head-back、
 # left-shoulder-up、right-shoulder-up。forward 不在清單裡，留著是因為 2026-10-01
 # 的資料用了它，而且它是唯一會動到肩部垂直位移的條件。清單以外的名稱照樣
@@ -118,13 +123,24 @@ class SegmentReview:
     usable: int
     frames: int
     rejection_rate: float
+    # 這一段的平均方位角減掉基準的方位角。沒有基準或量不到方位角時是 None。
+    turned_deg: float | None = None
+    camera_lost: bool = False
 
     @property
     def too_many_rejected(self) -> bool:
         return self.rejection_rate > REJECTION_LIMIT
 
+    @property
+    def turned_too_far(self) -> bool:
+        return self.turned_deg is not None and abs(self.turned_deg) > TURN_LIMIT_DEG
 
-def review(recordings) -> list[SegmentReview]:
+    @property
+    def needs_redo(self) -> bool:
+        return self.too_many_rejected or self.turned_too_far or self.camera_lost
+
+
+def review(recordings, baseline=None) -> list[SegmentReview]:
     """把幾段錄製整理成「哪一段能用」。
 
     判斷寫在這裡而不是印出來的地方，因為同一條政策（略過率上限）另外有三個
@@ -136,6 +152,21 @@ def review(recordings) -> list[SegmentReview]:
             condition=r.condition, trial=r.trial,
             theta_ca_deg=r.session.mean_ca, usable=r.usable,
             frames=r.frames, rejection_rate=r.rejection_rate,
+            turned_deg=_turned(r, baseline),
+            camera_lost=r.camera_lost is not None,
         )
         for r in recordings
     ]
+
+
+def _turned(recording, baseline) -> float | None:
+    """這一段相對取基準時轉了多少。
+
+    方位角取的是絕對值（0~90），轉過正面到另一側只會先變小再變大，所以
+    這個差值看得出轉了多少，看不出往哪邊轉。要知道方向，看是哪一側肩膀在
+    配錯。
+    """
+    if baseline is None or not recording.azimuths:
+        return None
+    return float(sum(recording.azimuths) / len(recording.azimuths)
+                 - baseline.azimuth_deg)

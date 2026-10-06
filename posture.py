@@ -50,8 +50,9 @@ from geometry.recording import (CameraRetry, Recording,  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
-from geometry.study import (baseline_path, condition_brief,  # noqa: E402
-                            next_trial, parse_conditions, review, session_paths)
+from geometry.study import (TURN_LIMIT_DEG, baseline_path,  # noqa: E402
+                            condition_brief, next_trial, parse_conditions,
+                            review, session_paths)
 from geometry.terminal import cell, truncate  # noqa: E402
 from geometry.uncertainty import standard_error  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
@@ -273,6 +274,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     transitions: list[str] = []
     lost: str | None = None
     session = Session()
+    azimuths: list[float] = []
     stuck = StuckWatcher()
 
     try:
@@ -310,6 +312,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
             if reason is None:
                 consecutive_misses = 0
                 session.add(corrected)
+                if measurement.camera_azimuth_deg is not None:
+                    azimuths.append(measurement.camera_azimuth_deg)
                 if corrected[0] is not None:
                     ca_window.add(corrected[0])
                 if corrected[1] is not None:
@@ -369,6 +373,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
         session=session, ca_window=ca_window, sym_window=sym_window,
         rejected=rejected, frames=frames_seen, transitions=transitions,
         camera_lost=lost, log_path=None if log is None else log.path,
+        azimuths=azimuths,
     )
 
 
@@ -787,18 +792,71 @@ def _run_study(args) -> None:
     display = _open_display(args)
     root = args.out_dir
     recordings = []
+    reopens = 0
+    baseline = None
     try:
         baseline = _study_baseline(engine, calib, cap, args, root, display)
-        for condition in conditions:
-            recordings.append(
-                _study_one(engine, calib, cap, args, baseline, condition, root,
-                           display)
-            )
+        queue = list(conditions)
+        while queue:
+            condition = queue.pop(0)
+            recording = _study_one(engine, calib, cap, args, baseline, condition,
+                                   root, display)
+            recordings.append(recording)
+            if recording.camera_lost is None:
+                continue
+            # 2026-10-06 實機：head-forward 那段掉線之後，下一段 head-back 拿著
+            # 已經消失的 video0 繼續跑，一幀都沒讀到就結束了。掉線時節點編號
+            # 每一次都會移位，原本的 cap 不可能再讀到東西。
+            if reopens >= _STUDY_REOPEN_BUDGET:
+                print(f"這一趟相機已經掉了 {reopens + 1} 次，剩下的段落不量了。"
+                      "這是硬體的問題，先跑 dmesg | tail -40 看核心怎麼說", flush=True)
+                break
+            cap.release()
+            cap = _reopen_camera(args)
+            reopens += 1
+            if cap is None:
+                print("找不到相機，剩下的段落不量了。已經量完的照常可以分析", flush=True)
+                break
+            # 同一種姿勢重量一次。改成跳到下一種的話，這一種就得另外找一趟補，
+            # 而那一趟的基準不是這一份。
+            queue.insert(0, condition)
     finally:
         display.close()
-        cap.release()
+        if cap is not None:
+            cap.release()
 
-    _study_summary(recordings, args)
+    _study_summary(recordings, args, baseline)
+
+
+# 一趟 study 裡掉線之後重新找相機的次數上限。掉兩次以上就不是偶發，硬撐只會
+# 讓受試者坐著一直等。
+_STUDY_REOPEN_BUDGET = 2
+_REOPEN_ATTEMPTS = 5
+_REOPEN_PAUSE_S = 1.0
+
+
+def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
+                   pause_s: float = _REOPEN_PAUSE_S):
+    """相機掉線之後重新找節點、重新開。找不到回傳 None。
+
+    不能用原本的編號重開：實機每一次掉線，節點編號都整組移位（video0 消失、
+    剩 video1 與 video2）。裝置重新列舉要一兩秒，所以給幾次機會。
+    """
+    for _ in range(attempts):
+        time.sleep(pause_s)
+        try:
+            index, how = find_camera_index(args.width, args.height)
+        except RuntimeError:
+            continue
+        cap = _open_camera(index, args.width, args.height)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        args.camera = index
+        _step(f"重新接上相機。{how}")
+        _discard_frames(cap, args.discard)
+        return cap
+    return None
 
 
 def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY):
@@ -863,35 +921,56 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
     return replace(recording, condition=condition, trial=trial)
 
 
-def _study_summary(recordings, args) -> None:
+def _study_summary(recordings, args, baseline=None) -> None:
     """全部量完之後的總結。
 
     每一段自己的摘要已經印過了，這裡看的是段與段之間：哪一段的資料不能用、
     以及兩種姿勢分不分得開。
     """
-    segments = review(recordings)
+    segments = review(recordings, baseline)
+    # 相機掉線之後同一種姿勢會在這一趟裡重量，那一段殘缺的就不該再叫人重量，
+    # 也不該混進分析：六秒的資料跟後面那份完整的平均在一起只會拉偏。
+    retaken = {i for i, seg in enumerate(segments)
+               if seg.camera_lost and any(later.condition == seg.condition
+                                          for later in segments[i + 1:])}
     print()
     print("=" * 60)
     print(f"受試者 {args.subject}，共 {len(segments)} 段")
-    for segment in segments:
+    for i, segment in enumerate(segments):
         shown = ("—" if segment.theta_ca_deg is None
                  else f"{segment.theta_ca_deg:+.2f}°")
-        flag = "  ← 略過率偏高" if segment.too_many_rejected else ""
+        flags = []
+        if segment.camera_lost:
+            flags.append("相機掉線，後面重量了" if i in retaken else "相機掉線")
+        elif segment.too_many_rejected:
+            flags.append("略過率偏高")
+        if segment.turned_too_far:
+            flags.append(f"轉身 {segment.turned_deg:+.0f}°")
+        flag = ("  ← " + "、".join(flags)) if flags else ""
         print(f"  {segment.condition:12s} #{segment.trial}  "
               f"θ_CA {shown:>9s}  "
               f"可用 {segment.usable}/{segment.frames}"
               f"（略過 {segment.rejection_rate * 100:.0f}%）{flag}")
 
-    bad = [seg for seg in segments if seg.too_many_rejected]
+    bad = [seg for i, seg in enumerate(segments)
+           if seg.needs_redo and i not in retaken]
     if bad:
         print()
-        print(f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限，"
-              f"建議重量：" + "、".join(f"{seg.condition} #{seg.trial}" for seg in bad))
+        # 轉身與略過率分開講，因為該做的事不一樣：略過率高是偵測的問題，
+        # 轉身是受試者的問題，重量之前要先提醒他盯著固定的點。
+        if any(seg.too_many_rejected for seg in bad):
+            print(f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落，資料的代表性有限。")
+        if any(seg.turned_too_far for seg in bad):
+            print(f"方位角比取基準時漂了 {TURN_LIMIT_DEG:.0f}° 以上的段落，受試者轉身了，"
+                  "扣基準之後的角度不能用。重量之前提醒他全程盯著牆上那個點。")
+        print("建議重量：" + "、".join(f"{seg.condition} #{seg.trial}" for seg in bad)
+              + "。重量就整趟重跑，只補一段的話基準不是同一份")
 
     print()
     print("接下來：先翻一遍存下來的畫面，確認每一張都是預期的姿勢，再跑")
     print("  python posture.py analyse "
-          + " ".join(str(r.log_path) for r in recordings if r.log_path))
+          + " ".join(str(r.log_path) for i, r in enumerate(recordings)
+                     if r.log_path and i not in retaken))
 
 
 def _print_line(text: str) -> None:

@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from geometry.judgement import Posture
+from geometry.study import TURN_LIMIT_DEG
 from pose.topology import COCO18_KEYPOINT_NAMES, COCO18_LIMBS, keypoint_index
 
 from .text import TextItem, TextPainter
@@ -64,7 +65,7 @@ TEXT_SIZE = 20
 MIN_WIDTH = 640
 # 轉身超過這麼多度就標出來。基準與量測之間受試者轉了身，扣基準就不再有意義，
 # 而 2026-09-29 那次是事後才發現的。
-TURNED_LIMIT_DEG = 10.0
+TURNED_LIMIT_DEG = TURN_LIMIT_DEG
 
 # 略過原因轉成短標。沒有字型時整個面板靠英文，而原因字串全是中文。
 _REASON_TAGS = (

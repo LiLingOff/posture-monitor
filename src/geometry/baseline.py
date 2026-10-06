@@ -69,6 +69,11 @@ REJECTION_LIMIT = 0.15
 # 肩高門檻取幾倍的個人標準差，以及它的下限（毫米）。
 _SHOULDER_DROP_SIGMA = 2.0
 _MINIMUM_SHOULDER_DROP_MM = 10.0
+# 基準的肩高晃動超過這個值就警告。駝背門檻是晃動的兩倍，所以這等於門檻過了
+# 30mm。乾淨的基準實測是 ±1~6mm，前作量到的自然晃動約 ±15px（60cm 約 10mm）。
+# 2026-10-06 實機取到一份 ±41mm 的基準，門檻因此變成 82mm，而 2026-10-01
+# 軀幹前傾量到的是 58mm,那一軸等於被安靜地關掉了，沒有任何提示。
+_SHOULDER_JITTER_WARNING_MM = 15.0
 
 
 def group_rejection_reason(reason: str) -> str:
@@ -251,6 +256,14 @@ def baseline_quality_warnings(
             f"θ_CA 散佈 ±{baseline.theta_ca_std_deg:.1f}°，"
             f"這個位置該有的是 ±{expected_single_frame_error_deg:.1f}°。"
             f"受試者動了，請保持不動再取一次"
+        )
+    jitter = baseline.shoulder_height_std_mm
+    if jitter is not None and jitter > _SHOULDER_JITTER_WARNING_MM:
+        warnings.append(
+            f"肩高晃動 ±{jitter:.0f}mm，駝背門檻因此變成 "
+            f"{baseline.shoulder_drop_threshold_mm:.0f}mm。乾淨的基準是 ±1~6mm，"
+            f"這個門檻連刻意前傾都抓不到。通常是雙肩的深度在跳或受試者在動，"
+            f"請保持不動再取一次"
         )
     return warnings
 
