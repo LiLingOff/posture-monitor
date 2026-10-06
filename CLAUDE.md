@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-10-06 是 570 個
+python -m pytest -q          # 2026-10-07 是 597 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -40,6 +40,10 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 - **`geometry/` 不碰相機、終端機與 argparse**，`view/` 才碰 cv2 與視窗。
   唯一的例外是 `recording.write_frame` 延遲匯入 `view.overlay`，為的是讓快照
   與即時畫面用同一套繪圖。
+  「印給人看的文字」不算碰終端機：`live_report.py`、`session_report.py`、
+  `cohort_report.py` 都在 geometry 裡，它們回傳字串，由呼叫端決定印在哪。
+- **相機這個裝置在 `calibration/device.py`**，不在 `capture.py`。capture 是拍
+  標定影像的互動工具，量測只需要 device 那一層，依賴方向是 capture → device。
 - **平均值的誤差走批次平均法**（`geometry/uncertainty.py`），不是 `std/√N`。
   相鄰幀的自相關是 0.73，用 `std/√N` 實測低估 2.6 倍。
 - **跨受試者的誤差分母是人數不是幀數**（`geometry/cohort.py`），與上一條相反，

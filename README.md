@@ -30,7 +30,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-265個測試，全部使用合成資料，不需要相機或GPU。
+597個測試，全部使用合成資料，不需要相機或GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似：標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -547,6 +547,8 @@ src/calibration/
   charuco.py             ChArUco板角點偵測（容許只看到板子一部分）
   mono_calibration.py    單眼張氏標定，兩種板子共用同一套計算核心
   stereo_calibration.py  stereoCalibrate + stereoRectify，同上
+  device.py              相機這個裝置：挑節點、開起來、切開併排的畫面、
+                         開不了時說人話。量測時只需要這一層
   capture.py             連接相機互動式拍照（6種模式）＋解析度查詢
   inspect_stereo.py      驗算已完成的標定，不必重跑計算
   cli.py                 讀取已拍影像、執行標定計算
@@ -567,10 +569,21 @@ src/geometry/
   uncertainty.py         平均值的誤差（批次平均法，因為相鄰幀是相關的）
   baseline.py            個人基準 θ_offset 的採集、品質檢查與存取
   judgement.py           超標判定與遲滯（門檻套在扣除基準之後的角度上）
+  recording.py           錄一段留下來的東西、相機重試、快照
+  study.py               實驗流程不碰硬體的那半：檔名、指導語、哪一段不能用
+  monitor.py             一個視窗跑到底的狀態機（待命／倒數／取基準／監測）
   measurement_log.py     逐幀 CSV 記錄（含被略過的幀）
   session_analysis.py    讀回逐幀 CSV，算品質、統計、相關性與判定
   session_report.py      把上面的結果排成可讀的報告
+  cohort.py              跨受試者彙整（誤差的分母是人數，不是幀數）
+  cohort_report.py       跨受試者的報告與匯出
+  live_report.py         量測當下與段落結束印給人看的文字
   terminal.py            終端機顯示寬度（中日韓字元佔兩欄）
+src/view/
+  live_view.py           一幀要畫的所有東西收成一個值（只用numpy）
+  overlay.py             骨架、判定線、狀態面板的繪製（cv2）
+  text.py                中日韓字型的文字繪製，找不到字型就退回英文
+  window.py              視窗與按鍵，沒有顯示器時整個退化成不開窗
 posture.py               端到端 CLI：once / live / baseline / study / monitor
                          / analyse / cohort
 tests/
@@ -578,6 +591,9 @@ tests/
   charuco_synthetic.py   合成測試影像（ChArUco標定）
   geometry_synthetic.py  合成雙目標定＋3D點投影（三角測量）
   pose_fakes.py          假引擎，讓pose模組的測試不需要GPU
+  view_fakes.py          假畫面與假關鍵點，疊圖測試不需要顯示器
+  monitor_fakes.py       假時鐘與假按鍵，狀態機測試不需要視窗
+  posture_loader.py      把根目錄的 posture.py 當模組載進來
 ```
 
 `posture.py` 放在根目錄而不是做成 `python -m src.geometry.cli`，理由寫在檔案開頭。
