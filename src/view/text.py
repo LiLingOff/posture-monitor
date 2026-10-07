@@ -107,8 +107,9 @@ def hershey_can_draw(char: str) -> bool:
     return mask(char) != mask("?" * len(char.encode("utf-8")))
 
 
-# 畫不出非 ASCII 時，這些字各自換成純 ASCII 的寫法。
-_ASCII_INSTEAD = (("θ", "theta"), ("±", "+-"))
+# 畫不出非 ASCII 時，這些字各自換成純 ASCII 的寫法。面板上出現的非 ASCII
+# 符號都要列進來，漏一個就是 OpenCV 4.x 上的一串問號。
+_ASCII_INSTEAD = (("θ", "theta"), ("±", "+-"), ("°", "d"), ("—", "--"))
 
 
 def to_ascii_symbols(text: str) -> str:

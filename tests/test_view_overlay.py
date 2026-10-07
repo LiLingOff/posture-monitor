@@ -445,3 +445,20 @@ def test_key_hints_name_the_key_in_brackets():
                                     ("[Q] 離開", "[Q] Quit"))))
     joined = " ".join(texts)
     assert "[C] Zero" in joined and "[Q] Quit" in joined
+
+
+def test_the_numbers_read_the_same_in_both_languages():
+    """數字與單位本來就一樣。先前英文那側把 ° 寫成 d、破折號寫成 --，
+    於是同一個量測在兩台機器上的截圖對不起來。"""
+    rows = overlay.panel_rows(view(theta_ca_mean_deg=19.6, theta_ca_error_deg=0.8,
+                                   distance_mm=587.0, turned_deg=32.0))
+    for row in rows:
+        for zh, en, *_ in row:
+            for token in ("19.6°", "0.8°", "587mm", "+32°"):
+                assert (token in zh) == (token in en), (zh, en, token)
+
+
+def test_degrees_fall_back_to_d_only_when_they_cannot_be_drawn():
+    from view.text import to_ascii_symbols
+    assert to_ascii_symbols("+19.6° ± 0.8°") == "+19.6d +- 0.8d"
+    assert to_ascii_symbols("—") == "--"
