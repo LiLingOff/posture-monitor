@@ -454,7 +454,7 @@ def test_the_numbers_read_the_same_in_both_languages():
                                    distance_mm=587.0, turned_deg=32.0))
     for row in rows:
         for zh, en, *_ in row:
-            for token in ("19.6°", "0.8°", "587mm", "+32°"):
+            for token in ("+19.6", "0.8°", "587mm", "+32°"):
                 assert (token in zh) == (token in en), (zh, en, token)
 
 
@@ -462,3 +462,17 @@ def test_degrees_fall_back_to_d_only_when_they_cannot_be_drawn():
     from view.text import to_ascii_symbols
     assert to_ascii_symbols("+19.6° ± 0.8°") == "+19.6d +- 0.8d"
     assert to_ascii_symbols("—") == "--"
+
+
+def test_the_unit_shows_up_once_in_the_theta_ca_cell():
+    """`+19.6 ± 0.8°`,單位掛在整個算式後面，不是每個數字後面都掛一個。"""
+    cell = next(c for row in overlay.panel_rows(
+        view(theta_ca_mean_deg=19.6, theta_ca_error_deg=0.8))
+        for c in row if c[0].startswith("θ_{CA}"))
+    assert cell[0] == "θ_{CA} +19.6 ± 0.8°"
+
+
+def test_a_missing_angle_does_not_leave_a_stray_unit():
+    """量不到時寫破折號。單位掛在格式字串上的話會變成「轉身 —°」。"""
+    texts = " ".join(_texts(view()))
+    assert "—°" not in texts

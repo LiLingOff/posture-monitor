@@ -177,19 +177,23 @@ def draw_epipolar_guides(canvas, left, right, names, scale: float,
         cv2.line(canvas, (0, p[1]), (canvas.shape[1] - 1, p[1]), colour, 1, cv2.LINE_AA)
 
 
-def _fmt(value: float | None, digits: int = 1, suffix: str = "") -> str:
+def _fmt(value: float | None, digits: int = 1, suffix: str = "",
+         signed: bool = False) -> str:
     """數字排成字串。量不到寫破折號，不寫 0，0 是合法的角度。
 
     中英文共用同一個寫法：數字與單位本來就一樣，而 ° 與破折號 Hershey 都畫
     得出來。畫不出來的機器上由 `TextPainter` 換成 ASCII 寫法,那是算繪器的事，
     不是排版的事。先前這裡自己回傳一組（中文, 英文），於是同一個數字有兩種
     寫法，換台機器截圖就對不起來。
+
+    正負號與單位是兩件事，所以分成兩個參數。先前用「後綴是不是 °」兼差決定
+    要不要印正號，於是想印一個沒有單位的帶號數字就做不到,而 θ_CA 那一格的
+    單位只該出現在最後面（`+19.6 ± 0.8°`），不是每個數字後面都掛一個。
     """
     if value is None:
         return "—"
-    if suffix == "°":
-        return f"{value:+.{digits}f}{suffix}"
-    return f"{value:.{digits}f}{suffix}"
+    sign = "+" if signed else ""
+    return f"{value:{sign}.{digits}f}{suffix}"
 
 
 def panel_rows(view) -> list[list[tuple]]:
@@ -222,13 +226,14 @@ def panel_rows(view) -> list[list[tuple]]:
     sym_value = view.theta_sym_mean_deg
     if sym_value is None:
         sym_value = view.theta_sym_instant_deg
-    ca = _fmt(ca_value, 1, "°")
-    ca_err = _fmt(view.theta_ca_error_deg, 1, "")
-    sym = _fmt(sym_value, 1, "°")
+    # θ_CA 那一格的單位只在最後面出現一次：`+19.6 ± 0.8°`。
+    ca = _fmt(ca_value, 1, signed=True)
+    ca_err = _fmt(view.theta_ca_error_deg, 1, "°")
+    sym = _fmt(sym_value, 1, "°", signed=True)
 
     # 誤差與角度同一欄：分成兩欄的話視窗還沒填滿時那一欄不存在，後面全部位移。
     second = [
-        (f"θ_{{CA}} {ca} ± {ca_err}°", f"θ_{{CA}} {ca} ± {ca_err}°",
+        (f"θ_{{CA}} {ca} ± {ca_err}", f"θ_{{CA}} {ca} ± {ca_err}",
          DIM, TEXT_SIZE, False),
         (f"θ_{{SYM}} {sym}", f"θ_{{SYM}} {sym}", DIM, TEXT_SIZE, False),
     ]
@@ -240,7 +245,7 @@ def panel_rows(view) -> list[list[tuple]]:
                    MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop))
 
     distance = _fmt(view.distance_mm, 0, "mm")
-    turned = _fmt(view.turned_deg, 0, "°")
+    turned = _fmt(view.turned_deg, 0, "°", signed=True)
     over_turned = (view.turned_deg is not None
                    and abs(view.turned_deg) > TURNED_LIMIT_DEG)
     third = [
@@ -252,7 +257,7 @@ def panel_rows(view) -> list[list[tuple]]:
     # 扣掉的是多少，站在旁邊的人完全看不出來。前作把 Raw 與 Off 一直印著。
     # 有沒有基準整段不會變，所以這一欄可以不存在。
     if view.theta_ca_offset_deg is not None:
-        zero = _fmt(view.theta_ca_offset_deg, 1, "°")
+        zero = _fmt(view.theta_ca_offset_deg, 1, "°", signed=True)
         third.append((f"零點 {zero}", f"Baseline {zero}", DIM, TEXT_SIZE, False))
     # 視窗的進度只有在平均得起來的時候才有意義。once 的「0/1 幀」看起來像一幀
     # 都沒量到，實際上那一幀好好的，只是沒有視窗可以填。
