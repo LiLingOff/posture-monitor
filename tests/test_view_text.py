@@ -102,9 +102,9 @@ def test_the_subscript_markup_is_split_into_runs():
 def test_theta_becomes_the_word_when_the_renderer_cannot_draw_it():
     """OpenCV 4 的 Hershey 只有 ASCII，θ 會變成兩個問號。能不能畫是算繪器
     才知道的事，所以問它，不要猜。"""
-    from view.text import _plain_theta
-    assert _plain_theta("θ_{CA} +19.6", True) == "θ_{CA} +19.6"
-    assert _plain_theta("θ_{CA} +19.6", False) == "theta_{CA} +19.6"
+    from view.text import to_ascii_symbols
+    assert to_ascii_symbols("θ_{CA} ± 0.8") == "theta_{CA} +- 0.8"
+    assert to_ascii_symbols("Distance 587mm") == "Distance 587mm"
 
 
 def test_nothing_to_draw_leaves_the_canvas_alone():
@@ -155,3 +155,11 @@ def test_a_bold_label_is_wider_than_the_same_label_regular():
     painter = TextPainter()
     assert (painter.width("超標", "OVER", 34, bold=True)
             >= painter.width("超標", "OVER", 34, bold=False))
+
+
+def test_plus_minus_survives_when_the_renderer_can_draw_it():
+    """± 與 θ 同屬非 ASCII，一起過關或一起不過。"""
+    painter = TextPainter(font_path="無")
+    item = TextItem(x=0, y=0, text="± 0.8", ascii_text="± 0.8", colour=(1, 1, 1))
+    picked = painter._pick(item)
+    assert picked == ("± 0.8" if painter._hershey_unicode else "+- 0.8")

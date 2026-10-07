@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-10-08 是 610 個
+python -m pytest -q          # 2026-10-08 是 611 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -40,9 +40,10 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 - **下標寫成 `θ_{CA}`**，`TextPainter` 會把它畫成小一級、往下挪的真下標。
   不要改用 Unicode 的小型大寫（ꜱʏᴍ）或下標字母（ₛ）,微軟正黑體整排缺字，
   實測會變成一排豆腐方塊。
-- **θ 能不能畫是問出來的，不是猜的**（`hershey_can_draw`）。OpenCV 5 的
+- **非 ASCII 能不能畫是問出來的，不是猜的**（`hershey_can_draw`）。OpenCV 5 的
   `putText` 自己會畫 Unicode，4.x 的 Hershey 只有 ASCII。畫不出來時
-  `TextPainter` 自己把 θ 換成 theta，排版那邊兩側一律寫 θ。
+  `TextPainter` 自己換成 ASCII 寫法（θ→theta、±→+-，表在 `_ASCII_INSTEAD`），
+  排版那邊兩側一律寫符號本身。
 - **`PostureBaseline` 後來加的欄位一定要有預設值**，`load()` 只檢查沒有預設值的
   欄位。現有的基準檔缺那幾欄，讀不進來的話沒有任何地方補得回來。
 - **判定的第三軸（肩高）要 `watch_shoulder_drop()` 打開才生效**，這樣既有 CSV

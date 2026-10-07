@@ -34,10 +34,10 @@ import numpy as np
 # 小型大寫（ꜱʏᴍ）在微軟正黑體裡整排缺字,實測過，會變成一排豆腐。自己排
 # 下標不挑字型：小一級、往下挪一點，用的還是本來就有的那幾個字母。
 _SUBSCRIPT = re.compile(r"_\{([^}]*)\}")
-_SUB_SIZE = 0.65        # 下標的字級倍率
+_SUB_SIZE = 0.72        # 下標的字級倍率
 # 下標往下挪多少，單位是主字級。挪太多會掉進下一列,列高是照主字級算的，
-# 下標的下緣不在裡面。0.22 在 20px 的字上是 4px，剛好落在列與列之間的空隙裡。
-_SUB_DROP = 0.22
+# 下標的下緣不在裡面。0.16 在 20px 的字上是 3px。
+_SUB_DROP = 0.16
 
 # 由上而下試。Windows 是開發機、Noto 是 Jetson 上 JetPack 的預設中日韓字型。
 _FONT_CANDIDATES = (
@@ -107,13 +107,19 @@ def hershey_can_draw(char: str) -> bool:
     return mask(char) != mask("?" * len(char.encode("utf-8")))
 
 
-def _plain_theta(text: str, has_theta: bool) -> str:
-    """畫不出 θ 的機器上改寫成 theta。
+# 畫不出非 ASCII 時，這些字各自換成純 ASCII 的寫法。
+_ASCII_INSTEAD = (("θ", "theta"), ("±", "+-"))
+
+
+def to_ascii_symbols(text: str) -> str:
+    """把面板上的符號換成純 ASCII 的寫法。
 
     判斷放在這裡而不是排版那邊：能不能畫是算繪器才知道的事，而排版只負責
-    決定要寫什麼。
+    決定要寫什麼。兩側都寫 θ 與 ±，換台機器截圖才對得起來。
     """
-    return text if has_theta else text.replace("θ", "theta")
+    for symbol, plain in _ASCII_INSTEAD:
+        text = text.replace(symbol, plain)
+    return text
 
 
 def find_bold_font(regular: Path | None) -> Path | None:
@@ -155,7 +161,9 @@ class TextPainter:
         # 而中文那一側隨時可以用 --display-lang zh 叫出來。
         self._lang = lang
         # 問一次就好，每幀都畫一張小圖去比太浪費。
-        self._hershey_theta = hershey_can_draw("θ")
+        # OpenCV 4.x 的 Hershey 只有 ASCII，5 以後自己會畫 Unicode。θ 與 ±
+        # 同屬非 ASCII，一起過關或一起不過，所以問一個就夠。
+        self._hershey_unicode = hershey_can_draw("θ")
 
         if find_spec("PIL") is None:
             self._why = ("沒有安裝 Pillow，畫面上的文字改用英文。"
@@ -182,7 +190,9 @@ class TextPainter:
 
     def _pick(self, item) -> str:
         text = item.text if self.chinese else item.ascii_text
-        return text if self.chinese else _plain_theta(text, self._hershey_theta)
+        if self.chinese or self._hershey_unicode:
+            return text
+        return to_ascii_symbols(text)
 
     @staticmethod
     def _runs(text: str):
@@ -291,7 +301,8 @@ class TextPainter:
         if not self.chinese:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
             # 下一段字蓋住，而狀態詞就在最前面。
-            picked = _plain_theta(ascii_text, self._hershey_theta)
+            picked = (ascii_text if self._hershey_unicode
+                      else to_ascii_symbols(ascii_text))
             return sum(self._hershey_width(run, size * (_SUB_SIZE if sub else 1.0), bold)
                        for run, sub in self._runs(picked))
         total = 0.0

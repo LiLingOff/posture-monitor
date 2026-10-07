@@ -293,7 +293,7 @@ def test_the_layout_does_not_move_when_something_goes_over():
 def test_a_column_that_cannot_be_measured_keeps_its_place():
     """整欄消失的話後面全部位移，而量不量得到是逐幀在變的。"""
     texts = _texts(view())
-    for label in ("θ_{CA}", "θ_{sym}", "肩部垂直位移", "距離", "轉身"):
+    for label in ("θ_{CA}", "θ_{SYM}", "肩部垂直位移", "距離", "轉身"):
         assert any(cell.startswith(label) and "—" in cell for cell in texts), label
 
 
@@ -413,7 +413,7 @@ def test_the_panel_uses_the_same_names_as_the_report():
     兩套名字並存的話讀報告的人得自己對應。"""
     texts = " ".join(_texts(view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
                                  drop_mm=18.0, drop_threshold_mm=12.0)))
-    assert "θ_{CA}" in texts and "θ_{sym}" in texts and "肩部垂直位移" in texts
+    assert "θ_{CA}" in texts and "θ_{SYM}" in texts and "肩部垂直位移" in texts
     for old in ("頭前傾", "肩膀高低", "肩膀下沉"):
         assert old not in texts, old
 
@@ -424,7 +424,7 @@ def test_both_sides_write_theta_the_same_way():
     v = view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
              drop_mm=18.0, drop_threshold_mm=12.0)
     joined = " ".join(_ascii_texts(v))
-    assert "θ_{CA}" in joined and "θ_{sym}" in joined
+    assert "θ_{CA}" in joined and "θ_{SYM}" in joined
     for text in _ascii_texts(v):
         assert _no_cjk(text), text
 
