@@ -223,7 +223,7 @@ def test_the_panel_is_ascii_only_in_the_fallback():
     """沒有字型時整個面板靠英文。中文會被 Hershey 畫成一排問號。"""
     v = view(state=Posture.OVER, turned_deg=25.0,
              skip_reason="right_shoulder 的垂直視差 43.3px，左右配對錯了",
-             keys=(("c 重新歸零", "c zero"), ("q 離開", "q quit")),
+             keys=(("[C] 重新歸零", "[C] Zero"), ("[Q] 離開", "[Q] Quit")),
              theta_ca_mean_deg=19.6,
              theta_ca_error_deg=0.8, distance_mm=662.0, rejected=12,
              remaining_s=45.0)
@@ -232,9 +232,9 @@ def test_the_panel_is_ascii_only_in_the_fallback():
 
 
 @pytest.mark.parametrize("keys", [
-    (("q 離開", "q quit"),),
-    (("任意鍵關閉", "press any key"),),
-    (("c 重新歸零", "c zero"), ("q 離開", "q quit")),
+    (("[Q] 離開", "[Q] Quit"),),
+    (("[任意鍵] 關閉", "[Any key] Close"),),
+    (("[C] 重新歸零", "[C] Zero"), ("[Q] 離開", "[Q] Quit")),
 ])
 def test_every_key_hint_the_cli_passes_has_an_ascii_form(keys):
     """先前只存中文、畫英文時從第一個字猜，於是 once 的「任意鍵關閉」在退回
@@ -264,7 +264,7 @@ def test_a_big_turn_shouts_in_colour_not_in_size():
 
 
 def test_the_action_to_take_goes_last_so_nothing_moves_when_it_appears():
-    rows = overlay.panel_rows(view(turned_deg=40.0, keys=(("q 離開", "q quit"),)))
+    rows = overlay.panel_rows(view(turned_deg=40.0, keys=(("[Q] 離開", "[Q] Quit"),)))
     assert rows[-1][-1][0] == "請轉回正面"
     assert "請轉回正面" not in " ".join(
         cell[0] for row in rows[:-1] for cell in row)
@@ -294,7 +294,7 @@ def test_the_panel_grows_instead_of_clipping_the_last_row():
     """列數會變，高度寫死的話被裁掉的正好是只在出事時才出現的那一列。"""
     calm = view(distance_mm=660.0)
     loud = view(turned_deg=40.0, drop_mm=18.0, drop_threshold_mm=12.0,
-                distance_mm=660.0, keys=(("q 離開", "q quit"),))
+                distance_mm=660.0, keys=(("[Q] 離開", "[Q] Quit"),))
     assert overlay.panel_height(calm) == overlay.PANEL_HEIGHT
     assert overlay.panel_height(loud) > overlay.PANEL_HEIGHT
     assert overlay.render_panel(loud, 1280, ASCII).shape[0] == overlay.panel_height(loud)
@@ -303,7 +303,7 @@ def test_the_panel_grows_instead_of_clipping_the_last_row():
 def test_once_says_single_frame_rather_than_unknown():
     """once 結構上不可能判定，印「未知」會被讀成姿勢看不出來。"""
     word = overlay.panel_rows(view(judging=False, state=Posture.UNKNOWN))[0][0]
-    assert word[0] == "單幀量測" and word[1] == "SINGLE FRAME"
+    assert word[0] == "單幀量測" and word[1] == "Single frame"
     assert word[2] != overlay.STATE_COLOURS[Posture.OVER]
     assert "未知" not in " ".join(_texts(view(judging=False)))
 
@@ -419,3 +419,21 @@ def test_theta_is_spelled_out_in_the_ascii_fallback():
     assert "theta_CA" in joined and "theta_sym" in joined
     for text in texts:
         assert text.isascii(), text
+
+
+def test_the_painter_decides_the_language_not_the_panel():
+    """排版兩種語言都要排得出來，所以 panel_rows 一律回傳成對的字串。
+    挑哪一邊是 TextPainter 的事,先前那是「有沒有字型」的副作用。"""
+    rows = overlay.panel_rows(view(theta_ca_mean_deg=19.6, distance_mm=620.0,
+                                   keys=(("[Q] 離開", "[Q] Quit"),)))
+    for row in rows:
+        for zh, en, *_ in row:
+            assert zh and en
+
+
+def test_key_hints_name_the_key_in_brackets():
+    """[Q] Quit 比 q quit 好認：括號把按鍵與動作分開，掃一眼就知道要按什麼。"""
+    texts = _ascii_texts(view(keys=(("[C] 重新歸零", "[C] Zero"),
+                                    ("[Q] 離開", "[Q] Quit"))))
+    joined = " ".join(texts)
+    assert "[C] Zero" in joined and "[Q] Quit" in joined

@@ -24,10 +24,21 @@ def test_a_missing_font_falls_back_to_english_instead_of_failing():
 
 def test_the_fallback_says_why_and_says_it_once():
     """每幀都印會蓋掉量測輸出，而這是開場就確定、之後不會變的事。"""
-    painter = TextPainter(font_path="沒有這個字型.ttf")
+    painter = TextPainter(font_path="沒有這個字型.ttf", lang="zh")
     first = painter.notice()
     assert first is not None and "英文" in first
     assert painter.notice() is None
+
+
+def test_asking_for_english_is_not_a_fallback_and_says_nothing():
+    """英文是預設值。沒找到中日韓字型不是退路，是本來就不需要。"""
+    assert TextPainter(font_path="沒有這個字型.ttf").notice() is None
+
+
+def test_english_is_the_default():
+    painter = TextPainter(font_path="沒有這個字型.ttf")
+    assert not painter.chinese
+    assert TextPainter(font_path="沒有這個字型.ttf", lang="zh").chinese is False
 
 
 def test_a_painter_that_found_a_font_has_nothing_to_say():

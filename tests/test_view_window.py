@@ -151,7 +151,8 @@ def test_the_missing_backend_is_reported_once_and_names_the_flag(monkeypatch):
     # 每幀最多吐一句，不然會蓋掉量測本身那一行原地更新的輸出。
     notices = [n for n in (w.show(view()) for _ in range(6)) if n is not None]
     assert any("視窗" in n for n in notices)
-    assert len(notices) == 2, notices   # 字型退回一次、開不了視窗一次
+    # 只有開不了視窗這一句。面板本來就是英文，沒有中日韓字型不是退路。
+    assert len(notices) == 1, notices
     assert w.show(view()) is None
 
 

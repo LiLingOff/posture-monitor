@@ -181,13 +181,13 @@ def headless_reason() -> str | None:
 
 
 def open_display(enabled: bool, width: int = 1280, eyes: str = "both",
-                 font: Path | str | None = None):
+                 font: Path | str | None = None, lang: str = "en"):
     """要視窗就開一個，不要或開不起來就給一個不做事的替身。"""
     if not enabled:
         return NO_DISPLAY
     reason = headless_reason()
     if reason is not None:
         return NullDisplay(reason)
-    window = LiveWindow(width=width, eyes=eyes, painter=TextPainter(font))
+    window = LiveWindow(width=width, eyes=eyes, painter=TextPainter(font, lang))
     window.open()
     return window

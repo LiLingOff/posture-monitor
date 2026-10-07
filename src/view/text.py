@@ -12,6 +12,11 @@ Pillow。
 **找不到 Pillow 或找不到字型時退回英文。** 視窗本來就是選配，不該因為一台機器
 沒裝字型就量不了。所以每段文字都要同時給中文與英文兩種寫法，退回時用後者，
 並且說一次原因。
+
+**選哪一種語言與用哪個算繪器是兩件事。** `lang` 決定畫 `text` 還是 `ascii_text`，
+字型找不找得到決定走 Pillow 還是 Hershey。英文配 Pillow 比 Hershey 好看得多，
+所以有字型的時候即使選英文也走 Pillow;先前兩件事綁在一起，想看英文就只能
+把字型藏起來。
 """
 from __future__ import annotations
 
@@ -81,13 +86,16 @@ def _fc_match() -> Path | None:
 
 
 class TextPainter:
-    """畫字，畫不了中文就畫英文。"""
+    """畫字。lang 決定畫哪一種，字型決定怎麼畫。"""
 
-    def __init__(self, font_path: Path | str | None = None):
+    def __init__(self, font_path: Path | str | None = None, lang: str = "en"):
         self._fonts: dict[int, object] = {}
         self._path: Path | None = None
         self._why: str | None = None
         self._told = False
+        # 預設英文：面板上的字多半是指標名稱與按鍵提示，英文短、不必擔心字型，
+        # 而中文那一側隨時可以用 --display-lang zh 叫出來。
+        self._lang = lang
 
         if find_spec("PIL") is None:
             self._why = ("沒有安裝 Pillow，畫面上的文字改用英文。"
@@ -106,12 +114,21 @@ class TextPainter:
         """畫得出中文嗎。"""
         return self._path is not None
 
+    @property
+    def chinese(self) -> bool:
+        """這一次要畫中文嗎。要中文而且畫得出來才算。"""
+        return self._lang == "zh" and self.cjk
+
+    def _pick(self, item) -> str:
+        return item.text if self.chinese else item.ascii_text
+
     def notice(self) -> str | None:
-        """退回英文的原因，只回傳一次。
+        """沒能畫成中文的原因，只回傳一次。
 
         每幀都印的話會蓋掉量測本身的輸出，而這是開場就確定、之後不會變的事。
+        本來就選英文的時候不必說，那不是退路，是指定的。
         """
-        if self._why is None or self._told:
+        if self._why is None or self._told or self._lang != "zh":
             return None
         self._told = True
         return self._why
@@ -145,7 +162,7 @@ class TextPainter:
         image = Image.fromarray(canvas[:, :, ::-1])
         draw = ImageDraw.Draw(image)
         for item in items:
-            draw.text((item.x, item.y), item.text, font=self._font(item.size),
+            draw.text((item.x, item.y), self._pick(item), font=self._font(item.size),
                       fill=tuple(int(c) for c in item.colour[::-1]))
         canvas[:, :, :] = np.asarray(image)[:, :, ::-1]
         return canvas
@@ -166,4 +183,4 @@ class TextPainter:
                                         size / 22.0, 2)
             return int(w)
         font = self._font(size)
-        return int(font.getlength(text))
+        return int(font.getlength(text if self.chinese else ascii_text))

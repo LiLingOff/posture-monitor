@@ -219,7 +219,7 @@ def _run_once(args) -> None:
             ca_window=RollingAngle(1), sym_window=RollingAngle(1),
             state=Posture.UNKNOWN, judging=False,
             skip_reason=unusable_reason(measurement),
-            rejected=0, frames_seen=1, keys=(("任意鍵關閉", "press any key"),),
+            rejected=0, frames_seen=1, keys=(("[任意鍵] 關閉", "[Any key] Close"),),
         )))
     finally:
         display.close()
@@ -353,7 +353,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 corrected=corrected, ca_window=ca_window, sym_window=sym_window,
                 state=Posture.UNKNOWN if verdict is None else verdict.posture,
                 skip_reason=reason, rejected=rejected, frames_seen=frames_seen,
-                remaining_s=remaining, baseline=baseline, keys=(("q 離開", "q quit"),),
+                remaining_s=remaining, baseline=baseline, keys=(("[Q] 離開", "[Q] Quit"),),
                 drop_mm=drop_window.mean, drop_threshold_mm=_drop_threshold(baseline),
             )))
             _write_frame_row(
@@ -508,7 +508,7 @@ def _run_monitor(args) -> None:
                 skip_reason=result.reason, rejected=rejected,
                 frames_seen=frames_seen, baseline=state.baseline,
                 mode=result.mode.value, phase_remaining_s=result.phase_remaining_s,
-                keys=(("c 重新歸零", "c zero"), ("q 離開", "q quit")),
+                keys=(("[C] 重新歸零", "[C] Zero"), ("[Q] 離開", "[Q] Quit")),
             )))
             _pump_keys(display, state)
 
@@ -602,7 +602,7 @@ def _open_display(args):
     當場沒有人發現，是事後從資料反推出來的。
     """
     display = open_display(args.display, args.display_width,
-                           args.display_eyes, args.font)
+                           args.display_eyes, args.font, args.display_lang)
     if args.display:
         print("視窗已開。螢幕要放在受試者看不到的地方；"
               "視窗有焦點時按 q 結束這一段，終端機的 Ctrl-C 照常", flush=True)
@@ -1126,8 +1126,11 @@ def main() -> None:
         p.add_argument("--display-eyes", choices=["both", "left"], default="left",
                        help="left 只畫左眼，受試者佔滿整個寬度；both 左右眼並排，"
                             "配對錯了看得出來，但兩張幾乎一樣，各只剩一半寬")
+        p.add_argument("--display-lang", choices=["en", "zh"], default="en",
+                       help="面板的語言。en 不需要中日韓字型；zh 要有字型，"
+                            "沒有的話照樣退回英文")
         p.add_argument("--font", type=Path, default=None,
-                       help="畫面文字用的中日韓字型。不給的話自動找，"
+                       help="--display-lang zh 時用的中日韓字型。不給的話自動找，"
                             "找不到就改用英文，量測照常")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"

@@ -42,9 +42,9 @@ HALO = (20, 20, 20)
 # monitor 的階段。用字串當鍵而不是 import Mode：疊圖不該相依於流程。
 # 少一個的話面板會直接印中文，退回英文時就變成一排問號，所以有測試盯著。
 MODE_WORDS = {
-    "待命": ("按 c 取基準", "press c to zero"),
-    "倒數": ("請坐正，倒數", "sit up, starting in"),
-    "取基準": ("取基準中，請保持不動", "zeroing, hold still"),
+    "待命": ("[C] 取基準", "[C] Zero"),
+    "倒數": ("請坐正，倒數", "Sit up, starting in"),
+    "取基準": ("取基準中，請保持不動", "Zeroing, hold still"),
     "監測": ("", ""),
 }
 STATE_WORDS = {
@@ -203,7 +203,7 @@ def panel_rows(view) -> list[list[tuple]]:
     # once 只量一幀、沒有基準也沒有視窗，判定在那裡結構上不可能成立，印一個
     # 大大的「未知」會讓人以為是姿勢看不出來，實際上是這個模式根本不判。
     word_zh, word_en = (STATE_WORDS[view.state] if view.judging
-                        else ("單幀量測", "SINGLE FRAME"))
+                        else ("單幀量測", "Single frame"))
     word_colour = STATE_COLOURS[view.state] if view.judging else DIM
     first = [(word_zh, word_en, word_colour, STATE_SIZE, True)]
 

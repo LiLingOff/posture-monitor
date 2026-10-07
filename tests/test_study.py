@@ -43,7 +43,8 @@ def _args(tmp_path, **overrides):
         vertical_split=False, swap_lr=False, precision="fp32", device="cpu",
         checkpoint=Path("c"), engine_cache=Path("e"), repo_dir=Path("r"),
         min_confidence=0.0, input_height=256, no_subpixel=False, mode="study",
-        display=False, display_width=1280, display_eyes="both", font=None,
+        display=False, display_width=1280, display_eyes="both",
+        font=None, display_lang="en",
     )
     values.update(overrides)
     return SimpleNamespace(**values)
