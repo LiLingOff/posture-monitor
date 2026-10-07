@@ -221,9 +221,9 @@ def panel_rows(view) -> list[list[tuple]]:
 
     # 誤差與角度同一欄：分成兩欄的話視窗還沒填滿時那一欄不存在，後面全部位移。
     second = [
-        (f"θ_CA {ca[0]} ± {ca_err[0]}°", f"theta_CA {ca[1]} +-{ca_err[1]}d",
+        (f"θ_{{CA}} {ca[0]} ± {ca_err[0]}°", f"θ_{{CA}} {ca[1]} +-{ca_err[1]}d",
          DIM, TEXT_SIZE, False),
-        (f"θ_sym {sym[0]}", f"theta_sym {sym[1]}", DIM, TEXT_SIZE, False),
+        (f"θ_{{sym}} {sym[0]}", f"θ_{{sym}} {sym[1]}", DIM, TEXT_SIZE, False),
     ]
 
     over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None

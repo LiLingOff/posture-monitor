@@ -58,13 +58,53 @@ def test_chinese_is_actually_drawn_when_a_font_is_available():
 
 
 def test_the_two_modes_draw_different_things():
-    """退回模式畫的是英文，不是把中文畫成一排問號。"""
+    """英文那一邊畫的是英文，不是把中文畫成一排問號。"""
     if find_font() is None:
         pytest.skip("這台機器沒有中日韓字型")
-    cjk, ascii_only = blank(0, width=300, height=60), blank(0, width=300, height=60)
-    TextPainter().paint(cjk, [_item()])
-    TextPainter(font_path="無").paint(ascii_only, [_item()])
-    assert not np.array_equal(cjk, ascii_only)
+    cjk, english = blank(0, width=300, height=60), blank(0, width=300, height=60)
+    TextPainter(lang="zh").paint(cjk, [_item()])
+    TextPainter().paint(english, [_item()])
+    assert not np.array_equal(cjk, english)
+
+
+def test_english_goes_through_hershey_even_when_a_font_exists():
+    """算繪器跟著語言走。英文配 Hershey 的筆畫比 TTF 的 Latin 粗，
+    站在旁邊瞄比較清楚,而那正是這個視窗的用途。"""
+    if find_font() is None:
+        pytest.skip("這台機器沒有中日韓字型")
+    with_font, without = blank(0, width=300, height=60), blank(0, width=300, height=60)
+    TextPainter().paint(with_font, [_item()])
+    TextPainter(font_path="無").paint(without, [_item()])
+    assert np.array_equal(with_font, without)
+
+
+def test_a_subscript_is_drawn_smaller_and_lower():
+    """報告書寫的是真正的下標。Unicode 的小型大寫在微軟正黑體裡整排缺字。"""
+    plain, sub = blank(0, width=300, height=60), blank(0, width=300, height=60)
+    item = TextItem(x=5, y=5, text="θ_{CA}", ascii_text="θ_{CA}",
+                    colour=(255, 255, 255), size=28)
+    TextPainter(font_path="無").paint(sub, [item])
+    TextPainter(font_path="無").paint(
+        plain, [TextItem(x=5, y=5, text="θCA", ascii_text="θCA",
+                         colour=(255, 255, 255), size=28)])
+    assert painted(sub, 0)
+    assert not np.array_equal(plain, sub)
+    # 下標在主字的下半部：上緣那幾列只有 θ，不會有 CA。
+    assert sub[5:12].sum() < plain[5:12].sum()
+
+
+def test_the_subscript_markup_is_split_into_runs():
+    runs = TextPainter._runs("θ_{CA} +19.6°")
+    assert runs == [("θ", False), ("CA", True), (" +19.6°", False)]
+    assert TextPainter._runs("距離 587mm") == [("距離 587mm", False)]
+
+
+def test_theta_becomes_the_word_when_the_renderer_cannot_draw_it():
+    """OpenCV 4 的 Hershey 只有 ASCII，θ 會變成兩個問號。能不能畫是算繪器
+    才知道的事，所以問它，不要猜。"""
+    from view.text import _plain_theta
+    assert _plain_theta("θ_{CA} +19.6", True) == "θ_{CA} +19.6"
+    assert _plain_theta("θ_{CA} +19.6", False) == "theta_{CA} +19.6"
 
 
 def test_nothing_to_draw_leaves_the_canvas_alone():

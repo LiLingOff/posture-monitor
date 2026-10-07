@@ -20,6 +20,7 @@ Pillow。
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+# `θ_{CA}` 會畫成 θ 加一個下標的 CA。報告書寫的是真正的下標，而 Unicode 的
+# 小型大寫（ꜱʏᴍ）在微軟正黑體裡整排缺字,實測過，會變成一排豆腐。自己排
+# 下標不挑字型：小一級、往下挪一點，用的還是本來就有的那幾個字母。
+_SUBSCRIPT = re.compile(r"_\{([^}]*)\}")
+_SUB_SIZE = 0.65        # 下標的字級倍率
+# 下標往下挪多少，單位是主字級。挪太多會掉進下一列,列高是照主字級算的，
+# 下標的下緣不在裡面。0.22 在 20px 的字上是 4px，剛好落在列與列之間的空隙裡。
+_SUB_DROP = 0.22
 
 # 由上而下試。Windows 是開發機、Noto 是 Jetson 上 JetPack 的預設中日韓字型。
 _FONT_CANDIDATES = (
@@ -79,6 +89,33 @@ def find_font(explicit: Path | str | None = None) -> Path | None:
     return _fc_match()
 
 
+def hershey_can_draw(char: str) -> bool:
+    """Hershey 畫不畫得出這個字。
+
+    OpenCV 5 的 putText 自己會畫 Unicode，連中文都畫得出來；4.x 的 Hershey 只有
+    ASCII，其餘每個位元組畫一個問號。Jetson 上是哪一版不一定，所以問，不要猜。
+
+    比對的是「同樣長度的問號」而不是單一個問號：一個 θ 是兩個 UTF-8 位元組，
+    畫不出來時是兩個問號。
+    """
+    def mask(text: str) -> bytes:
+        canvas = np.zeros((48, 240), np.uint8)
+        cv2.putText(canvas, text, (4, 36), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2, 255, 2, cv2.LINE_AA)
+        return canvas.tobytes()
+
+    return mask(char) != mask("?" * len(char.encode("utf-8")))
+
+
+def _plain_theta(text: str, has_theta: bool) -> str:
+    """畫不出 θ 的機器上改寫成 theta。
+
+    判斷放在這裡而不是排版那邊：能不能畫是算繪器才知道的事，而排版只負責
+    決定要寫什麼。
+    """
+    return text if has_theta else text.replace("θ", "theta")
+
+
 def find_bold_font(regular: Path | None) -> Path | None:
     """同一份字型的粗體檔，找不到回傳 None。"""
     if regular is None:
@@ -117,6 +154,8 @@ class TextPainter:
         # 預設英文：面板上的字多半是指標名稱與按鍵提示，英文短、不必擔心字型，
         # 而中文那一側隨時可以用 --display-lang zh 叫出來。
         self._lang = lang
+        # 問一次就好，每幀都畫一張小圖去比太浪費。
+        self._hershey_theta = hershey_can_draw("θ")
 
         if find_spec("PIL") is None:
             self._why = ("沒有安裝 Pillow，畫面上的文字改用英文。"
@@ -142,7 +181,21 @@ class TextPainter:
         return self._lang == "zh" and self.cjk
 
     def _pick(self, item) -> str:
-        return item.text if self.chinese else item.ascii_text
+        text = item.text if self.chinese else item.ascii_text
+        return text if self.chinese else _plain_theta(text, self._hershey_theta)
+
+    @staticmethod
+    def _runs(text: str):
+        """把 `θ_{CA}` 拆成 [(θ, False), (CA, True)]。True 代表下標。"""
+        runs, at = [], 0
+        for m in _SUBSCRIPT.finditer(text):
+            if m.start() > at:
+                runs.append((text[at:m.start()], False))
+            runs.append((m.group(1), True))
+            at = m.end()
+        if at < len(text):
+            runs.append((text[at:], False))
+        return runs or [("", False)]
 
     def notice(self) -> str | None:
         """沒能畫成中文的原因，只回傳一次。
@@ -163,18 +216,30 @@ class TextPainter:
         items = list(items)
         if not items:
             return canvas
-        if not self.cjk:
+        # 算繪器跟著語言走，不跟著字型走。英文配 Hershey 的筆畫比 TTF 的
+        # Latin 粗，站在旁邊瞄比較清楚,而那正是這個視窗的用途。
+        if not self.chinese:
             return self._paint_hershey(canvas, items)
         return self._paint_pillow(canvas, items)
 
     def _paint_hershey(self, canvas: np.ndarray, items) -> np.ndarray:
         for item in items:
-            # Hershey 的字高約為 scale 的 22px，換算成要求的像素高度。
-            scale = item.size / 22.0
-            cv2.putText(canvas, item.ascii_text, (item.x, item.y + item.size),
-                        cv2.FONT_HERSHEY_SIMPLEX, scale, item.colour,
-                        2 if item.bold else 1, cv2.LINE_AA)
+            x = item.x
+            for run, sub in self._runs(self._pick(item)):
+                # Hershey 的字高約為 scale 的 22px，換算成要求的像素高度。
+                size = item.size * (_SUB_SIZE if sub else 1.0)
+                baseline = item.y + item.size + (item.size * _SUB_DROP if sub else 0)
+                cv2.putText(canvas, run, (int(x), int(baseline)),
+                            cv2.FONT_HERSHEY_SIMPLEX, size / 22.0, item.colour,
+                            2 if item.bold else 1, cv2.LINE_AA)
+                x += self._hershey_width(run, size, item.bold)
         return canvas
+
+    @staticmethod
+    def _hershey_width(text: str, size: float, bold: bool) -> int:
+        (w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX,
+                                    size / 22.0, 2 if bold else 1)
+        return int(w)
 
     def _paint_pillow(self, canvas: np.ndarray, items) -> np.ndarray:
         from PIL import Image, ImageDraw
@@ -185,10 +250,14 @@ class TextPainter:
         draw = ImageDraw.Draw(image)
         for item in items:
             fill = tuple(int(c) for c in item.colour[::-1])
-            draw.text((item.x, item.y), self._pick(item),
-                      font=self._font(item.size, item.bold),
-                      fill=fill, stroke_width=self._weight(item),
-                      stroke_fill=fill)
+            x = item.x
+            for run, sub in self._runs(self._pick(item)):
+                size = int(round(item.size * _SUB_SIZE)) if sub else item.size
+                y = item.y + (int(round(item.size * _SUB_DROP)) if sub else 0)
+                font = self._font(size, item.bold)
+                draw.text((x, y), run, font=font, fill=fill,
+                          stroke_width=self._weight(item), stroke_fill=fill)
+                x += font.getlength(run)
         canvas[:, :, :] = np.asarray(image)[:, :, ::-1]
         return canvas
 
@@ -215,12 +284,18 @@ class TextPainter:
 
     def width(self, text: str, ascii_text: str, size: int,
               bold: bool = False) -> int:
-        """一段字畫出來有多寬，用來排版。"""
-        if not self.cjk:
+        """一段字畫出來有多寬，用來排版。
+
+        下標要分開量：它用的字級比較小，照主字級算會多留一截空白。
+        """
+        if not self.chinese:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
             # 下一段字蓋住，而狀態詞就在最前面。
-            (w, _), _ = cv2.getTextSize(ascii_text, cv2.FONT_HERSHEY_SIMPLEX,
-                                        size / 22.0, 2)
-            return int(w)
-        font = self._font(size, bold)
-        return int(font.getlength(text if self.chinese else ascii_text))
+            picked = _plain_theta(ascii_text, self._hershey_theta)
+            return sum(self._hershey_width(run, size * (_SUB_SIZE if sub else 1.0), bold)
+                       for run, sub in self._runs(picked))
+        total = 0.0
+        for run, sub in self._runs(text):
+            run_size = int(round(size * _SUB_SIZE)) if sub else size
+            total += self._font(run_size, bold).getlength(run)
+        return int(total)

@@ -219,7 +219,14 @@ def test_a_missing_angle_is_a_dash_not_a_zero():
     assert "0.0" not in texts
 
 
-def test_the_panel_is_ascii_only_in_the_fallback():
+def _no_cjk(text: str) -> bool:
+    """英文那一側不能出現中日韓字。θ 之類的符號可以,Hershey 畫得出來，
+    畫不出來的機器上 TextPainter 會自己換成 theta。"""
+    return not any("⺀" <= c <= "鿿" or "぀" <= c <= "ヿ"
+                   for c in text)
+
+
+def test_the_panel_has_no_chinese_on_the_english_side():
     """沒有字型時整個面板靠英文。中文會被 Hershey 畫成一排問號。"""
     v = view(state=Posture.OVER, turned_deg=25.0,
              skip_reason="right_shoulder 的垂直視差 43.3px，左右配對錯了",
@@ -228,7 +235,7 @@ def test_the_panel_is_ascii_only_in_the_fallback():
              theta_ca_error_deg=0.8, distance_mm=662.0, rejected=12,
              remaining_s=45.0)
     for text in _ascii_texts(v):
-        assert text.isascii(), text
+        assert _no_cjk(text), text
 
 
 @pytest.mark.parametrize("keys", [
@@ -240,7 +247,7 @@ def test_every_key_hint_the_cli_passes_has_an_ascii_form(keys):
     """先前只存中文、畫英文時從第一個字猜，於是 once 的「任意鍵關閉」在退回
     模式下整段變成問號。這裡列的是 posture.py 真正傳進來的那幾組。"""
     for text in _ascii_texts(view(keys=keys)):
-        assert text.isascii(), text
+        assert _no_cjk(text), text
 
 
 def test_turned_is_the_change_from_the_baseline_not_the_azimuth():
@@ -286,7 +293,7 @@ def test_the_layout_does_not_move_when_something_goes_over():
 def test_a_column_that_cannot_be_measured_keeps_its_place():
     """整欄消失的話後面全部位移，而量不量得到是逐幀在變的。"""
     texts = _texts(view())
-    for label in ("θ_CA", "θ_sym", "肩部垂直位移", "距離", "轉身"):
+    for label in ("θ_{CA}", "θ_{sym}", "肩部垂直位移", "距離", "轉身"):
         assert any(cell.startswith(label) and "—" in cell for cell in texts), label
 
 
@@ -378,7 +385,7 @@ def test_the_new_panel_fields_have_an_ascii_form():
              theta_ca_offset_deg=3.8, turned_deg=40.0, drop_mm=18.0,
              drop_threshold_mm=12.0)
     for text in _ascii_texts(v):
-        assert text.isascii(), text
+        assert _no_cjk(text), text
 
 
 def test_unknown_is_not_the_same_colour_as_the_skeleton():
@@ -406,19 +413,20 @@ def test_the_panel_uses_the_same_names_as_the_report():
     兩套名字並存的話讀報告的人得自己對應。"""
     texts = " ".join(_texts(view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
                                  drop_mm=18.0, drop_threshold_mm=12.0)))
-    assert "θ_CA" in texts and "θ_sym" in texts and "肩部垂直位移" in texts
+    assert "θ_{CA}" in texts and "θ_{sym}" in texts and "肩部垂直位移" in texts
     for old in ("頭前傾", "肩膀高低", "肩膀下沉"):
         assert old not in texts, old
 
 
-def test_theta_is_spelled_out_in_the_ascii_fallback():
-    """θ 不是 ASCII，而沒有中日韓字型時整個面板靠英文那一側。"""
-    texts = _ascii_texts(view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
-                              drop_mm=18.0, drop_threshold_mm=12.0))
-    joined = " ".join(texts)
-    assert "theta_CA" in joined and "theta_sym" in joined
-    for text in texts:
-        assert text.isascii(), text
+def test_both_sides_write_theta_the_same_way():
+    """排版只負責寫 θ_{CA}，畫不畫得出 θ 是 TextPainter 的事。
+    兩側不同寫法的話，換台機器截圖就對不起來。"""
+    v = view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
+             drop_mm=18.0, drop_threshold_mm=12.0)
+    joined = " ".join(_ascii_texts(v))
+    assert "θ_{CA}" in joined and "θ_{sym}" in joined
+    for text in _ascii_texts(v):
+        assert _no_cjk(text), text
 
 
 def test_the_painter_decides_the_language_not_the_panel():

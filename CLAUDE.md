@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-10-08 是 606 個
+python -m pytest -q          # 2026-10-08 是 610 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -34,11 +34,15 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 - **三個指標一律叫 θ_CA、θ_sym、肩部垂直位移**，面板、終端機、文件、報告
   全部一致。2026-10-08 之前面板刻意用白話（頭前傾、肩膀高低、肩膀下沉），
   那條規則已經取消，因為報告書用的是符號，而畫面截圖會進報告。
-- **面板的英文那一側不能直接塞 θ**，`θ` 不是 ASCII，而面板預設就是英文。
-  寫 `theta_CA`、`theta_sym`，有測試盯著。
-- **面板預設英文**（`--display-lang`，2026-10-08）。`TextPainter` 的 `lang`
-  決定畫哪一種字串，字型找不找得到決定走 Pillow 還是 Hershey,兩件事分開。
-  選英文時不要再印「找不到字型，改用英文」，那不是退路，是指定的。
+- **面板預設英文**（`--display-lang`，2026-10-08），而且**英文一律走 Hershey**，
+  有沒有 TTF 字型都一樣。Hershey 的筆畫比 TTF 的 Latin 粗，站在旁邊瞄比較清楚。
+  Pillow 只給中文用。選英文時不要印「找不到字型，改用英文」，那不是退路。
+- **下標寫成 `θ_{CA}`**，`TextPainter` 會把它畫成小一級、往下挪的真下標。
+  不要改用 Unicode 的小型大寫（ꜱʏᴍ）或下標字母（ₛ）,微軟正黑體整排缺字，
+  實測會變成一排豆腐方塊。
+- **θ 能不能畫是問出來的，不是猜的**（`hershey_can_draw`）。OpenCV 5 的
+  `putText` 自己會畫 Unicode，4.x 的 Hershey 只有 ASCII。畫不出來時
+  `TextPainter` 自己把 θ 換成 theta，排版那邊兩側一律寫 θ。
 - **`PostureBaseline` 後來加的欄位一定要有預設值**，`load()` 只檢查沒有預設值的
   欄位。現有的基準檔缺那幾欄，讀不進來的話沒有任何地方補得回來。
 - **判定的第三軸（肩高）要 `watch_shoulder_drop()` 打開才生效**，這樣既有 CSV
