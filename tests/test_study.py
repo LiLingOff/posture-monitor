@@ -383,7 +383,7 @@ def test_head_forward_is_not_the_same_instruction_as_forward():
 
 def test_every_posture_on_the_list_has_a_written_brief():
     """2026-10-06 定案的五種。沒寫死的話程式只印一句通用的，而 doc 10 要求
-    逐字念出來、不要自己改寫,口頭給的指導語就是基準變異的來源。"""
+    逐字念出來、不要自己改寫，口頭給的指導語就是基準變異的來源。"""
     generic = condition_brief("清單以外的名稱")
     for condition in ("upright", "head-forward", "head-back",
                       "left-shoulder-up", "right-shoulder-up"):

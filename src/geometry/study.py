@@ -139,7 +139,7 @@ class SegmentReview:
 
     @property
     def needs_redo(self) -> bool:
-        """要叫人重量。已經在這一趟裡重量過的那份不算,重量的是後面那一份。"""
+        """要叫人重量。已經在這一趟裡重量過的那份不算，重量的是後面那一份。"""
         if self.retaken:
             return False
         return self.too_many_rejected or self.turned_too_far or self.camera_lost
@@ -160,7 +160,7 @@ def review(recordings, baseline=None) -> list[SegmentReview]:
     判斷寫在這裡而不是印出來的地方，因為同一條政策（略過率上限）另外有三個
     使用者：取基準時的警告、`cohort` 的統計、報表上的 ⚠ 標記。四處各自寫一遍
     的話，總結可以說某一段乾淨而彙整其實把它排除掉了。「哪一段被重量過」
-    同理,先前它寫在印出來的地方，而那正是這段說明在講的事。
+    同理：先前它寫在印出來的地方，而那正是這段說明在講的事。
     """
     later = [r.condition for r in recordings]
     return [
