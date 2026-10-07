@@ -89,3 +89,29 @@ def test_the_width_grows_with_the_size():
 def test_an_explicit_font_that_does_not_exist_is_not_silently_replaced():
     """指定了字型卻被換掉的話，畫面上的字跟指定的不一樣而且沒有人會發現。"""
     assert find_font("沒有這個字型.ttf") is None
+
+
+def test_bold_uses_the_bold_font_file_when_there_is_one():
+    """描邊假粗會把中文筆畫之間的空隙填掉，「肩部垂直位移」糊成一團。"""
+    from view.text import find_bold_font
+    painter = TextPainter(lang="zh")
+    if find_font() is None or find_bold_font(find_font()) is None:
+        pytest.skip("這台機器沒有成對的一般／粗體字型")
+    item = TextItem(x=0, y=0, text="超標", ascii_text="OVER", colour=(0, 0, 0), bold=True)
+    assert painter._weight(item) == 0        # 不描邊
+    assert painter._font(20, bold=True) is not painter._font(20, bold=False)
+
+
+def test_without_a_bold_file_bold_falls_back_to_a_stroke():
+    painter = TextPainter(font_path="沒有這個字型.ttf")
+    item = TextItem(x=0, y=0, text="超標", ascii_text="OVER", colour=(0, 0, 0), bold=True)
+    assert painter._weight(item) == 1
+
+
+def test_a_bold_label_is_wider_than_the_same_label_regular():
+    """排版照量到的寬度擺下一欄，粗體量錯的話後面整排會疊在一起。"""
+    if find_font() is None:
+        pytest.skip("這台機器沒有中日韓字型")
+    painter = TextPainter()
+    assert (painter.width("超標", "OVER", 34, bold=True)
+            >= painter.width("超標", "OVER", 34, bold=False))

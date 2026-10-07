@@ -39,6 +39,15 @@ _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 )
 
+# 同一份字型的粗體檔。字型檔名怎麼對應是各家自己的慣例，所以列成表。
+# 找不到粗體就用描邊假粗,那在中文上會把筆畫之間的空隙填掉，所以只當退路。
+_BOLD_OF = {
+    "msjh.ttc": "msjhbd.ttc",
+    "msyh.ttc": "msyhbd.ttc",
+    "NotoSansCJK-Regular.ttc": "NotoSansCJK-Bold.ttc",
+    "NotoSansCJKtc-Regular.otf": "NotoSansCJKtc-Bold.otf",
+}
+
 
 @dataclass(frozen=True)
 class TextItem:
@@ -70,6 +79,17 @@ def find_font(explicit: Path | str | None = None) -> Path | None:
     return _fc_match()
 
 
+def find_bold_font(regular: Path | None) -> Path | None:
+    """同一份字型的粗體檔，找不到回傳 None。"""
+    if regular is None:
+        return None
+    bold = _BOLD_OF.get(regular.name)
+    if bold is None:
+        return None
+    candidate = regular.with_name(bold)
+    return candidate if candidate.is_file() else None
+
+
 def _fc_match() -> Path | None:
     """最後一招：問系統自己的字型設定。只有 Linux 有 fontconfig。"""
     if sys.platform == "win32":
@@ -89,7 +109,8 @@ class TextPainter:
     """畫字。lang 決定畫哪一種，字型決定怎麼畫。"""
 
     def __init__(self, font_path: Path | str | None = None, lang: str = "en"):
-        self._fonts: dict[int, object] = {}
+        self._fonts: dict[tuple[int, bool], object] = {}
+        self._bold_path: Path | None = None
         self._path: Path | None = None
         self._why: str | None = None
         self._told = False
@@ -103,6 +124,7 @@ class TextPainter:
             return
 
         path = find_font(font_path)
+        self._bold_path = find_bold_font(path)
         if path is None:
             self._why = ("找不到中日韓字型，畫面上的文字改用英文。"
                          "用 --font 指定一份，或安裝 Noto Sans CJK")
@@ -162,19 +184,37 @@ class TextPainter:
         image = Image.fromarray(canvas[:, :, ::-1])
         draw = ImageDraw.Draw(image)
         for item in items:
-            draw.text((item.x, item.y), self._pick(item), font=self._font(item.size),
-                      fill=tuple(int(c) for c in item.colour[::-1]))
+            fill = tuple(int(c) for c in item.colour[::-1])
+            draw.text((item.x, item.y), self._pick(item),
+                      font=self._font(item.size, item.bold),
+                      fill=fill, stroke_width=self._weight(item),
+                      stroke_fill=fill)
         canvas[:, :, :] = np.asarray(image)[:, :, ::-1]
         return canvas
 
-    def _font(self, size: int):
-        if size not in self._fonts:
+    def _weight(self, item) -> int:
+        """沒有粗體字型檔時，描一圈同色的邊假裝粗體。
+
+        Pillow 這條路先前整個忽略 `bold`，於是狀態詞與警告跟旁邊的數字一樣細，
+        而那兩個就是要讓人一眼看到的東西（Hershey 那條路一直都有）。
+
+        描邊只當退路。中文的筆畫本來就密，描一圈會把筆畫之間的空隙填掉，
+        「肩部垂直位移」會糊成一團,有真正的粗體字型就用它。
+        """
+        return 1 if item.bold and self._bold_path is None else 0
+
+    def _font(self, size: int, bold: bool = False):
+        bold = bold and self._bold_path is not None
+        key = (size, bold)
+        if key not in self._fonts:
             from PIL import ImageFont
 
-            self._fonts[size] = ImageFont.truetype(str(self._path), size)
-        return self._fonts[size]
+            path = self._bold_path if bold else self._path
+            self._fonts[key] = ImageFont.truetype(str(path), size)
+        return self._fonts[key]
 
-    def width(self, text: str, ascii_text: str, size: int) -> int:
+    def width(self, text: str, ascii_text: str, size: int,
+              bold: bool = False) -> int:
         """一段字畫出來有多寬，用來排版。"""
         if not self.cjk:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
@@ -182,5 +222,5 @@ class TextPainter:
             (w, _), _ = cv2.getTextSize(ascii_text, cv2.FONT_HERSHEY_SIMPLEX,
                                         size / 22.0, 2)
             return int(w)
-        font = self._font(size)
+        font = self._font(size, bold)
         return int(font.getlength(text if self.chinese else ascii_text))

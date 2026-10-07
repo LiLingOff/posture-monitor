@@ -237,8 +237,8 @@ def panel_rows(view) -> list[list[tuple]]:
     over_turned = (view.turned_deg is not None
                    and abs(view.turned_deg) > TURNED_LIMIT_DEG)
     third = [
-        (f"距離 {distance[0]}", f"Dist {distance[1]}", DIM, TEXT_SIZE, False),
-        (f"轉身 {turned[0]}", f"Turned {turned[1]}",
+        (f"距離 {distance[0]}", f"Distance {distance[1]}", DIM, TEXT_SIZE, False),
+        (f"轉身 {turned[0]}", f"Rotation {turned[1]}",
          MISPAIRED if over_turned else DIM, TEXT_SIZE, over_turned),
     ]
     # 畫面上的角度是扣掉基準之後的值，所以零點本身不印的話，歸零有沒有生效、
@@ -246,7 +246,7 @@ def panel_rows(view) -> list[list[tuple]]:
     # 有沒有基準整段不會變，所以這一欄可以不存在。
     if view.theta_ca_offset_deg is not None:
         zero = _fmt(view.theta_ca_offset_deg, 1, "°")
-        third.append((f"零點 {zero[0]}", f"Zero {zero[1]}", DIM, TEXT_SIZE, False))
+        third.append((f"零點 {zero[0]}", f"Baseline {zero[1]}", DIM, TEXT_SIZE, False))
     # 視窗的進度只有在平均得起來的時候才有意義。once 的「0/1 幀」看起來像一幀
     # 都沒量到，實際上那一幀好好的，只是沒有視窗可以填。
     if view.judging:
@@ -299,7 +299,7 @@ def render_panel(view, width: int, painter: TextPainter) -> np.ndarray:
             items.append(TextItem(x=x, y=y + (height - size) // 2, text=text,
                                   ascii_text=ascii_text, colour=colour,
                                   size=size, bold=bold))
-            x += painter.width(text, ascii_text, size) + 22
+            x += painter.width(text, ascii_text, size, bold) + 22
         y += height + ROW_GAP
     painter.paint(band, items)
     return band
