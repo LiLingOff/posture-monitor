@@ -286,7 +286,7 @@ def test_the_layout_does_not_move_when_something_goes_over():
 def test_a_column_that_cannot_be_measured_keeps_its_place():
     """整欄消失的話後面全部位移，而量不量得到是逐幀在變的。"""
     texts = _texts(view())
-    for label in ("頭前傾", "肩膀高低", "肩膀下沉", "距離", "轉身"):
+    for label in ("θ_CA", "θ_sym", "肩部垂直位移", "距離", "轉身"):
         assert any(cell.startswith(label) and "—" in cell for cell in texts), label
 
 
@@ -399,3 +399,23 @@ def test_the_window_progress_is_hidden_when_nothing_is_averaged():
     assert "0/1" not in " ".join(_texts(view(judging=False, window_count=0,
                                              window_size=1)))
     assert "30/30" in " ".join(_texts(view(window_count=30, window_size=30)))
+
+
+def test_the_panel_uses_the_same_names_as_the_report():
+    """2026-10-08：面板原本用白話，改成與報告書一致的符號。畫面截圖會進報告，
+    兩套名字並存的話讀報告的人得自己對應。"""
+    texts = " ".join(_texts(view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
+                                 drop_mm=18.0, drop_threshold_mm=12.0)))
+    assert "θ_CA" in texts and "θ_sym" in texts and "肩部垂直位移" in texts
+    for old in ("頭前傾", "肩膀高低", "肩膀下沉"):
+        assert old not in texts, old
+
+
+def test_theta_is_spelled_out_in_the_ascii_fallback():
+    """θ 不是 ASCII，而沒有中日韓字型時整個面板靠英文那一側。"""
+    texts = _ascii_texts(view(theta_ca_mean_deg=19.6, theta_sym_mean_deg=-7.5,
+                              drop_mm=18.0, drop_threshold_mm=12.0))
+    joined = " ".join(texts)
+    assert "theta_CA" in joined and "theta_sym" in joined
+    for text in texts:
+        assert text.isascii(), text

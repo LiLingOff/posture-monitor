@@ -202,7 +202,7 @@ class PostureJudge:
         肩高」兩種情況都自動退化成不判這一項。
         """
         self._drop = None if threshold_mm is None else AngleJudge(
-            threshold_mm, "肩高", two_sided=False,
+            threshold_mm, "肩部垂直位移", two_sided=False,
             margin_factor=self._factor,
             minimum_margin=_MINIMUM_DROP_MARGIN_MM, unit="mm",
         )

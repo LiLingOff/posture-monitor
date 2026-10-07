@@ -173,7 +173,7 @@ def test_a_sinking_shoulder_is_over_the_threshold():
     ca, sym = _full(RollingAngle(4), 1.0), _full(RollingAngle(4), 0.5)
     *_, combined = judge.update(ca, sym, _full(RollingAngle(4), 40.0))
     assert combined.posture is Posture.OVER
-    assert "肩高" in combined.reason
+    assert "肩部垂直位移" in combined.reason
 
 
 def test_shoulders_at_the_baseline_height_are_normal():

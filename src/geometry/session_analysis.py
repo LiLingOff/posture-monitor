@@ -371,7 +371,7 @@ def analyse_session(
         ("距離 mm", "distance_mm"),
         ("方位角 °", "azimuth_deg"),
         # 舊的記錄沒有這一欄，_collect 會給空陣列，那一列就不印。
-        ("肩高下沉 mm", "shoulder_drop_mm"),
+        ("肩部垂直位移 mm", "shoulder_drop_mm"),
         ("θ_CA 單幀理論誤差 °", "theta_ca_precision_deg"),
         ("共同關鍵點", "shared_keypoints"),
         ("垂直視差 全部 px", "max_vertical_disparity_px"),

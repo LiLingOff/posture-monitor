@@ -77,7 +77,7 @@ def test_a_very_still_subject_still_gets_a_dead_band():
 
 def test_a_one_sided_judge_ignores_the_other_direction():
     """肩高用的就是這種：坐得比基準挺不是駝背。"""
-    judge = AngleJudge(10.0, "肩高", two_sided=False)
+    judge = AngleJudge(10.0, "肩部垂直位移", two_sided=False)
     assert judge.update(-20.0, 1.0).posture is Posture.OK
 
 

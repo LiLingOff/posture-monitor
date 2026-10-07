@@ -53,8 +53,14 @@ STATE_WORDS = {
     Posture.UNKNOWN: ("未知", "UNKNOWN"),
 }
 
-# 面板寫的是白話，文件與報告寫的是 θ_CA、θ_sym、肩部垂直位移。刻意不一致：
-# 站在旁邊看畫面的人不必先知道 θ_CA 是什麼，而報告要的是可以對照文獻的名稱。
+# 面板、終端機、文件與報告一律用 θ_CA、θ_sym、肩部垂直位移。
+#
+# 先前面板刻意用白話（頭前傾、肩膀高低、肩膀下沉），理由是站在旁邊看畫面的人
+# 不必先知道 θ_CA 是什麼。2026-10-08 改掉：報告書用的是 θ_CA，而畫面截圖會
+# 進報告，兩套名字並存的話讀報告的人得自己對應，那個成本比學一次符號高。
+#
+# 沒有中日韓字型時整個面板退回英文，而 θ 不是 ASCII,英文那一側寫
+# theta_CA、theta_sym，不要直接塞 θ，否則退回模式會變成一排問號。
 # 底線而不是固定值。列數會變（警告列只在有警告時出現），寫死的話超出的那一列
 # 會被裁掉半個字，而被裁掉的正好是只在出事時才出現的那一列。
 PANEL_HEIGHT = 118
@@ -215,15 +221,15 @@ def panel_rows(view) -> list[list[tuple]]:
 
     # 誤差與角度同一欄：分成兩欄的話視窗還沒填滿時那一欄不存在，後面全部位移。
     second = [
-        (f"頭前傾 {ca[0]} ± {ca_err[0]}°", f"Head {ca[1]} +-{ca_err[1]}d",
+        (f"θ_CA {ca[0]} ± {ca_err[0]}°", f"theta_CA {ca[1]} +-{ca_err[1]}d",
          DIM, TEXT_SIZE, False),
-        (f"肩膀高低 {sym[0]}", f"Shoulder {sym[1]}", DIM, TEXT_SIZE, False),
+        (f"θ_sym {sym[0]}", f"theta_sym {sym[1]}", DIM, TEXT_SIZE, False),
     ]
 
     over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None
                  and view.drop_mm > view.drop_threshold_mm)
     drop = _fmt(None if view.drop_mm is None else max(0.0, view.drop_mm), 0, "mm")
-    second.append((f"肩膀下沉 {drop[0]}", f"Drop {drop[1]}",
+    second.append((f"肩部垂直位移 {drop[0]}", f"shoulder drop {drop[1]}",
                    MISPAIRED if over_drop else DIM, TEXT_SIZE, over_drop))
 
     distance = _fmt(view.distance_mm, 0, "mm")
