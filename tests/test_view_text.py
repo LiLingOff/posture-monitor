@@ -67,15 +67,26 @@ def test_the_two_modes_draw_different_things():
     assert not np.array_equal(cjk, english)
 
 
-def test_english_goes_through_hershey_even_when_a_font_exists():
-    """算繪器跟著語言走。英文配 Hershey 的筆畫比 TTF 的 Latin 粗，
-    站在旁邊瞄比較清楚,而那正是這個視窗的用途。"""
+def test_english_uses_the_font_when_there_is_one():
+    """Hershey 的筆畫雖然粗，但 OpenCV 4.x 上它只有 ASCII,2026-10-08 Jetson
+    實測 θ 變成 theta、± 變成 +-。粗細靠粗體字型補得回來，符號補不回來。"""
     if find_font() is None:
         pytest.skip("這台機器沒有中日韓字型")
     with_font, without = blank(0, width=300, height=60), blank(0, width=300, height=60)
     TextPainter().paint(with_font, [_item()])
     TextPainter(font_path="無").paint(without, [_item()])
-    assert np.array_equal(with_font, without)
+    assert not np.array_equal(with_font, without)
+
+
+def test_english_is_set_in_the_bold_face_throughout():
+    """先前覺得 Hershey 的英文順眼就是字重，而 TTF 的一般字重在這個視窗上太細。
+    中文不整塊加粗：筆畫本來就密，整片粗體反而更難讀。"""
+    from view.text import find_bold_font
+    if find_bold_font(find_font()) is None:
+        pytest.skip("這台機器沒有成對的一般／粗體字型")
+    english, chinese = TextPainter(), TextPainter(lang="zh")
+    assert english._face_is_bold(False) and english._face_is_bold(True)
+    assert not chinese._face_is_bold(False) and chinese._face_is_bold(True)
 
 
 def test_a_subscript_is_drawn_smaller_and_lower():

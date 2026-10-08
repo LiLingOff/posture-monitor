@@ -227,9 +227,10 @@ class TextPainter:
         items = list(items)
         if not items:
             return canvas
-        # 算繪器跟著語言走，不跟著字型走。英文配 Hershey 的筆畫比 TTF 的
-        # Latin 粗，站在旁邊瞄比較清楚,而那正是這個視窗的用途。
-        if not self.chinese:
+        # 有字型就走 Pillow，英文也一樣。Hershey 的筆畫雖然粗，但它在 OpenCV
+        # 4.x 上只有 ASCII,2026-10-08 Jetson 實測，θ 變成 theta、± 變成 +-。
+        # 粗細可以靠粗體字型補回來（英文整塊都用粗體），符號補不回來。
+        if not self.cjk:
             return self._paint_hershey(canvas, items)
         return self._paint_pillow(canvas, items)
 
@@ -272,24 +273,40 @@ class TextPainter:
         canvas[:, :, :] = np.asarray(image)[:, :, ::-1]
         return canvas
 
+    def _face_is_bold(self, bold: bool) -> bool:
+        """這一段要用粗體字型檔嗎。
+
+        英文整塊都用。先前覺得 Hershey 的英文比較順眼就是字重的關係，而 TTF
+        的一般字重在這個視窗上太細,這是站在旁邊瞄的東西。中文不整塊加粗：
+        筆畫本來就密，整片粗體反而更難讀。
+        """
+        if self._bold_path is None:
+            return False
+        return bold or not self.chinese
+
     def _weight(self, item) -> int:
-        """沒有粗體字型檔時，描一圈同色的邊假裝粗體。
+        """描一圈同色的邊再加重一級。
 
         Pillow 這條路先前整個忽略 `bold`，於是狀態詞與警告跟旁邊的數字一樣細，
         而那兩個就是要讓人一眼看到的東西（Hershey 那條路一直都有）。
 
-        描邊只當退路。中文的筆畫本來就密，描一圈會把筆畫之間的空隙填掉，
-        「肩部垂直位移」會糊成一團,有真正的粗體字型就用它。
+        英文的底已經是粗體，標成粗體的那幾項要再描一圈才分得出層次。中文不描：
+        筆畫之間的空隙會被填掉，「肩部垂直位移」糊成一團,實際畫出來確認過。
+        沒有粗體字型檔時描邊是唯一的辦法，那時多半也沒有中文要畫。
         """
-        return 1 if item.bold and self._bold_path is None else 0
+        if not item.bold:
+            return 0
+        if self._bold_path is None:
+            return 1
+        return 0 if self.chinese else 1
 
     def _font(self, size: int, bold: bool = False):
-        bold = bold and self._bold_path is not None
-        key = (size, bold)
+        face_bold = self._face_is_bold(bold)
+        key = (size, face_bold)
         if key not in self._fonts:
             from PIL import ImageFont
 
-            path = self._bold_path if bold else self._path
+            path = self._bold_path if face_bold else self._path
             self._fonts[key] = ImageFont.truetype(str(path), size)
         return self._fonts[key]
 
@@ -299,7 +316,7 @@ class TextPainter:
 
         下標要分開量：它用的字級比較小，照主字級算會多留一截空白。
         """
-        if not self.chinese:
+        if not self.cjk:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
             # 下一段字蓋住，而狀態詞就在最前面。
             picked = (ascii_text if self._hershey_unicode
@@ -307,7 +324,7 @@ class TextPainter:
             return sum(self._hershey_width(run, size * (_SUB_SIZE if sub else 1.0), bold)
                        for run, sub in self._runs(picked))
         total = 0.0
-        for run, sub in self._runs(text):
+        for run, sub in self._runs(text if self.chinese else ascii_text):
             run_size = int(round(size * _SUB_SIZE)) if sub else size
             total += self._font(run_size, bold).getlength(run)
         return int(total)
