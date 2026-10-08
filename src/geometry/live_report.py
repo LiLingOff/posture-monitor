@@ -15,6 +15,7 @@ import numpy as np
 
 from .baseline import REJECTION_LIMIT
 from .study import TURN_LIMIT_DEG
+from .terminal import with_error
 from .uncertainty import standard_error
 
 
@@ -117,16 +118,14 @@ def summary_lines(recording, baseline=None) -> list[str]:
             continue
         array = np.asarray(values)
         error = standard_error(array)
-        shown = "" if error is None else f" ± {error:.1f}°"
-        lines.append(f"{name}  {array.mean():+.2f}°{shown}"
+        lines.append(f"{name}  {with_error(float(array.mean()), error)}"
                      f"（{len(values)} 幀，單幀標準差 ±{array.std():.1f}°）")
     for name, window in (("θ_CA ", recording.ca_window),
                          ("θ_sym", recording.sym_window)):
         if window.mean is None:
             continue
-        error = ("" if window.standard_error is None
-                 else f" ± {window.standard_error:.1f}°")
-        lines.append(f"  結束前 {window.count} 幀  {name} {window.mean:+.2f}°{error}")
+        lines.append(f"  結束前 {window.count} 幀  {name} "
+                     f"{with_error(window.mean, window.standard_error)}")
     if recording.rejected:
         lines.append(f"略過 {recording.rejected} / {recording.frames} 幀"
                      f"（{recording.rejection_rate * 100:.0f}%）偵測失誤")

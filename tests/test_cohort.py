@@ -304,7 +304,8 @@ def test_the_cohort_report_still_reads_the_same(tmp_path):
     separation = Separation("upright", "forward",
                             cohort.differences("upright", "forward"))
     text = separation_text(separation, cohort)
-    assert "平均差距 +21.00°" in text
+    # 有誤差時單位只掛在最後一個數字上：+21.00 ± 0.58°
+    assert "平均差距 +21.00 ± " in text
     assert "n = 3" in text
     assert "分母是人數，不是幀數" in text
     assert "差距 / 最大單幀散佈" in text

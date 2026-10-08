@@ -37,6 +37,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from .terminal import with_error
+
 # 前作的門檻，套在扣除個人基準之後的偏移量上。
 _THETA_CA_THRESHOLD_DEG = 10.0
 # θ_sym 的門檻。肩膀高低差往左往右都算歪，所以這一項取絕對值。
@@ -144,7 +146,7 @@ class AngleJudge:
         margin = max(self._floor, self._factor * (standard_error_deg or 0.0))
         # 印帶號的平均，比的是絕對值。雙邊判定時印絕對值的話，後仰 12° 會被印成
         # +12.0°，讀起來像前傾；左肩高與右肩高也分不出來。
-        shown = (f"{mean_deg:+.1f}{self._unit} ± {margin:.1f}{self._unit}，"
+        shown = (f"{with_error(mean_deg, margin, self._unit, 1)}，"
                  f"門檻 {self._threshold:.0f}{self._unit}")
 
         if value - margin > self._threshold:

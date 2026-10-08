@@ -29,6 +29,7 @@ import numpy as np
 from .baseline import group_rejection_reason
 from .judgement import Posture, PostureJudge, windows_are_stale
 from .smoothing import RollingAngle
+from .terminal import with_error
 from .uncertainty import lag1_autocorrelation, standard_error
 
 # 沒有記錄姿勢條件的檔案歸在這一組。2026-09-24 與 09-29 的記錄寫在 condition
@@ -432,9 +433,7 @@ class Comparison:
 
     def describe(self) -> str:
         """差距本身那一句。兩個報表共用，才不會一邊有誤差一邊沒有。"""
-        shown = f"{self.difference:+.2f}°"
-        if self.error is not None:
-            shown += f" ± {self.error:.2f}°"
+        shown = with_error(self.difference, self.error)
         if self.sigma is not None:
             shown += f"（{self.sigma:.1f} 個標準誤差）"
         return shown

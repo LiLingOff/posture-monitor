@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from .session_analysis import SessionSummary, compare, correlation
-from .terminal import cell, display_width
+from .terminal import cell, display_width, with_error
 
 _LABEL = 22
 
@@ -49,7 +49,7 @@ def _angles(summary: SessionSummary) -> list[str]:
     ]
     for name, angle in summary.angles.items():
         error = angle.standard_error
-        shown = f"{angle.mean:+.2f}°" + ("" if error is None else f" ± {error:.2f}°")
+        shown = with_error(angle.mean, error)
         lines.append(
             cell(name, 16) + cell(shown, 20)
             + cell(f"±{angle.single_frame_std:.2f}°", 14)

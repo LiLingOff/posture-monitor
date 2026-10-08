@@ -19,7 +19,7 @@ from io import StringIO
 
 from .cohort import REJECTION_LIMIT, Cohort, Separation, session_error_deg
 from .judgement import Posture
-from .terminal import cell, display_width
+from .terminal import cell, display_width, with_error
 
 _SESSION_COLUMNS = (
     "subject", "condition", "trial", "file",
@@ -110,7 +110,7 @@ def sessions_table(rows: list[dict]) -> str:
             r["subject"],
             r["condition"],
             "—" if r["trial"] is None else str(r["trial"]),
-            f"{_fmt(r['theta_ca_deg'], 2, '°')} ± {_fmt(r['theta_ca_error_deg'], 2, '°')}",
+            with_error(r["theta_ca_deg"], r["theta_ca_error_deg"]),
             f"±{_fmt(r['theta_ca_single_frame_std_deg'], 1, '°')}",
             _fmt(r["theta_sym_deg"], 2, "°"),
             f"{r['usable']}/{r['frames']}",

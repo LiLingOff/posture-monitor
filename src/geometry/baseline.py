@@ -40,6 +40,7 @@ import numpy as np
 
 from .pipeline import (precision_advice, rejection_advice,  # noqa: F401
                        sitting_too_far, unusable_reason)
+from .terminal import with_error
 from .uncertainty import standard_error
 
 # 低於這個幀數就不給出基準。實務上要的是 150 幀以上（約 30 秒），
@@ -170,9 +171,9 @@ class PostureBaseline:
     def describe(self) -> str:
         return (
             f"受試者 {self.subject}（{self.captured_at}）\n"
-            f"  θ_CA  基準 {self.theta_ca_deg:+.2f}° ± {self.theta_ca_standard_error_deg:.2f}°"
+            f"  θ_CA  基準 {with_error(self.theta_ca_deg, self.theta_ca_standard_error_deg)}"
             f"（單幀標準差 ±{self.theta_ca_std_deg:.1f}°）\n"
-            f"  θ_sym 基準 {self.theta_sym_deg:+.2f}° ± {self.theta_sym_standard_error_deg:.2f}°"
+            f"  θ_sym 基準 {with_error(self.theta_sym_deg, self.theta_sym_standard_error_deg)}"
             f"（單幀標準差 ±{self.theta_sym_std_deg:.1f}°）\n"
             f"  取樣 {self.frames} 幀 / {self.duration_s:.1f} 秒，略過 {self.rejected} 幀，"
             f"距離 {self.distance_mm:.0f} mm，方位角 {self.azimuth_deg:.0f}°"

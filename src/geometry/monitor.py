@@ -19,6 +19,7 @@ from .baseline import REJECTION_LIMIT, BaselineCollector, PostureBaseline
 from .judgement import Judgement, PostureJudge, windows_are_stale
 from .pipeline import unusable_reason
 from .smoothing import RollingAngle
+from .terminal import with_error
 
 
 class Mode(Enum):
@@ -154,8 +155,8 @@ class MonitorState:
 
         self._adopt(baseline)
         warnings = collector.quality_warnings(baseline)
-        notice = (f"基準 θ_CA {baseline.theta_ca_deg:+.2f}° ± "
-                  f"{baseline.theta_ca_standard_error_deg:.2f}°，開始監測")
+        notice = (f"基準 θ_CA {with_error(baseline.theta_ca_deg, baseline.theta_ca_standard_error_deg)}"
+                  f"，開始監測")
         if warnings:
             notice += f"\n  需要注意：{warnings[0]}"
         # 換了零點就要重算，否則這一幀顯示的是舊零點下的偏移。

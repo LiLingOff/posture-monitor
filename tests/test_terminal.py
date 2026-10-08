@@ -67,3 +67,34 @@ def test_headings_in_both_reports_come_out_the_same_length():
     widths = {display_width(_heading(t))
               for t in ("逐段", "逐受試者的 θ_CA", "姿勢之間的差距")}
     assert len(widths) == 1, f"標題長度不一致：{widths}"
+
+
+# ---- 值與誤差 ----------------------------------------------------------
+
+def test_the_unit_goes_on_the_last_number_only():
+    """+19.61 ± 0.80°。每個數字後面都掛一個單位讀起來像兩個不相干的量，
+    而那是同一個量的中心與寬度。"""
+    from geometry.terminal import with_error
+    assert with_error(19.61, 0.8) == "+19.61 ± 0.80°"
+    assert with_error(-7.52, 0.32) == "-7.52 ± 0.32°"
+
+
+def test_without_an_error_the_unit_stays_on_the_value():
+    from geometry.terminal import with_error
+    assert with_error(19.61, None) == "+19.61°"
+
+
+def test_the_unit_is_not_always_degrees():
+    from geometry.terminal import with_error
+    assert with_error(18.0, 2.0, "mm", 1) == "+18.0 ± 2.0mm"
+
+
+def test_a_missing_value_is_a_dash_not_a_zero():
+    from geometry.terminal import with_error
+    assert with_error(None, None) == "—"
+
+
+def test_the_sign_can_be_turned_off():
+    """門檻與散佈這類本來就是正的，加號只是雜訊。"""
+    from geometry.terminal import with_error
+    assert with_error(10.0, None, signed=False) == "10.00°"
