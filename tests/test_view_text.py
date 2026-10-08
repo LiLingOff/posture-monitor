@@ -89,6 +89,36 @@ def test_english_is_set_in_the_bold_face_throughout():
     assert not chinese._face_is_bold(False) and chinese._face_is_bold(True)
 
 
+def _ink_rows(painter, text, size=28):
+    """畫一段字，回傳有墨水的最上與最下那一列。"""
+    canvas = blank(0, width=320, height=96)
+    painter.paint(canvas, [TextItem(x=6, y=10, text=text, ascii_text=text,
+                                    colour=(255, 255, 255), size=size)])
+    rows = np.where(canvas.any(axis=(1, 2)))[0]
+    return int(rows.min()), int(rows.max())
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_a_subscript_sits_below_the_baseline_not_above_it(lang):
+    """Pillow 預設照頂端對齊，小一級的字反而往上跑,下標會變成上標。
+    2026-10-08 Jetson 實測看到的就是這個，所以改成照基線對齊。"""
+    painter = TextPainter(lang=lang)
+    if not painter.cjk:
+        pytest.skip("這台機器沒有字型，走的是 Hershey")
+    _, main_bottom = _ink_rows(painter, "θ")
+    _, sub_bottom = _ink_rows(painter, "_{CA}")
+    assert sub_bottom > main_bottom
+
+
+def test_the_subscript_does_not_reach_the_next_row():
+    """列高是照主字級算的，下標的下緣不在裡面。挪過頭會掉進下一列。"""
+    painter = TextPainter(lang="zh")
+    if not painter.cjk:
+        pytest.skip("這台機器沒有字型")
+    _, sub_bottom = _ink_rows(painter, "_{CA}", size=20)
+    assert sub_bottom <= 10 + 20 + 6      # y + 字級 + ROW_GAP
+
+
 def test_a_subscript_is_drawn_smaller_and_lower():
     """報告書寫的是真正的下標。Unicode 的小型大寫在微軟正黑體裡整排缺字。"""
     plain, sub = blank(0, width=300, height=60), blank(0, width=300, height=60)
@@ -174,3 +204,26 @@ def test_plus_minus_survives_when_the_renderer_can_draw_it():
     item = TextItem(x=0, y=0, text="± 0.8", ascii_text="± 0.8", colour=(1, 1, 1))
     picked = painter._pick(item)
     assert picked == ("± 0.8" if painter._hershey_unicode else "+- 0.8")
+
+
+def test_the_symbols_survive_whenever_pillow_is_doing_the_drawing():
+    """2026-10-08 Jetson：有字型（走 Pillow，畫得出 ±）卻照樣被換成 +-，
+    因為替換只看 Hershey 畫不畫得出來，沒看誰要來畫。"""
+    painter = TextPainter()
+    if not painter.cjk:
+        pytest.skip("這台機器沒有字型")
+    painter._hershey_unicode = False          # 模擬 OpenCV 4.x
+    assert painter.picked("± 0.8°", "± 0.8°") == "± 0.8°"
+
+
+def test_the_symbols_fall_back_only_when_hershey_is_doing_the_drawing():
+    painter = TextPainter(font_path="無")
+    painter._hershey_unicode = False
+    assert painter.picked("± 0.8°", "± 0.8°") == "+- 0.8d"
+
+
+def test_what_is_measured_is_what_gets_drawn():
+    """畫出來比量到的寬，後面那一欄就疊上來。+- 比 ± 多一個字。"""
+    painter = TextPainter(font_path="無")
+    painter._hershey_unicode = False
+    assert painter.width("± 0.8°", "± 0.8°", 20) == painter.width("+- 0.8d", "+- 0.8d", 20)

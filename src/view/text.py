@@ -190,10 +190,20 @@ class TextPainter:
         return self._lang == "zh" and self.cjk
 
     def _pick(self, item) -> str:
-        text = item.text if self.chinese else item.ascii_text
-        if self.chinese or self._hershey_unicode:
-            return text
-        return to_ascii_symbols(text)
+        return self.picked(item.text, item.ascii_text)
+
+    def picked(self, text: str, ascii_text: str) -> str:
+        """這一段實際會被畫出來的字串。
+
+        換成 ASCII 寫法的條件是「Hershey 要來畫，而且它畫不出非 ASCII」。
+        先前只看後者，於是有字型的機器（走 Pillow，畫得出 ±）照樣被換成 +-，
+        而量寬度那邊量的是沒換過的字串,畫出來比量到的寬，後面那一欄就疊上來。
+        2026-10-08 Jetson 實測踩到的就是這個。
+        """
+        picked = text if self.chinese else ascii_text
+        if self.cjk or self._hershey_unicode:
+            return picked
+        return to_ascii_symbols(picked)
 
     @staticmethod
     def _runs(text: str):
@@ -265,9 +275,11 @@ class TextPainter:
             x = item.x
             for run, sub in self._runs(self._pick(item)):
                 size = int(round(item.size * _SUB_SIZE)) if sub else item.size
-                y = item.y + (int(round(item.size * _SUB_DROP)) if sub else 0)
+                # 照基線對齊，不是照頂端。頂端對齊的話小一級的字反而往上跑，
+                # 下標會變成上標,2026-10-08 Jetson 實測看到的就是這個。
+                baseline = item.y + item.size + (item.size * _SUB_DROP if sub else 0)
                 font = self._font(size, item.bold)
-                draw.text((x, y), run, font=font, fill=fill,
+                draw.text((x, baseline), run, font=font, fill=fill, anchor="ls",
                           stroke_width=self._weight(item), stroke_fill=fill)
                 x += font.getlength(run)
         canvas[:, :, :] = np.asarray(image)[:, :, ::-1]
@@ -316,15 +328,14 @@ class TextPainter:
 
         下標要分開量：它用的字級比較小，照主字級算會多留一截空白。
         """
+        picked = self.picked(text, ascii_text)
         if not self.cjk:
             # 用 cv2 自己量。先前照字數估，粗體大字會少算一截，於是狀態詞會被
             # 下一段字蓋住，而狀態詞就在最前面。
-            picked = (ascii_text if self._hershey_unicode
-                      else to_ascii_symbols(ascii_text))
             return sum(self._hershey_width(run, size * (_SUB_SIZE if sub else 1.0), bold)
                        for run, sub in self._runs(picked))
         total = 0.0
-        for run, sub in self._runs(text if self.chinese else ascii_text):
+        for run, sub in self._runs(picked):
             run_size = int(round(size * _SUB_SIZE)) if sub else size
             total += self._font(run_size, bold).getlength(run)
         return int(total)
