@@ -22,6 +22,9 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calibration.device import (CameraReadError,  # noqa: E402
@@ -29,6 +32,7 @@ from calibration.device import (CameraReadError,  # noqa: E402
                                 describe_resolution_mismatch,
                                 find_camera_index, merged_capture_size,
                                 open_camera, split_merged_frame)
+from calibration.charuco import CharucoBoardSpec, detect_charuco  # noqa: E402
 from calibration.stereo_calibration import StereoCalibrationResult  # noqa: E402
 from geometry.baseline import (BaselineCollector,  # noqa: E402
                                PostureBaseline, baseline_quality_warnings)
@@ -48,9 +52,12 @@ from geometry.recording import (CameraRetry, Recording,  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
+from geometry.triangulation import triangulate_points  # noqa: E402
 from geometry.live_report import (elapsed_text, live_line,  # noqa: E402
                                   monitor_line, study_summary_lines,
                                   summary_lines, transition_lines)
+from geometry.scale_check import (check_scale,  # noqa: E402
+                                 format_scale_check)
 from geometry.study import (baseline_path, condition_brief,  # noqa: E402
                             next_trial, parse_conditions, review,
                             session_paths)
@@ -229,6 +236,81 @@ def _run_once(args) -> None:
     print(format_measurement(
         measurement, match.left, match.right, show_all_keypoints=args.all_keypoints
     ))
+
+
+def _board_corners_3d(calib, board, left_frame, right_frame):
+    """兩眼都看得到的角點，三角測量成 {角點編號: 3D 座標}。
+
+    靠編號配對，不靠位置。ChArUco 的每個角點都有自己的編號，所以左右兩眼
+    看到的是不是同一個點完全沒有疑義,這正是它比棋盤格適合這件事的地方，
+    也是這條檢查能把幾何與關鍵點分開的原因。
+    """
+    found = []
+    for frame in (left_frame, right_frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        found.append(detect_charuco(gray, board))
+    if found[0] is None or found[1] is None:
+        return {}
+
+    # 角點的形狀各版本不一（(N,1,2) 或 (N,2)），統一攤平再配。
+    left_map, right_map = ({int(i): c for c, i in
+                            zip(np.reshape(found[k][0], (-1, 2)),
+                                np.reshape(found[k][1], -1))}
+                           for k in (0, 1))
+    shared = sorted(set(left_map) & set(right_map))
+    if not shared:
+        return {}
+
+    points = triangulate_points(
+        calib,
+        np.asarray([left_map[i] for i in shared], dtype=np.float64),
+        np.asarray([right_map[i] for i in shared], dtype=np.float64),
+    )
+    return {i: p for i, p in zip(shared, points) if np.isfinite(p).all()}
+
+
+def _run_scale(args) -> None:
+    """拿標定板驗證「算出來的 mm 是不是真的 mm」。
+
+    不載入姿態模型：這條檢查刻意不經過它，量到的偏差才只可能來自標定。
+    """
+    calib = StereoCalibrationResult.load(args.calibration)
+    _step(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
+          f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
+    spec = CharucoBoardSpec(
+        squares_x=args.squares_x, squares_y=args.squares_y,
+        square_size_mm=args.square_size_mm, marker_size_mm=args.marker_size_mm,
+        dictionary_name=args.dictionary, legacy_pattern=args.legacy_pattern,
+    )
+    board = spec.build_board()
+    _step(f"板子 {args.squares_x}x{args.squares_y}，方格 {args.square_size_mm:.2f} mm")
+
+    cap = _open_selected_camera(args, calib)
+    per_frame = []
+    try:
+        _step(f"等自動曝光穩定，丟掉前 {args.discard} 張")
+        _discard_frames(cap, args.discard)
+        for index in range(args.frames):
+            left_frame, right_frame = _grab_pair(cap, args)
+            if index == 0:
+                _require_matching_resolution(calib, left_frame, args)
+                if args.save_frames:
+                    _save_frames(left_frame, right_frame, args.save_frames)
+            corners = _board_corners_3d(calib, board, left_frame, right_frame)
+            per_frame.append(corners)
+            _print_line(f"第 {index + 1}/{args.frames} 幀，兩眼共同角點 {len(corners)}")
+    finally:
+        cap.release()
+    _print_line("")
+
+    empty = sum(1 for corners in per_frame if not corners)
+    if empty:
+        print(f"{empty}/{len(per_frame)} 幀一個共同角點都沒有。"
+              f"板子要完整入鏡、兩眼都看得到，而且不要反光", flush=True)
+    check = check_scale(per_frame, args.squares_x, args.squares_y,
+                        args.square_size_mm, frames=len(per_frame))
+    print()
+    _print_lines(format_scale_check(check, args.tolerance))
 
 
 def _prepare(args):
@@ -1081,6 +1163,7 @@ def main() -> None:
         ("baseline", "請受試者坐正保持不動，取個人基準（θ_offset）"),
         ("study", "一個行程跑完整套實驗流程：取基準，接著逐一量各種姿勢"),
         ("monitor", "一個視窗跑到底：按 c 當場取基準歸零，按 q 離開"),
+        ("scale", "拿標定板驗證三角測量的尺度，不需要姿態模型"),
     )
     for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
@@ -1132,6 +1215,24 @@ def main() -> None:
         p.add_argument("--font", type=Path, default=None,
                        help="--display-lang zh 時用的中日韓字型。不給的話自動找，"
                             "找不到就改用英文，量測照常")
+        if name == "scale":
+            # 板子的規格要與標定時下的那組一致，不然量出來的「偏差」只是
+            # 兩個不同的板子。
+            p.add_argument("--squares-x", type=int, default=10,
+                           help="ChArUco 板橫向方格數")
+            p.add_argument("--squares-y", type=int, default=7,
+                           help="ChArUco 板縱向方格數")
+            p.add_argument("--square-size-mm", type=float, default=25.0,
+                           help="板子方格的實際邊長。拿尺量一次,這個數字"
+                                "就是比較的基準，填錯等於驗了個寂寞")
+            p.add_argument("--marker-size-mm", type=float, default=18.0)
+            p.add_argument("--dictionary", type=str, default="DICT_5X5_100")
+            p.add_argument("--legacy-pattern", action="store_true")
+            p.add_argument("--frames", type=int, default=10,
+                           help="取幾幀。單幀的角點偵測本身有雜訊，而要看的是"
+                                "系統性的偏差，多取幾幀比較穩")
+            p.add_argument("--tolerance", type=float, default=0.02,
+                           help="差距在這個比例以內就算過")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
                             "平均N幀把偵測雜訊降到1/√N；30幀約5秒")
@@ -1233,7 +1334,8 @@ def main() -> None:
     _refuse_to_overwrite(args)
 
     {"once": _run_once, "live": _run_live, "baseline": _run_baseline,
-     "study": _run_study, "monitor": _run_monitor}[args.mode](args)
+     "study": _run_study, "monitor": _run_monitor,
+     "scale": _run_scale}[args.mode](args)
 
 
 if __name__ == "__main__":
