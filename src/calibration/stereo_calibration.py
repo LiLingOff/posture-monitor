@@ -10,7 +10,7 @@ from .charuco import CharucoBoardSpec, detect_charuco
 from .chessboard import ChessboardSpec, ensure_uniform_size, find_corners, load_gray_images
 
 _MIN_PAIRS = 10
-_MIN_SHARED_CHARUCO_CORNERS = 6
+MIN_SHARED_CHARUCO_CORNERS = 6
 
 
 @dataclass
@@ -236,7 +236,7 @@ def calibrate_stereo_charuco(
     right_dir: Path,
     board_spec: CharucoBoardSpec,
     target_error_px: float = 0.5,
-    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    min_shared_corners: int = MIN_SHARED_CHARUCO_CORNERS,
 ) -> StereoCalibrationResult:
     """ChArUco版雙目標定。每一幀左右影像只要有足夠共同角點就能使用，
     不需要兩顆鏡頭同時拍到完整棋盤格。

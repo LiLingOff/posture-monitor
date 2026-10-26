@@ -40,7 +40,7 @@ from enum import Enum
 from .terminal import with_error
 
 # 前作的門檻，套在扣除個人基準之後的偏移量上。
-_THETA_CA_THRESHOLD_DEG = 10.0
+THETA_CA_THRESHOLD_DEG = 10.0
 # θ_sym 的門檻。肩膀高低差往左往右都算歪，所以這一項取絕對值。
 _THETA_SYM_THRESHOLD_DEG = 5.0
 # 信賴邊界的倍數。
@@ -166,7 +166,7 @@ class PostureJudge:
 
     def __init__(
         self,
-        theta_ca_threshold_deg: float = _THETA_CA_THRESHOLD_DEG,
+        theta_ca_threshold_deg: float = THETA_CA_THRESHOLD_DEG,
         theta_sym_threshold_deg: float = _THETA_SYM_THRESHOLD_DEG,
         margin_factor: float = _MARGIN_FACTOR,
     ):

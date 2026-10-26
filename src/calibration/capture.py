@@ -11,8 +11,10 @@ from .chessboard import ChessboardSpec, find_corners
 from .device import (_warn_if_not_side_by_side, describe_camera_open_failure,
                      describe_stereo_open_failure, open_camera,
                      probe_resolutions, split_merged_frame)
-
-_MIN_SHARED_CHARUCO_CORNERS = 6
+# 共同角點的下限從 stereo_calibration 拿，不要在這裡再寫一次。兩邊不一致的話，
+# 拍的時候說這張可以、標定的時候又把它丟掉，而使用者看到的是「拍了 20 張卻
+# 只用了 12 張」。
+from .stereo_calibration import MIN_SHARED_CHARUCO_CORNERS
 
 
 def _next_frame_index(*out_dirs: Path) -> int:
@@ -325,7 +327,7 @@ def capture_mono_charuco(
     out_dir: Path,
     board_spec: CharucoBoardSpec,
     target_count: int,
-    min_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    min_corners: int = MIN_SHARED_CHARUCO_CORNERS,
     width: int | None = None,
     height: int | None = None,
 ) -> None:
@@ -404,7 +406,7 @@ def capture_stereo_charuco(
     right_out: Path,
     board_spec: CharucoBoardSpec,
     target_count: int,
-    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    min_shared_corners: int = MIN_SHARED_CHARUCO_CORNERS,
     width: int | None = None,
     height: int | None = None,
 ) -> None:
@@ -482,7 +484,7 @@ def capture_stereo_charuco_single_device(
     target_count: int,
     vertical_split: bool = False,
     swap_lr: bool = False,
-    min_shared_corners: int = _MIN_SHARED_CHARUCO_CORNERS,
+    min_shared_corners: int = MIN_SHARED_CHARUCO_CORNERS,
     width: int | None = None,
     height: int | None = None,
 ) -> None:
@@ -571,7 +573,7 @@ def main() -> None:
     mono_p.add_argument(
         "--legacy-pattern", action="store_true", help="市售現成板子（如AndyMark）偵測不到時加上這個"
     )
-    mono_p.add_argument("--min-corners", type=int, default=_MIN_SHARED_CHARUCO_CORNERS)
+    mono_p.add_argument("--min-corners", type=int, default=MIN_SHARED_CHARUCO_CORNERS)
 
     stereo_p = sub.add_parser("stereo", help="擷取雙目標定影像")
     stereo_p.add_argument(
@@ -617,7 +619,7 @@ def main() -> None:
     stereo_p.add_argument(
         "--min-shared-corners",
         type=int,
-        default=_MIN_SHARED_CHARUCO_CORNERS,
+        default=MIN_SHARED_CHARUCO_CORNERS,
         help="左右畫面至少要有幾個共同角點才允許存檔",
     )
 

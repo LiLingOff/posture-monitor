@@ -18,6 +18,7 @@ from calibration.stereo_calibration import StereoCalibrationResult
 from pose.keypoints import PersonKeypoints
 from pose.topology import COCO18_KEYPOINT_NAMES
 
+from .judgement import THETA_CA_THRESHOLD_DEG
 from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
 from .posture_angles import (anatomical_axes, theta_ca_on_available_side,
                              theta_sym)
@@ -43,11 +44,13 @@ _MISPAIRED_DISPARITY_PX = 8.0
 _KEYPOINT_NOISE_PX = 1.0
 # 耳朵到肩膀的垂直距離，用來把深度誤差換算成角度誤差。
 _EAR_SHOULDER_MM = 170.0
-# 前作的頸椎前傾判定門檻。
+# 判定門檻從 judgement 拿，不要在這裡再寫一次 10.0。同一條政策只該有一個
+# 說法,門檻改了而這裡沒跟著改的話，警告線與實際判定的標準就對不起來，而
+# 兩邊印出來的都是「判定門檻」。
+#
 # 單幀誤差在這個硬體上本來就與門檻同量級，所以時間序列平均是必要的而非加分項：
 # 平均N幀可以把雜訊降到 1/√N。警告線畫在「單幀誤差超過整個門檻」，
 # 因為那代表連平均都救不太回來，該做的是坐近一點。
-_THETA_CA_THRESHOLD_DEG = 10.0
 # 桌前坐姿夠得著的距離。σ_Z 隨距離平方成長，所以這個數字決定誤差的量級：
 # 700mm 配 50° 方位是 ±6.3°，1800mm 同一個方位是 ±41°。
 _COMFORTABLE_DISTANCE_MM = 700.0
@@ -468,7 +471,7 @@ def format_measurement(
         lines.append(
             _cell("θ_CA 單幀誤差", 17)
             + f"±{measurement.theta_ca_precision_deg:.1f}°"
-            + f"（判定門檻 {_THETA_CA_THRESHOLD_DEG:.0f}°）"
+            + f"（判定門檻 {THETA_CA_THRESHOLD_DEG:.0f}°）"
         )
     lines.append("")
 
@@ -625,12 +628,12 @@ def plausibility_warnings(measurement: PostureMeasurement) -> list[str]:
     # 深度本身就不合理時，換算出來的誤差只是同一個原因的衍生結果。
     # 上面已經講過深度了，再報一次誤差只會把真正的線索淹掉。
     depth_is_sane = distance is not None and _PLAUSIBLE_DEPTH_MM[0] <= distance <= _PLAUSIBLE_DEPTH_MM[1]
-    if precision is not None and precision > _THETA_CA_THRESHOLD_DEG and depth_is_sane:
+    if precision is not None and precision > THETA_CA_THRESHOLD_DEG and depth_is_sane:
         where = f"距離 {distance:.0f} mm"
         where += "（方位角量不到）" if azimuth is None else f"、方位角 {azimuth:.0f}°"
         warnings.append(
             f"{where}，θ_CA 單幀誤差 ±{precision:.1f}°，超過 "
-            f"{_THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻本身，這一幀沒有參考價值。"
+            f"{THETA_CA_THRESHOLD_DEG:.0f}° 的判定門檻本身，這一幀沒有參考價值。"
             + precision_advice(distance, azimuth)
         )
 

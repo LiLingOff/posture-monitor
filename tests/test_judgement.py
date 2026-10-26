@@ -204,3 +204,11 @@ def test_clearing_the_window_puts_the_judgement_back_to_unknown():
     ca_window.clear()
     sym_window.clear()
     assert judge.update(ca_window, sym_window)[-1].posture is Posture.UNKNOWN
+
+
+def test_the_threshold_has_one_home():
+    """pipeline 的警告線與 judgement 的判定用的是同一個門檻。先前兩邊各寫一次
+    10.0，改了一邊另一邊不會跟著動，而兩邊印出來的都叫「判定門檻」。"""
+    from geometry import pipeline
+    from geometry.judgement import THETA_CA_THRESHOLD_DEG
+    assert pipeline.THETA_CA_THRESHOLD_DEG is THETA_CA_THRESHOLD_DEG

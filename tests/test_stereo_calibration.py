@@ -84,3 +84,11 @@ def test_stereo_calibration_raises_when_filenames_mismatch(tmp_path: Path):
         assert False, "應拋出 ValueError"
     except ValueError as e:
         assert str(left_dir) in str(e) and str(right_dir) in str(e)
+
+
+def test_the_shared_corner_minimum_has_one_home():
+    """拍攝與標定用同一個下限。兩邊不一致的話，拍的時候說這張可以、標定的
+    時候又把它丟掉，而使用者看到的是「拍了 20 張卻只用了 12 張」。"""
+    from calibration import capture
+    from calibration.stereo_calibration import MIN_SHARED_CHARUCO_CORNERS
+    assert capture.MIN_SHARED_CHARUCO_CORNERS is MIN_SHARED_CHARUCO_CORNERS
