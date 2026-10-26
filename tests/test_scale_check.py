@@ -198,3 +198,48 @@ def test_the_report_has_no_markdown_in_it():
         for line in format_scale_check(check):
             for mark in ("**", "__", "`"):
                 assert mark not in line, line
+
+
+# ---- 子指令只收它用得到的選項 ------------------------------------------
+
+@pytest.mark.parametrize("flag", ["--display", "--precision", "--window",
+                                  "--checkpoint", "--font"])
+def test_scale_does_not_accept_options_it_ignores(flag, capsys):
+    """scale 不載入姿態模型、不開視窗。那幾十個選項列在 --help 裡只會讓人
+    以為 --display 有用,收下再忽略比不收更糟。"""
+    posture = load_posture_module()
+    parser = posture.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scale", flag, "x"])
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--calibration", "--camera", "--discard",
+                                  "--save-frames", "--square-size-mm"])
+def test_scale_accepts_what_it_needs(flag):
+    posture = load_posture_module()
+    args = posture.build_parser().parse_args(["scale", flag, "1"])
+    assert args.mode == "scale"
+
+
+def test_one_pair_does_not_crash_the_report():
+    """板子只有一角入鏡時 spread 是 None，而那正是最需要看到訊息的時候。
+    先前這裡直接格式化 None，整個報告當掉。"""
+    check = check_scale([{0: np.zeros(3), 1: np.array([SQUARE_MM, 0.0, 600.0])}],
+                        SQUARES_X, SQUARES_Y, SQUARE_MM)
+    text = " ".join(format_scale_check(check))
+    assert "只量到 1 段距離" in text
+    assert "0.00mm" not in text        # 散佈要印破折號，不是 0
+
+
+def test_a_thin_sample_says_not_to_trust_it():
+    points = {c: np.array([(c % 5) * SQUARE_MM, 0.0, 600.0]) for c in range(4)}
+    text = " ".join(format_scale_check(
+        check_scale([points], SQUARES_X, SQUARES_Y, SQUARE_MM)))
+    assert "不要當真" in text
+
+
+def test_a_full_board_is_not_nagged_about():
+    text = " ".join(format_scale_check(
+        check_scale([_flat_board()], SQUARES_X, SQUARES_Y, SQUARE_MM)))
+    assert "不要當真" not in text

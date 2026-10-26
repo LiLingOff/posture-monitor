@@ -274,6 +274,11 @@ def _run_scale(args) -> None:
 
     不載入姿態模型：這條檢查刻意不經過它，量到的偏差才只可能來自標定。
     """
+    if args.square_size_mm <= 0:
+        raise SystemExit("--square-size-mm 要大於 0，它是比較的基準")
+    if args.frames < 1:
+        raise SystemExit("--frames 至少要 1")
+
     calib = StereoCalibrationResult.load(args.calibration)
     _step(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
           f"單眼 {calib.image_size[0]}x{calib.image_size[1]}）")
@@ -1129,7 +1134,13 @@ def _run_analyse(args) -> None:
                 print(f"{summary.path.name}{table}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """建整套 CLI。
+
+    與 `main` 分開是為了測得到。這一百九十行先前整個藏在 `main` 裡，而每一個
+    子指令收哪些選項是會出錯的事,2026-10-27 之前 scale 收下了 --display、
+    --precision 這些它根本不看的選項，使用者加了只會以為沒生效。
+    """
     parser = argparse.ArgumentParser(description="端到端坐姿量測")
     sub = parser.add_subparsers(dest="mode", required=True)
 
@@ -1167,6 +1178,7 @@ def main() -> None:
     )
     for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
+        # 相機：每一種模式都要，scale 也是。
         p.add_argument("--calibration", type=Path,
                        default=Path("data/calibration_output/stereo.npz"))
         p.add_argument("--camera", default="auto",
@@ -1179,42 +1191,13 @@ def main() -> None:
                        help="合併畫面的高度。同上")
         p.add_argument("--vertical-split", action="store_true")
         p.add_argument("--swap-lr", action="store_true")
-        p.add_argument("--precision", choices=["fp32", "fp16"], default="fp32")
-        p.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
-        p.add_argument("--checkpoint", type=Path,
-                       default=Path("data/pose_models/checkpoint_iter_370000.pth"))
-        p.add_argument("--engine-cache", type=Path,
-                       default=Path("data/pose_models/lightweight_openpose_fp16.pth"))
-        p.add_argument("--repo-dir", type=Path,
-                       default=Path("third_party/lightweight-human-pose-estimation.pytorch"))
-        p.add_argument("--min-confidence", type=float, default=0.0,
-                       help="低於這個信心度的關鍵點不參與三角測量")
         p.add_argument("--discard", type=int, default=5,
                        help="開始量測前先丟掉幾張，讓自動曝光穩定")
-        p.add_argument("--input-height", type=int, default=256,
-                       help="網路輸入高度。調高會直接降低熱圖的量化誤差（深度精度的"
-                            "主要瓶頸），代價是推論變慢；384或512值得一試")
-        p.add_argument("--no-subpixel", action="store_true",
-                       help="關掉熱圖峰值的次像素精修，用來量化它的影響")
         p.add_argument("--save-frames", type=Path, default=None,
                        help="把左右兩眼的畫面存成 png，偵測到的關鍵點疊上去。"
                             "診斷訊息說不出相機到底看到什麼，這個看得出來。"
                             "baseline 與 live 存的是第一張被略過的畫面")
-        p.add_argument("--display", action="store_true",
-                       help="開一個視窗，畫面疊上骨架與狀態面板。給操作者架設"
-                            "與示範用，螢幕要放在受試者視野之外。視窗有焦點時"
-                            "按 q 結束這一段，終端機的 Ctrl-C 照常")
-        p.add_argument("--display-width", type=int, default=1280,
-                       help="視窗寬度。低於 640 會拉回 640，再小面板就看不清")
-        p.add_argument("--display-eyes", choices=["both", "left"], default="left",
-                       help="left 只畫左眼，受試者佔滿整個寬度；both 左右眼並排，"
-                            "配對錯了看得出來，但兩張幾乎一樣，各只剩一半寬")
-        p.add_argument("--display-lang", choices=["en", "zh"], default="en",
-                       help="面板的語言。en 不需要中日韓字型；zh 要有字型，"
-                            "沒有的話照樣退回英文")
-        p.add_argument("--font", type=Path, default=None,
-                       help="--display-lang zh 時用的中日韓字型。不給的話自動找，"
-                            "找不到就改用英文，量測照常")
+
         if name == "scale":
             # 板子的規格要與標定時下的那組一致，不然量出來的「偏差」只是
             # 兩個不同的板子。
@@ -1233,9 +1216,47 @@ def main() -> None:
                                 "系統性的偏差，多取幾幀比較穩")
             p.add_argument("--tolerance", type=float, default=0.02,
                            help="差距在這個比例以內就算過")
+            # scale 到此為止。它不載入姿態模型、不開視窗，那幾十個選項列在
+            # --help 裡只會讓人以為 --display 有用。
+            continue
+
+        # 姿態模型。
+        p.add_argument("--precision", choices=["fp32", "fp16"], default="fp32")
+        p.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+        p.add_argument("--checkpoint", type=Path,
+                       default=Path("data/pose_models/checkpoint_iter_370000.pth"))
+        p.add_argument("--engine-cache", type=Path,
+                       default=Path("data/pose_models/lightweight_openpose_fp16.pth"))
+        p.add_argument("--repo-dir", type=Path,
+                       default=Path("third_party/lightweight-human-pose-estimation.pytorch"))
+        p.add_argument("--min-confidence", type=float, default=0.0,
+                       help="低於這個信心度的關鍵點不參與三角測量")
+        p.add_argument("--input-height", type=int, default=256,
+                       help="網路輸入高度。調高會直接降低熱圖的量化誤差（深度精度的"
+                            "主要瓶頸），代價是推論變慢；384或512值得一試")
+        p.add_argument("--no-subpixel", action="store_true",
+                       help="關掉熱圖峰值的次像素精修，用來量化它的影響")
+
+        # 視窗。
+        p.add_argument("--display", action="store_true",
+                       help="開一個視窗，畫面疊上骨架與狀態面板。給操作者架設"
+                            "與示範用，螢幕要放在受試者視野之外。視窗有焦點時"
+                            "按 q 結束這一段，終端機的 Ctrl-C 照常")
+        p.add_argument("--display-width", type=int, default=1280,
+                       help="視窗寬度。低於 640 會拉回 640，再小面板就看不清")
+        p.add_argument("--display-eyes", choices=["both", "left"], default="left",
+                       help="left 只畫左眼，受試者佔滿整個寬度；both 左右眼並排，"
+                            "配對錯了看得出來，但兩張幾乎一樣，各只剩一半寬")
+        p.add_argument("--display-lang", choices=["en", "zh"], default="en",
+                       help="面板的語言。en 不需要中日韓字型；zh 要有字型，"
+                            "沒有的話照樣退回英文")
+        p.add_argument("--font", type=Path, default=None,
+                       help="--display-lang zh 時用的中日韓字型。不給的話自動找，"
+                            "找不到就改用英文，量測照常")
         p.add_argument("--window", type=int, default=30,
                        help="live 模式的平均視窗幀數。單幀誤差與判定門檻同量級，"
                             "平均N幀把偵測雜訊降到1/√N；30幀約5秒")
+
         if name == "once":
             p.add_argument("--all-keypoints", action="store_true",
                            help="印出全部18點，不只角度用到的那幾個")
@@ -1310,7 +1331,11 @@ def main() -> None:
                            help="不等按鍵，每一段印完指導語就直接開始。"
                                 "自己一個人量、或在測試裡跑的時候用")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
     if args.mode in ("analyse", "cohort"):
         (_run_cohort if args.mode == "cohort" else _run_analyse)(args)

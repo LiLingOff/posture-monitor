@@ -42,6 +42,10 @@ def adjacent_pairs(ids, squares_x: int, squares_y: int):
     return pairs
 
 
+# 少於這麼多段距離就不足以下結論。板子完整入鏡時一幀就有幾十段。
+_ENOUGH_PAIRS = 8
+
+
 @dataclass(frozen=True)
 class ScaleCheck:
     """一次尺度驗證的結果。距離單位都是 mm。"""
@@ -126,7 +130,11 @@ def format_scale_check(check: ScaleCheck, tolerance: float = 0.02) -> list[str]:
     lines.append(cell("板子實際的邊長", 18) + f"{check.expected_mm:.2f}mm")
     relative = check.relative_error
     lines.append(cell("差距", 18) + f"{relative * 100:+.2f}%")
-    lines.append(cell("單段距離的散佈", 18) + f"±{check.spread_mm:.2f}mm")
+    # 只量到一段距離時沒有散佈可言。印「—」而不是 0,0 是「完全沒有誤差」，
+    # 而這裡是「只有一個樣本」。先前這裡直接格式化 None，整個報告當掉，
+    # 而那正是板子只有一角入鏡的時候,最需要看到訊息的時候。
+    spread = "—" if check.spread_mm is None else f"±{check.spread_mm:.2f}mm"
+    lines.append(cell("單段距離的散佈", 18) + spread)
     lines.append(cell("取樣", 18)
                  + f"{check.corner_pairs} 段（橫 {len(check.horizontal)}、"
                    f"縱 {len(check.vertical)}），{check.frames} 幀"
@@ -137,6 +145,10 @@ def format_scale_check(check: ScaleCheck, tolerance: float = 0.02) -> list[str]:
         lines.append(cell("橫向與縱向差", 18) + f"{axes:.2f}mm")
 
     lines.append("")
+    if check.corner_pairs < _ENOUGH_PAIRS:
+        lines.append(f"  只量到 {check.corner_pairs} 段距離。板子完整入鏡時"
+                     f"一幀就有幾十段,這個數字這麼小，代表大半個板子只有"
+                     f"一眼看得到，下面的結論不要當真。")
     if abs(relative) <= tolerance:
         lines.append(f"  尺度正確：偏差 {abs(relative) * 100:.2f}% 在 "
                      f"{tolerance * 100:.0f}% 以內。算出來的 mm 是真的 mm，"
