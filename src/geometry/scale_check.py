@@ -124,6 +124,12 @@ def format_scale_check(check: ScaleCheck, tolerance: float = 0.02) -> list[str]:
     if check.corner_pairs == 0:
         lines.append("  一對相鄰角點都沒量到。確認板子完整入鏡、兩眼都看得到它。")
         return lines
+    if check.relative_error is None:
+        # 板子的邊長填 0 就沒有東西可以比。CLI 擋在前面了，但這個函式是公開的，
+        # 不該因為呼叫端沒擋就丟 TypeError。
+        lines.append(f"  量到 {check.measured_mm:.2f}mm，但板子的邊長填的是 "
+                     f"{check.expected_mm:.2f}mm，沒有東西可以比。")
+        return lines
 
     lines.append(cell("量到的方格邊長", 18)
                  + with_error(check.measured_mm, check.error_mm, "mm", 2, signed=False))

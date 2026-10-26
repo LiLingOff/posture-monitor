@@ -243,3 +243,11 @@ def test_a_full_board_is_not_nagged_about():
     text = " ".join(format_scale_check(
         check_scale([_flat_board()], SQUARES_X, SQUARES_Y, SQUARE_MM)))
     assert "不要當真" not in text
+
+
+def test_a_zero_sized_board_says_so_instead_of_crashing():
+    """CLI 擋在前面了，但這個函式是公開的,不該因為呼叫端沒擋就丟 TypeError。"""
+    check = check_scale([{0: np.zeros(3), 1: np.array([1.0, 0.0, 600.0])}],
+                        SQUARES_X, SQUARES_Y, 0.0)
+    assert check.relative_error is None
+    assert "沒有東西可以比" in " ".join(format_scale_check(check))
