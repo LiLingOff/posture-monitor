@@ -278,6 +278,11 @@ def _run_scale(args) -> None:
         raise SystemExit("--square-size-mm 要大於 0，它是比較的基準")
     if args.frames < 1:
         raise SystemExit("--frames 至少要 1")
+    if args.marker_size_mm <= 0 or args.marker_size_mm >= args.square_size_mm:
+        raise SystemExit(
+            f"--marker-size-mm（{args.marker_size_mm:g}）要小於方格邊長"
+            f"（{args.square_size_mm:g}）。這個選項的預設值是 18，"
+            "換了板子就要連同 --dictionary 一起填成標定時那組")
 
     calib = StereoCalibrationResult.load(args.calibration)
     _step(f"標定檔 {args.calibration}（基線 {calib.baseline_mm:.2f} mm，"
