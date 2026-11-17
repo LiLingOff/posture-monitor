@@ -412,3 +412,36 @@ def test_other_angles_are_never_marked_sparse(tmp_path):
     summary = analyse_session(_ka_session(tmp_path, total=400, with_value=2))
     assert not summary.angles["θ_CA 原始"].is_sparse
     assert not AngleSummary("x", np.array([1.0, 2.0])).is_sparse
+
+
+def _baseline_session(tmp_path, name, baseline, subject="A"):
+    path = tmp_path / f"{name}.csv"
+    rows = [_usable_row(i + 1, 8.0) for i in range(5)]
+    path.write_text("\n".join([f"# subject={subject}", f"# baseline_theta_ca_deg={baseline}",
+                               _HEADER] + rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_baselines_far_apart_for_one_subject_are_flagged(tmp_path):
+    """實機 a411348：前三段基準 +6.5°，後三段 +17.7°，直立被判成 82% 超標。"""
+    from geometry.session_report import baseline_warning
+    s1 = analyse_session(_baseline_session(tmp_path, "upright-1", 6.54))
+    s2 = analyse_session(_baseline_session(tmp_path, "upright-2", 17.676))
+    text = baseline_warning([s1, s2])
+    assert "2 份不同的基準" in text and "11.1°" in text
+    assert "upright-1" in text and "upright-2" in text
+    assert "基準 " in format_report([s1, s2])
+
+
+def test_similar_baselines_or_different_subjects_are_not_flagged(tmp_path):
+    from geometry.session_report import baseline_warning
+    a = analyse_session(_baseline_session(tmp_path, "a", 6.5))
+    b = analyse_session(_baseline_session(tmp_path, "b", 9.0))
+    other = analyse_session(_baseline_session(tmp_path, "c", 30.0, subject="B"))
+    assert baseline_warning([a, b, other]) == ""
+
+
+def test_a_session_without_a_baseline_never_triggers_the_warning(tmp_path):
+    from geometry.session_report import baseline_warning
+    s = analyse_session(_old_format_session(tmp_path))
+    assert baseline_warning([s, s]) == ""

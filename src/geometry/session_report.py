@@ -239,8 +239,45 @@ def format_comparison(summaries: list[SessionSummary]) -> str:
     return "\n".join(out)
 
 
+# 同一位受試者的基準 θ_CA 相差超過這麼多度就警告。θ_CA 的判定門檻是 ±10°，
+# 基準差 5° 就等於門檻少了一半；5° 是設計值，沒有實機依據。
+BASELINE_SPREAD_WARN_DEG = 5.0
+
+
+def baseline_warning(summaries: list[SessionSummary]) -> str:
+    """同一位受試者的幾段用了不同的基準、而且差很多時，說明哪幾段用哪一份。
+
+    實機 a411348：前三段用 +6.5°，後三段換了一份 +17.7°。後者在偏前傾的姿勢取的，
+    扣完之後直立的第二次就被判成 82% 超標。沒有這個提醒，只會看到判定器「壞掉」。
+    """
+    by_subject: dict[str, dict[float, list[str]]] = {}
+    for s in summaries:
+        raw = s.meta.get("baseline_theta_ca_deg")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        by_subject.setdefault(s.subject_key, {}).setdefault(round(value, 3), []).append(
+            s.path.stem)
+    lines: list[str] = []
+    for subject, groups in by_subject.items():
+        values = sorted(groups)
+        if len(values) < 2 or values[-1] - values[0] <= BASELINE_SPREAD_WARN_DEG:
+            continue
+        lines.append(f"注意：受試者 {subject} 用了 {len(values)} 份不同的基準，"
+                     f"θ_CA 相差 {values[-1] - values[0]:.1f}°"
+                     f"（超過 {BASELINE_SPREAD_WARN_DEG:.0f}°）")
+        for v in values:
+            lines.append(f"  基準 {v:+.2f}°：{'、'.join(groups[v])}")
+        lines.append("  不同基準扣出來的角度不能直接比；看原始值，或用同一份基準重算")
+    return "\n".join(lines)
+
+
 def format_report(summaries: list[SessionSummary]) -> str:
     parts = [format_session(s) for s in summaries]
+    warning = baseline_warning(summaries)
+    if warning:
+        parts.append(warning)
     comparison = format_comparison(summaries)
     if comparison:
         parts.append(comparison)
