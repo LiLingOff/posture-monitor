@@ -287,6 +287,7 @@ def baseline_warning(summaries: list[SessionSummary]) -> str:
     扣完之後直立的第二次就被判成 82% 超標。沒有這個提醒，只會看到判定器「壞掉」。
     """
     by_subject: dict[str, dict[float, list[str]]] = {}
+    azimuths: dict[tuple[str, float], float] = {}
     for s in summaries:
         raw = s.meta.get("baseline_theta_ca_deg")
         try:
@@ -295,6 +296,12 @@ def baseline_warning(summaries: list[SessionSummary]) -> str:
             continue
         by_subject.setdefault(s.subject_key, {}).setdefault(round(value, 3), []).append(
             s.path.stem)
+        # 取基準當下的方位角。2026-11-17 之前的檔案沒有這個標頭，就印「沒記」。
+        try:
+            azimuths.setdefault((s.subject_key, round(value, 3)),
+                                float(s.meta["baseline_azimuth_deg"]))
+        except (KeyError, TypeError, ValueError):
+            pass
     lines: list[str] = []
     for subject, groups in by_subject.items():
         values = sorted(groups)
@@ -304,7 +311,9 @@ def baseline_warning(summaries: list[SessionSummary]) -> str:
                      f"θ_CA 相差 {values[-1] - values[0]:.1f}°"
                      f"（超過 {BASELINE_SPREAD_WARN_DEG:.0f}°）")
         for v in values:
-            lines.append(f"  基準 {v:+.2f}°：{'、'.join(groups[v])}")
+            azimuth = azimuths.get((subject, v))
+            where = "方位角沒記" if azimuth is None else f"方位角 {azimuth:.0f}°"
+            lines.append(f"  基準 {v:+.2f}°（{where}）：{'、'.join(groups[v])}")
         lines.append("  不同基準扣出來的角度不能直接比；看原始值，或用同一份基準重算")
     return "\n".join(lines)
 

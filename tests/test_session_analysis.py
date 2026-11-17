@@ -414,11 +414,12 @@ def test_other_angles_are_never_marked_sparse(tmp_path):
     assert not AngleSummary("x", np.array([1.0, 2.0])).is_sparse
 
 
-def _baseline_session(tmp_path, name, baseline, subject="A"):
+def _baseline_session(tmp_path, name, baseline, subject="A", azimuth=None):
     path = tmp_path / f"{name}.csv"
     rows = [_usable_row(i + 1, 8.0) for i in range(5)]
-    path.write_text("\n".join([f"# subject={subject}", f"# baseline_theta_ca_deg={baseline}",
-                               _HEADER] + rows) + "\n", encoding="utf-8")
+    extra = [] if azimuth is None else [f"# baseline_azimuth_deg={azimuth}"]
+    path.write_text("\n".join([f"# subject={subject}", f"# baseline_theta_ca_deg={baseline}"]
+                              + extra + [_HEADER] + rows) + "\n", encoding="utf-8")
     return path
 
 
@@ -445,3 +446,22 @@ def test_a_session_without_a_baseline_never_triggers_the_warning(tmp_path):
     from geometry.session_report import baseline_warning
     s = analyse_session(_old_format_session(tmp_path))
     assert baseline_warning([s, s]) == ""
+
+
+def test_the_baseline_warning_lists_the_azimuth_each_baseline_was_taken_at(tmp_path):
+    """基準 JSON 會被覆蓋，標頭裡的方位角是唯一留得下來的紀錄。"""
+    from geometry.session_report import baseline_warning
+    s1 = analyse_session(_baseline_session(tmp_path, "upright-1", 6.54, azimuth=23.4))
+    s2 = analyse_session(_baseline_session(tmp_path, "upright-2", 17.676, azimuth=39.6))
+    text = baseline_warning([s1, s2])
+    assert "基準 +6.54°（方位角 23°）：upright-1" in text
+    assert "基準 +17.68°（方位角 40°）：upright-2" in text
+
+
+def test_a_baseline_from_before_the_azimuth_header_says_it_was_not_recorded(tmp_path):
+    from geometry.session_report import baseline_warning
+    s1 = analyse_session(_baseline_session(tmp_path, "upright-1", 6.54))
+    s2 = analyse_session(_baseline_session(tmp_path, "upright-2", 17.676, azimuth=39.6))
+    text = baseline_warning([s1, s2])
+    assert "基準 +6.54°（方位角沒記）：upright-1" in text
+    assert "（方位角 40°）" in text
