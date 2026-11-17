@@ -142,6 +142,8 @@ def test_the_baseline_values_are_recorded_not_just_its_filename(tmp_path):
     assert "# baseline_theta_ca_deg=3.780" in head
     assert "# baseline_theta_ca_error_deg=0.830" in head
     assert "# baseline_captured_at=2026-09-29T20:06:12" in head
+    assert "# baseline_azimuth_deg=43.0" in head
+    assert "# baseline_distance_mm=685" in head
 
 
 def test_refuses_to_overwrite_an_existing_session(tmp_path):

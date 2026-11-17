@@ -104,6 +104,10 @@ def metadata_lines(
             f"# baseline_theta_ca_error_deg={baseline.theta_ca_standard_error_deg:.3f}",
             f"# baseline_captured_at={baseline.captured_at}",
             f"# baseline_frames={baseline.frames}",
+            # 基準 JSON 每次取基準都被覆蓋，方位角與距離只存在最後一份裡。
+            # 寫進標頭，事後才對得回「這一段用的是在哪個角度取的基準」。
+            f"# baseline_azimuth_deg={baseline.azimuth_deg:.1f}",
+            f"# baseline_distance_mm={baseline.distance_mm:.0f}",
         ])
         # 舊基準沒有這一項。空的整列不寫，日後才分得出「沒記」與「記了空值」。
         if getattr(baseline, "theta_ka_deg", None) is not None:
