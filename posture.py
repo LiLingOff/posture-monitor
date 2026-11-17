@@ -225,6 +225,7 @@ def _run_once(args) -> None:
             corrected=(measurement.theta_ca_deg, measurement.theta_sym_deg),
             ca_window=RollingAngle(1), sym_window=RollingAngle(1),
             state=Posture.UNKNOWN, judging=False,
+            ka_instant=measurement.theta_ka_deg,
             skip_reason=unusable_reason(measurement),
             rejected=0, frames_seen=1, keys=(("[任意鍵] 關閉", "[Any key] Close"),),
         )))
@@ -455,6 +456,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 skip_reason=reason, rejected=rejected, frames_seen=frames_seen,
                 remaining_s=remaining, baseline=baseline, keys=(("[Q] 離開", "[Q] Quit"),),
                 drop_mm=drop_window.mean, drop_threshold_mm=_drop_threshold(baseline),
+                ka_window=ka_window, ka_instant=ka,
             )))
             _write_frame_row(
                 log, snapshots, measurement, match, frames, reason=reason,
@@ -606,6 +608,7 @@ def _run_monitor(args) -> None:
                 sym_window=state.sym_window,
                 drop_mm=state.drop_window.mean,
                 drop_threshold_mm=state.drop_threshold_mm,
+                ka_window=state.ka_window, ka_instant=state.trunk_offset(measurement),
                 state=(Posture.UNKNOWN if result.verdict is None
                        else result.verdict.posture),
                 skip_reason=result.reason, rejected=rejected,

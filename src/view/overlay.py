@@ -238,6 +238,17 @@ def panel_rows(view) -> list[list[tuple]]:
         (f"θ_{{SYM}} {sym}", f"θ_{{SYM}} {sym}", DIM, TEXT_SIZE, False),
     ]
 
+    # θ_KA 只有「這一段會有值」的時候才有這一格：基準有 θ_KA、或沒有基準而這一幀
+    # 量到了。基準有 θ_KA 時它整段都在，量不到就印 —，位子不動。基準沒有這一項
+    # 時整段都不會有值，不畫，這跟逐幀在變不同。
+    ka_value = view.theta_ka_mean_deg
+    if ka_value is None:
+        ka_value = view.theta_ka_instant_deg
+    if (view.theta_ka_offset_deg is not None or view.theta_ka_mean_deg is not None
+            or view.theta_ka_instant_deg is not None):
+        ka = _fmt(ka_value, 1, "°", signed=True)
+        second.append((f"θ_{{KA}} {ka}", f"θ_{{KA}} {ka}", DIM, TEXT_SIZE, False))
+
     over_drop = (view.drop_mm is not None and view.drop_threshold_mm is not None
                  and view.drop_mm > view.drop_threshold_mm)
     drop = _fmt(None if view.drop_mm is None else max(0.0, view.drop_mm), 0, "mm")

@@ -54,6 +54,11 @@ class LiveView:
     theta_sym_offset_deg: float | None = None
     drop_mm: float | None = None
     drop_threshold_mm: float | None = None
+    # θ_KA（軀幹前傾角）。三個欄位都是 None 就整格不畫：基準沒有這一項時整段
+    # 都不會有值，不是逐幀在變，所以可以不存在（見 overlay 的版面規則）。
+    theta_ka_mean_deg: float | None = None
+    theta_ka_instant_deg: float | None = None
+    theta_ka_offset_deg: float | None = None
     rejected: int = 0
     frames: int = 0
     remaining_s: float | None = None
@@ -73,6 +78,7 @@ class LiveView:
         judging: bool = True,
         remaining_s: float | None = None, baseline=None,
         drop_mm: float | None = None, drop_threshold_mm: float | None = None,
+        ka_window=None, ka_instant: float | None = None,
         mode: str | None = None, phase_remaining_s: float | None = None,
         notice: str | None = None,
         keys: tuple[tuple[str, str], ...] = (),
@@ -111,6 +117,10 @@ class LiveView:
             theta_sym_offset_deg=None if baseline is None else baseline.theta_sym_deg,
             drop_mm=drop_mm,
             drop_threshold_mm=drop_threshold_mm,
+            theta_ka_mean_deg=None if ka_window is None else ka_window.mean,
+            theta_ka_instant_deg=ka_instant,
+            theta_ka_offset_deg=(None if baseline is None
+                                 else getattr(baseline, "theta_ka_deg", None)),
             rejected=rejected,
             frames=frames_seen,
             remaining_s=remaining_s,

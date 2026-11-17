@@ -476,3 +476,26 @@ def test_a_missing_angle_does_not_leave_a_stray_unit():
     """量不到時寫破折號。單位掛在格式字串上的話會變成「轉身 —°」。"""
     texts = " ".join(_texts(view()))
     assert "—°" not in texts
+
+
+# ---- θ_KA（2026-11-17 補回）---------------------------------------------
+
+def test_the_panel_shows_theta_ka_with_the_same_symbol_as_the_report():
+    texts = _texts(view(theta_ka_mean_deg=-12.3, theta_ka_offset_deg=2.0))
+    assert "θ_{KA} -12.3°" in texts
+    assert "θ_{KA} -12.3°" in _ascii_texts(view(theta_ka_mean_deg=-12.3,
+                                                theta_ka_offset_deg=2.0))
+
+
+def test_theta_ka_keeps_its_place_when_the_baseline_has_it_but_this_frame_does_not():
+    """基準有 θ_KA 時它整段都在，髖被擋住這一幀印 —，位子不動，後面的欄位才不會位移。"""
+    with_value = overlay.panel_rows(view(theta_ka_mean_deg=5.0, theta_ka_offset_deg=0.0))
+    without = overlay.panel_rows(view(theta_ka_offset_deg=0.0))
+    assert [len(r) for r in with_value] == [len(r) for r in without]
+    assert any(c[0].startswith("θ_{KA}") and "—" in c[0] for r in without for c in r)
+
+
+def test_theta_ka_is_absent_when_nothing_will_ever_measure_it():
+    """基準沒有這一項（或舊基準），整段都不會有值，不畫，面板與補回之前一樣。"""
+    assert not any(t.startswith("θ_{KA}") for t in _texts(view()))
+
