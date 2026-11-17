@@ -23,7 +23,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-10-27 是 660 個
+python -m pytest -q          # 2026-11-17 是 701 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -31,7 +31,8 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 
 ## 幾個容易被「修正」回去的刻意設計
 
-- **三個指標一律叫 θ_CA、θ_sym、肩部垂直位移**，面板、終端機、文件、報告
+- **四個指標一律叫 θ_CA、θ_sym、θ_KA、肩部垂直位移**（θ_KA 是軀幹前傾角，
+  2026-11-17 補回，面板還沒顯示），面板、終端機、文件、報告
   全部一致。2026-10-08 之前面板刻意用白話（頭前傾、肩膀高低、肩膀下沉），
   那條規則已經取消，因為報告書用的是符號，而畫面截圖會進報告。
 - **面板預設英文**（`--display-lang`，2026-10-08）。有 TTF 字型就走 Pillow，
@@ -48,8 +49,10 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
   排版那邊兩側一律寫符號本身。
 - **`PostureBaseline` 後來加的欄位一定要有預設值**，`load()` 只檢查沒有預設值的
   欄位。現有的基準檔缺那幾欄，讀不進來的話沒有任何地方補得回來。
-- **判定的第三軸（肩高）要 `watch_shoulder_drop()` 打開才生效**，這樣既有 CSV
-  重播出來的結果與加這一項之前一樣。
+- **判定的第三軸（肩高）要 `watch_shoulder_drop()` 打開才生效，第四軸（θ_KA）
+  要 `watch_trunk()` 打開才生效**，這樣既有 CSV 重播出來的結果與加這一項之前
+  一樣。**θ_KA 用到的頸與髖不要加進 `angle_keypoints()`**：髖常被桌面擋住，
+  加了的話 θ_CA、θ_sym 會跟著整幀被略過。
 - **`geometry/` 不碰相機、終端機與 argparse**，`view/` 才碰 cv2 與視窗。
   唯一的例外是 `recording.write_frame` 延遲匯入 `view.overlay`，為的是讓快照
   與即時畫面用同一套繪圖。
@@ -67,7 +70,9 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 1. 姿勢清單已定（2026-10-06）：upright、head-forward、head-back、
    left-shoulder-up、right-shoulder-up，分兩趟跑（頭一趟、肩膀一趟）。
    θ_CA 改成前傾後仰都判。**不補**動到肩部垂直位移的條件，那一軸在報告
-   裡只引用 2026-10-01 的 forward 資料，這是使用者的決定
+   裡只引用 2026-10-01 的 forward 資料，這是使用者的決定。θ_KA 2026-11-17
+   補回後這一條沒變：姿勢清單沒加軀幹前傾的條件，θ_KA 的 ±10° 是設計值、
+   沒有實機資料，文件與報告都要照實寫
 2. 相機在量測中途掉線過四次，原因沒定。**不是 PhotonVision**：2026-10-06
    確認服務沒在跑還是掉了。一直沒拿到 dmesg，再掉的話第一件事是
    `dmesg | tail -40`。study 現在掉線後會重新找節點並重量那一段

@@ -26,13 +26,15 @@ _SESSION_COLUMNS = (
     "frames", "usable", "rejection_rate",
     "theta_ca_deg", "theta_ca_error_deg", "theta_ca_single_frame_std_deg",
     "theta_sym_deg", "distance_mm", "azimuth_deg", "over_share",
+    # 新欄位加在最後面：靠欄位位置讀這份 CSV 的人不會錯位。
+    "theta_ka_deg",
 )
 
 # 逐段表每一欄的寬度。手寫而不是照內容算，因為量測之間的數字量級差不多，
 # 固定寬度在不同批資料之間才對得起來。
 _COLUMNS = (
     ("受試者", 12), ("姿勢", 12), ("次", 4), ("θ_CA", 20), ("單幀散佈", 12),
-    ("θ_sym", 10), ("可用", 12), ("略過", 12), ("超標", 8),
+    ("θ_sym", 10), ("θ_KA", 10), ("可用", 12), ("略過", 12), ("超標", 8),
     ("距離", 10), ("方位角", 8),
 )
 
@@ -70,6 +72,7 @@ def session_rows(cohort: Cohort) -> list[dict]:
     for summary in cohort.sessions:
         corrected = summary.angle("θ_CA")
         sym = summary.angle("θ_sym")
+        ka = summary.angle("θ_KA")
         judgement = summary.judgement
         over = None if judgement is None else judgement.share(Posture.OVER.value)
         rows.append({
@@ -85,6 +88,7 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "theta_ca_single_frame_std_deg":
                 None if corrected is None else corrected.single_frame_std,
             "theta_sym_deg": None if sym is None else sym.mean,
+            "theta_ka_deg": None if ka is None else ka.mean,
             "distance_mm": _column(summary, "距離 mm"),
             "azimuth_deg": _column(summary, "方位角 °"),
             "over_share": over,
@@ -113,6 +117,7 @@ def sessions_table(rows: list[dict]) -> str:
             with_error(r["theta_ca_deg"], r["theta_ca_error_deg"]),
             f"±{_fmt(r['theta_ca_single_frame_std_deg'], 1, '°')}",
             _fmt(r["theta_sym_deg"], 2, "°"),
+            _fmt(r["theta_ka_deg"], 2, "°"),
             f"{r['usable']}/{r['frames']}",
             _percent(r["rejection_rate"]) + (" 偏高" if over_limit else ""),
             _percent(r["over_share"]),

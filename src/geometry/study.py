@@ -128,6 +128,8 @@ class SegmentReview:
     camera_lost: bool = False
     # 相機掉線之後同一種姿勢在這一趟裡又量了一次，所以這一段是殘缺的那份。
     retaken: bool = False
+    # θ_KA（扣基準）的平均。基準沒有這一項、或髖一直被擋住時是 None。
+    theta_ka_deg: float | None = None
 
     @property
     def too_many_rejected(self) -> bool:
@@ -166,7 +168,8 @@ def review(recordings, baseline=None) -> list[SegmentReview]:
     return [
         SegmentReview(
             condition=r.condition, trial=r.trial,
-            theta_ca_deg=r.session.mean_ca, usable=r.usable,
+            theta_ca_deg=r.session.mean_ca,
+            theta_ka_deg=r.session.mean_ka, usable=r.usable,
             frames=r.frames, rejection_rate=r.rejection_rate,
             turned_deg=_turned(r, baseline),
             camera_lost=r.camera_lost is not None,

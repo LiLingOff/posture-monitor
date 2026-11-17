@@ -41,6 +41,10 @@ from .terminal import with_error
 
 # 前作的門檻，套在扣除個人基準之後的偏移量上。
 THETA_CA_THRESHOLD_DEG = 10.0
+# θ_KA（軀幹前傾）的門檻。**這是設計值，沒有文獻依據也沒有任何實機資料**
+# （2026-11-17 補回這一軸，姿勢清單沒有對應的條件）。暫取與 θ_CA 同一個數字，
+# 前傾後仰都判；量到軀幹前傾的實測資料之後要回頭校準。
+THETA_KA_THRESHOLD_DEG = 10.0
 # θ_sym 的門檻。肩膀高低差往左往右都算歪，所以這一項取絕對值。
 _THETA_SYM_THRESHOLD_DEG = 5.0
 # 信賴邊界的倍數。
@@ -64,6 +68,28 @@ def windows_are_stale(consecutive_misses: int, window: int) -> bool:
     這時候該把視窗清掉讓狀態回到未知，而不是繼續用它判定。
     """
     return window > 0 and consecutive_misses >= window
+
+
+class MissCounter:
+    """某一項角度連續幾幀沒有值，久了就把它的移動平均清掉。
+
+    `windows_are_stale` 只管「整幀被略過」。θ_KA 不一樣：髖被桌面擋住時這一幀
+    照樣算數（θ_CA、θ_sym 都正常），只是 θ_KA 沒有值。沒有值的幀不會進視窗，
+    也就不會推走舊的值，於是視窗裡最後那一段有髖的資料會被一直拿來判定：
+    舊平均是 +25° 就持續報超標，是 0° 就持續報正常。所以這一項要自己數。
+    清掉之後視窗不滿，那一軸回到「未知」，不會被讀成正常。
+    """
+
+    def __init__(self) -> None:
+        self.misses = 0
+
+    def update(self, window, present: bool) -> None:
+        if present:
+            self.misses = 0
+            return
+        self.misses += 1
+        if windows_are_stale(self.misses, window.window):
+            window.clear()
 
 
 class Posture(Enum):
@@ -158,7 +184,7 @@ class AngleJudge:
 
 
 class PostureJudge:
-    """θ_CA 與 θ_sym 一起判定。
+    """θ_CA、θ_sym（與可選的肩高、θ_KA）一起判定。
 
     任一項超標就算超標，因為兩者量的是不同的問題：θ_CA 是頭往前或往後，
     θ_sym 是肩膀歪。
@@ -186,6 +212,8 @@ class PostureJudge:
         # 肩高是第三項，門檻由個人基準的晃動量決定，所以建構時還不知道。
         # 沒給門檻就完全不參與判定，於是舊的基準檔與舊的 CSV 行為不變。
         self._drop: AngleJudge | None = None
+        # θ_KA 同理：基準有這一項才打開，沒打開就不參與，舊的行為不變。
+        self._trunk: AngleJudge | None = None
         self._posture = Posture.UNKNOWN
         self._frames_in_state = 0
 
@@ -209,14 +237,28 @@ class PostureJudge:
             minimum_margin=_MINIMUM_DROP_MARGIN_MM, unit="mm",
         )
 
-    def update(self, ca_window, sym_window, drop_window=None):
-        """收下移動平均，回傳 (θ_CA, θ_sym, 肩高, 合併)。
+    @property
+    def trunk(self) -> AngleJudge | None:
+        return self._trunk
+
+    def watch_trunk(self, threshold_deg: float | None = THETA_KA_THRESHOLD_DEG) -> None:
+        """把 θ_KA 這一項打開。傳 None 關掉。
+
+        呼叫端只有基準裡有 θ_KA 的時候才呼叫：沒有基準或基準是這一項加進來之前
+        存的，都自動退化成不判這一項。
+        """
+        self._trunk = None if threshold_deg is None else AngleJudge(
+            threshold_deg, "θ_KA", two_sided=True, margin_factor=self._factor,
+        )
+
+    def update(self, ca_window, sym_window, drop_window=None, ka_window=None):
+        """收下移動平均，回傳 (θ_CA, θ_sym, 肩高, θ_KA, 合併)。
 
         肩高那一項在沒開或沒資料時是 None，而 None 不參與合併，所以既有的
         記錄重播出來的結果與加這一項之前完全一樣。
 
-        回傳四個而不是三個，呼叫端一律寫 `*_, verdict =`：再加第四項判定
-        的時候就不必回頭改每一個呼叫點。
+        回傳的項數會隨判定的軸增加，呼叫端一律寫 `*_, verdict =`：再加一項
+        判定的時候就不必回頭改每一個呼叫點。
         """
         ca = self.theta_ca.update(
             ca_window.mean, ca_window.standard_error, ca_window.is_full
@@ -230,7 +272,15 @@ class PostureJudge:
                 drop_window.mean, drop_window.standard_error, drop_window.is_full
             )
 
-        parts = [j for j in (ca, sym, drop) if j is not None]
+        ka = None
+        if self._trunk is not None:
+            # 呼叫端忘了傳視窗時當成沒有資料（未知），不能靜默跳過這一軸，
+            # 那會讓人以為 θ_KA 一直在判而且一直正常。
+            ka = (self._trunk.update(None, None) if ka_window is None else
+                  self._trunk.update(ka_window.mean, ka_window.standard_error,
+                                     ka_window.is_full))
+
+        parts = [j for j in (ca, sym, drop, ka) if j is not None]
         if any(j.posture is Posture.OVER for j in parts):
             combined, reason = Posture.OVER, "、".join(
                 j.reason for j in parts if j.posture is Posture.OVER
@@ -246,4 +296,4 @@ class PostureJudge:
         changed = combined is not self._posture
         self._frames_in_state = 1 if changed else self._frames_in_state + 1
         self._posture = combined
-        return ca, sym, drop, Judgement(combined, changed, self._frames_in_state, reason)
+        return ca, sym, drop, ka, Judgement(combined, changed, self._frames_in_state, reason)

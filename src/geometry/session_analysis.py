@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from .baseline import group_rejection_reason
-from .judgement import Posture, PostureJudge, windows_are_stale
+from .judgement import MissCounter, Posture, PostureJudge, windows_are_stale
 from .smoothing import RollingAngle
 from .terminal import with_error
 from .uncertainty import lag1_autocorrelation, standard_error
@@ -265,6 +265,12 @@ def _replay_judgement(
     """
     judge = PostureJudge(margin_factor=margin)
     ca_window, sym_window = RollingAngle(window), RollingAngle(window)
+    # θ_KA 只有 CSV 真的記了扣基準之後的值才重播。舊檔沒有這一欄，或基準沒有這一項，
+    # 那一軸不開，重播結果與加這一項之前一樣。
+    ka_window = RollingAngle(window)
+    ka_misses = MissCounter()
+    if any(_number(r.get("theta_ka_corrected_deg", "")) is not None for r in rows):
+        judge.watch_trunk()
     counts: Counter = Counter()
     transitions = 0
     first_over = None
@@ -281,13 +287,21 @@ def _replay_judgement(
                 seen_any = True
             if sym is not None:
                 sym_window.add(sym)
+            ka = _number(row.get("theta_ka_corrected_deg", ""))
+            if ka is not None:
+                ka_window.add(ka)
         else:
             misses += 1
             if windows_are_stale(misses, window):
                 ca_window.clear()
                 sym_window.clear()
+                ka_window.clear()
 
-        *_, verdict = judge.update(ca_window, sym_window)
+        ka_present = (row.get("usable") == "1"
+                      and _number(row.get("theta_ka_corrected_deg", "")) is not None)
+        ka_misses.update(ka_window, ka_present)
+
+        *_, verdict = judge.update(ca_window, sym_window, None, ka_window)
         counts[verdict.posture.value] += 1
         if verdict.changed:
             transitions += 1
@@ -361,6 +375,9 @@ def analyse_session(
         ("θ_sym 原始", "theta_sym_deg"),
         ("θ_CA 扣基準", "theta_ca_corrected_deg"),
         ("θ_sym 扣基準", "theta_sym_corrected_deg"),
+        # 舊的記錄沒有 θ_KA 欄，_collect 給空陣列，那一列就不印。
+        ("θ_KA 原始", "theta_ka_deg"),
+        ("θ_KA 扣基準", "theta_ka_corrected_deg"),
     ):
         values = _collect(usable_rows, column)
         if values.size >= 2:

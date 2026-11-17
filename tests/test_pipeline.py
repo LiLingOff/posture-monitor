@@ -5,7 +5,7 @@
 import numpy as np
 import pytest
 
-from geometry.pipeline import (format_measurement, measure_posture,
+from geometry.pipeline import (format_measurement, measure_posture, unusable_reason,
                                plausibility_warnings)
 from geometry_synthetic import make_synthetic_stereo_calibration, project_point
 from pose.keypoints import PersonKeypoints
@@ -577,7 +577,8 @@ def test_falls_back_to_the_ear_that_is_actually_visible():
 
     assert m.theta_ca_deg is not None, "還有左耳可以用"
     assert m.theta_ca_side == "left"
-    assert not m.angle_errors
+    # 這組擺位沒有髖，θ_KA 的錯誤是預期的，要看的是另外兩個角度沒出錯。
+    assert not [e for e in m.angle_errors if not e.startswith("theta_ka")]
 
     # 跟兩耳都在時算出來的值一致。容許值留給三角測量的數值捨入，
     # 兩側在數學上完全等價，差的只是最後幾位。
@@ -814,3 +815,46 @@ def test_choosing_among_equally_bad_pairs_does_not_crash():
     far_b = _shift(right, dx=0.0, dy=-40.0)
     match = match_person_pair(_calib(), [left], [far_a, far_b])
     assert match.median_vertical_disparity_px == pytest.approx(40.0, abs=1.0)
+
+
+# ---- θ_KA ---------------------------------------------------------------
+
+def _pose_with_trunk(lean_deg: float = 12.0, hips=("left_hip", "right_hip")) -> dict:
+    """在坐姿上加髖。頸在雙髖中點上方 330mm，往前（-Z）傾 lean_deg。"""
+    pose = _seated_pose()
+    rad = np.radians(lean_deg)
+    hip_mid = pose["neck"] + 330.0 * np.array([0.0, np.cos(rad), np.sin(rad)])
+    if "left_hip" in hips:
+        pose["left_hip"] = hip_mid + np.array([90.0, 0.0, 0.0])
+    if "right_hip" in hips:
+        pose["right_hip"] = hip_mid + np.array([-90.0, 0.0, 0.0])
+    return pose
+
+
+def test_recovers_the_known_trunk_lean():
+    left, right = _project(_pose_with_trunk(12.0))
+    m = measure_posture(_calib(), left, right)
+    assert m.theta_ka_deg == pytest.approx(12.0, abs=0.5)
+    assert m.theta_ka_side == "both"
+    assert "θ_KA" in format_measurement(m, left, right)
+
+
+def test_hidden_hips_do_not_cost_the_other_angles_or_the_frame():
+    """髖被桌面擋住是常態。θ_KA 算不出來，θ_CA、θ_sym 與這一幀的可用性都不能受影響。"""
+    left, right = _project(_seated_pose())
+    m = measure_posture(_calib(), left, right)
+    assert m.theta_ka_deg is None
+    assert any("theta_ka" in e for e in m.angle_errors)
+    assert m.theta_ca_deg is not None and m.theta_sym_deg is not None
+    assert unusable_reason(m) is None
+
+
+def test_a_mispaired_hip_is_not_used_for_theta_ka():
+    left, right = _project(_pose_with_trunk(12.0))
+    shifted = right.points.copy()
+    shifted[COCO18_KEYPOINT_NAMES.index("left_hip"), 1] += 25.0
+    m = measure_posture(_calib(), left, PersonKeypoints(shifted, right.confidences))
+    assert m.theta_ka_deg is None
+    assert any("theta_ka" in e and "left_hip" in e for e in m.angle_errors)
+    # 髖不在 angle_keypoints 裡，所以另外兩個角度與可用性不受影響。
+    assert m.theta_ca_deg is not None and unusable_reason(m) is None

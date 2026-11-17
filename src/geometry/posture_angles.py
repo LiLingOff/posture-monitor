@@ -107,6 +107,44 @@ def theta_ca_on_available_side(
     raise ValueError("兩側都算不出來。" + "；".join(reasons))
 
 
+def theta_ka(keypoints_3d: PersonKeypoints3D) -> tuple[float, str]:
+    """軀幹前傾角（駝背角）：雙髖中點→頸的向量投影到矢狀面後，相對垂直軸的帶號夾角。
+
+    回傳（角度, 髖點來源），來源是 "both"、"left" 或 "right"。
+
+    定義是 2026-11-17 使用者指定的，前作沒有任何對應的公式。向量取
+    neck - 髖，方向不能反：取成髖→頸的相反方向，坐正時會是 180° 而非 0°。
+
+    正負號與 θ_CA 完全相同：頸在髖正上方是 0°，**上身往受試者自己的前方傾為正，
+    往後靠為負**。同一個矢狀面（anatomical_axes）、同一個參考軸，所以方位角
+    不影響正確性。
+
+    髖在坐姿常被桌面或衣服擋住。兩側都有就取中點；只有一側就用那一側，
+    不是退回 0。單側也成立：矢狀面的法向量是左右軸，投影時髖到中線的橫向偏移
+    會被消掉，只剩前後與上下。兩側都沒有就拋例外，理由與其他角度一樣：
+    0° 代表最理想的姿勢，偵測失效不能被讀成坐得很好。
+
+    這一項與肩部垂直位移不同：肩高量的是軀幹相對重力有沒有「沉下去」，
+    這裡量的是軀幹「傾斜」多少。兩者都會被前傾帶動，不是獨立的證據。
+    """
+    neck = keypoints_3d.get("neck")
+    if neck is None:
+        raise ValueError("neck未偵測到，無法計算theta_ka")
+    left = keypoints_3d.get("left_hip")
+    right = keypoints_3d.get("right_hip")
+    if left is not None and right is not None:
+        hip, source = (left + right) / 2.0, "both"
+    elif left is not None:
+        hip, source = left, "left"
+    elif right is not None:
+        hip, source = right, "right"
+    else:
+        raise ValueError("left_hip與right_hip都未偵測到，無法計算theta_ka")
+    lateral, _ = anatomical_axes(keypoints_3d)
+    angle = signed_angle_in_plane(neck - hip, _VERTICAL_AXIS, plane_normal=lateral)
+    return angle, source
+
+
 def theta_sym(keypoints_3d: PersonKeypoints3D) -> float:
     """肩膀水平角：左右肩連線投影到冠狀面後相對水平軸的帶號夾角。
 

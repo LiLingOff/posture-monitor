@@ -154,8 +154,11 @@ def study_summary_lines(segments, subject: str, log_paths) -> list[str]:
     for segment in segments:
         shown = ("—" if segment.theta_ca_deg is None
                  else f"{segment.theta_ca_deg:+.2f}°")
+        # θ_KA 只有基準記了這一項才有值；沒有就不印，不寫成 0 或破折號佔位。
+        ka = getattr(segment, "theta_ka_deg", None)
+        ka_text = "" if ka is None else f"θ_KA {ka:+.2f}°  "
         lines.append(f"  {segment.condition:12s} #{segment.trial}  "
-                     f"θ_CA {shown:>9s}  "
+                     f"θ_CA {shown:>9s}  {ka_text}"
                      f"可用 {segment.usable}/{segment.frames}"
                      f"（略過 {segment.rejection_rate * 100:.0f}%）"
                      f"{_segment_flags(segment)}")

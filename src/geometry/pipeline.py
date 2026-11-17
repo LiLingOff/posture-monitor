@@ -21,7 +21,7 @@ from pose.topology import COCO18_KEYPOINT_NAMES
 from .judgement import THETA_CA_THRESHOLD_DEG
 from .keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
 from .posture_angles import (anatomical_axes, theta_ca_on_available_side,
-                             theta_sym)
+                             theta_ka, theta_sym)
 from .terminal import cell as _cell
 from .triangulation import rectified_vertical_disparity, triangulate_points
 
@@ -72,6 +72,8 @@ class PostureMeasurement:
     shared_count: int
     theta_ca_deg: float | None = None
     theta_sym_deg: float | None = None
+    theta_ka_deg: float | None = None
+    theta_ka_side: str | None = None  # θ_KA 的髖點來源："both"、"left" 或 "right"
     theta_ca_precision_deg: float | None = None
     reference_depth_mm: float | None = None
     camera_azimuth_deg: float | None = None
@@ -126,6 +128,13 @@ def shoulder_height_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
     if left is None or right is None:
         return None
     return float(-(left[1] + right[1]) / 2.0)
+
+
+def _trunk_keypoints(source: str) -> tuple[str, ...]:
+    """θ_KA 實際用到的點：頸，加上它取到的那幾個髖。"""
+    hips = {"both": ("left_hip", "right_hip"), "left": ("left_hip",),
+            "right": ("right_hip",)}[source]
+    return ("neck",) + hips
 
 
 def reference_depth_mm(keypoints_3d: PersonKeypoints3D) -> float | None:
@@ -398,6 +407,19 @@ def measure_posture(
         measurement.theta_sym_deg = theta_sym(keypoints_3d)
     except (ValueError, KeyError) as exc:
         measurement.angle_errors.append(f"theta_sym: {exc}")
+    # θ_KA 用到的頸與髖**不在** angle_keypoints() 裡：髖常被桌面擋住，放進去的話
+    # θ_CA、θ_sym 會跟著整幀被略過。代價是這幾個點配錯時 unusable_reason 看不到，
+    # 所以在這裡自己擋，配錯的點不拿來算角度。
+    try:
+        ka, side = theta_ka(keypoints_3d)
+        worst = _worst_disparity(measurement, _trunk_keypoints(side))
+        if worst is not None and worst[1] > _MISPAIRED_DISPARITY_PX:
+            measurement.angle_errors.append(
+                f"theta_ka: {worst[0]} 的垂直視差 {worst[1]:.1f}px，左右配對錯了")
+        else:
+            measurement.theta_ka_deg, measurement.theta_ka_side = ka, side
+    except (ValueError, KeyError) as exc:
+        measurement.angle_errors.append(f"theta_ka: {exc}")
     return measurement
 
 
@@ -484,6 +506,14 @@ def format_measurement(
         + (f"   （用{side}耳朵與肩膀）" if side else "")
     )
     lines.append(_cell("θ_sym 肩膀水平", 17) + ("算不出來" if sym is None else f"{sym:+.2f}°"))
+    ka = measurement.theta_ka_deg
+    hips = {"both": "雙髖中點", "left": "左髖", "right": "右髖"}.get(
+        measurement.theta_ka_side or "", "")
+    lines.append(
+        _cell("θ_KA  軀幹前傾", 17)
+        + ("算不出來" if ka is None else f"{ka:+.2f}°")
+        + (f"   （用頸與{hips}）" if hips else "")
+    )
     for err in measurement.angle_errors:
         lines.append(f"  {err}")
 

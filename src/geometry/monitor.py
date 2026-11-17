@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .baseline import REJECTION_LIMIT, BaselineCollector, PostureBaseline
-from .judgement import Judgement, PostureJudge, windows_are_stale
+from .judgement import Judgement, MissCounter, PostureJudge, windows_are_stale
 from .pipeline import unusable_reason
 from .smoothing import RollingAngle
 from .terminal import with_error
@@ -62,9 +62,12 @@ class MonitorState:
         self.ca_window = RollingAngle(window)
         self.sym_window = RollingAngle(window)
         self.drop_window = RollingAngle(window)
+        self.ka_window = RollingAngle(window)
+        self._ka_misses = MissCounter()
         self._judge = PostureJudge(margin_factor=margin)
         self._judge.watch_shoulder_drop(
             None if baseline is None else baseline.shoulder_drop_threshold_mm)
+        self._judge.watch_trunk(None if baseline is None else baseline.trunk_threshold_deg)
         self._misses = 0
 
         self._collector: BaselineCollector | None = None
@@ -166,6 +169,7 @@ class MonitorState:
 
     def _monitor(self, measurement, corrected, reason) -> FrameResult:
         drop = self.shoulder_drop(measurement)
+        ka = self.trunk_offset(measurement)
         if reason is None:
             self._misses = 0
             if corrected[0] is not None:
@@ -174,6 +178,8 @@ class MonitorState:
                 self.sym_window.add(corrected[1])
             if drop is not None:
                 self.drop_window.add(drop)
+            if ka is not None:
+                self.ka_window.add(ka)
         else:
             self._misses += 1
             if windows_are_stale(self._misses, self.ca_window.window):
@@ -181,11 +187,15 @@ class MonitorState:
                 self.ca_window.clear()
                 self.sym_window.clear()
                 self.drop_window.clear()
+                self.ka_window.clear()
+
+        # 這一幀沒有 θ_KA（髖被擋、被略過、基準沒有這一項）就算一次缺值。
+        self._ka_misses.update(self.ka_window, reason is None and ka is not None)
 
         verdict = None
         if not self._no_judge:
             *_, verdict = self._judge.update(self.ca_window, self.sym_window,
-                                            self.drop_window)
+                                            self.drop_window, self.ka_window)
         return FrameResult(mode=self._mode, corrected=corrected, reason=reason,
                            verdict=verdict)
 
@@ -208,8 +218,11 @@ class MonitorState:
         self.ca_window.clear()
         self.sym_window.clear()
         self.drop_window.clear()
+        self.ka_window.clear()
+        self._ka_misses = MissCounter()
         self._judge = PostureJudge(margin_factor=self._margin)
         self._judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
+        self._judge.watch_trunk(baseline.trunk_threshold_deg)
         self._misses = 0
         self._mode = Mode.MONITORING
 
@@ -218,6 +231,12 @@ class MonitorState:
         if self._baseline is None:
             return None
         return self._baseline.shoulder_drop_mm(measurement.shoulder_height_mm)
+
+    def trunk_offset(self, measurement) -> float | None:
+        """θ_KA 相對端正坐姿的偏移。沒有基準或基準沒記 θ_KA 就不算。"""
+        if self._baseline is None:
+            return None
+        return self._baseline.correct_ka(measurement.theta_ka_deg)
 
     @property
     def drop_threshold_mm(self) -> float | None:

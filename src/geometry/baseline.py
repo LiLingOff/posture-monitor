@@ -38,6 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .judgement import THETA_KA_THRESHOLD_DEG
 from .pipeline import (precision_advice, rejection_advice,  # noqa: F401
                        sitting_too_far, unusable_reason)
 from .terminal import with_error
@@ -108,6 +109,25 @@ class PostureBaseline:
     # 所有既有的基準檔全部讀不進來，而那些檔案沒有任何地方能補回這兩個值。
     shoulder_height_mm: float | None = None
     shoulder_height_std_mm: float | None = None
+    # θ_KA（2026-11-17 補回）。同樣一定要有預設值。髖常被擋住，取基準的那段時間
+    # 收不到足夠的幀時這三欄就是 None，那份基準的 θ_KA 軸就不判。
+    theta_ka_deg: float | None = None
+    theta_ka_std_deg: float | None = None
+    theta_ka_standard_error_deg: float | None = None
+
+    @property
+    def trunk_threshold_deg(self) -> float | None:
+        """θ_KA 的判定門檻。基準沒有 θ_KA 就是 None，判定那一軸不開。"""
+        return None if self.theta_ka_deg is None else THETA_KA_THRESHOLD_DEG
+
+    def correct_ka(self, theta_ka: float | None) -> float | None:
+        """θ_KA 相對端正坐姿的偏移。基準沒有這一項或這一幀量不到就是 None。
+
+        與 `correct()` 分開寫，是因為後者的二元組回傳有大量呼叫點。
+        """
+        if self.theta_ka_deg is None or theta_ka is None:
+            return None
+        return theta_ka - self.theta_ka_deg
 
     @property
     def shoulder_drop_threshold_mm(self) -> float | None:
@@ -182,6 +202,11 @@ class PostureBaseline:
                f"晃動 ±{self.shoulder_height_std_mm or 0:.0f} mm，"
                f"駝背門檻 {self.shoulder_drop_threshold_mm:.0f} mm"
                f"（絕對值是相機座標，只有相對變化有意義）")
+            + ("" if self.theta_ka_deg is None else
+               f"\n  θ_KA  基準 "
+               f"{with_error(self.theta_ka_deg, self.theta_ka_standard_error_deg or 0.0)}"
+               f"（單幀標準差 ±{self.theta_ka_std_deg or 0:.1f}°，"
+               f"門檻 ±{THETA_KA_THRESHOLD_DEG:.0f}° 是設計值）")
         )
 
 
@@ -283,6 +308,7 @@ class BaselineCollector:
         self._distance: list[float] = []
         self._azimuth: list[float] = []
         self._height: list[float] = []
+        self._ka: list[float] = []
         self._precision: list[float] = []
         self._reasons: Counter[str] = Counter()
         self._reason_examples: dict[str, str] = {}
@@ -317,6 +343,9 @@ class BaselineCollector:
         # 只會讓這份基準的肩高欄位留白，之後駝背那一項就不判。
         if measurement.shoulder_height_mm is not None:
             self._height.append(measurement.shoulder_height_mm)
+        # θ_KA 同理：量不到的幀不收，也不讓這一幀被略過，只是這份基準那一軸可能留白。
+        if getattr(measurement, "theta_ka_deg", None) is not None:
+            self._ka.append(measurement.theta_ka_deg)
         if measurement.theta_ca_precision_deg is not None:
             self._precision.append(measurement.theta_ca_precision_deg)
         return None
@@ -358,7 +387,16 @@ class BaselineCollector:
                                 if self._height else None),
             shoulder_height_std_mm=(float(np.std(self._height))
                                     if len(self._height) > 1 else None),
+            **self._trunk_fields(),
         )
+
+    def _trunk_fields(self) -> dict:
+        """θ_KA 的三個欄位。幀數沒到下限就全部留 None，不拿幾幀的平均當零點。"""
+        if len(self._ka) < self._minimum:
+            return {}
+        ka = np.asarray(self._ka)
+        return dict(theta_ka_deg=float(ka.mean()), theta_ka_std_deg=float(ka.std()),
+                    theta_ka_standard_error_deg=float(standard_error(ka)))
 
     def _diagnose(self) -> str:
         """把略過的原因整理成一句能往下查的話，而不是一句通用的提醒。"""

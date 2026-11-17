@@ -14,7 +14,8 @@ USED = ("left_shoulder", "right_shoulder", "left_ear", "right_ear", "neck",
 
 
 def measurement(theta_ca: float = 5.0, theta_sym: float = 1.0, usable: bool = True,
-                shoulder_height_mm: float | None = -120.0) -> PostureMeasurement:
+                shoulder_height_mm: float | None = -120.0,
+                theta_ka: float | None = None) -> PostureMeasurement:
     """一幀量測。usable=False 會踩到深度的合理範圍檢查而被略過。"""
     points = np.full((NUM_KEYPOINTS, 3), np.nan)
     disparity = np.full(NUM_KEYPOINTS, np.nan)
@@ -31,6 +32,7 @@ def measurement(theta_ca: float = 5.0, theta_sym: float = 1.0, usable: bool = Tr
         camera_azimuth_deg=20.0,
         shoulder_height_mm=shoulder_height_mm,
         theta_ca_side="right",
+        theta_ka_deg=theta_ka, theta_ka_side=None if theta_ka is None else "both",
         edge_keypoints=[], angle_errors=[],
     )
 

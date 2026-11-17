@@ -43,17 +43,26 @@ class Session:
     def __init__(self):
         self.ca: list[float] = []
         self.sym: list[float] = []
+        self.ka: list[float] = []
 
-    def add(self, corrected) -> None:
+    def add(self, corrected, ka: float | None = None) -> None:
         if corrected[0] is not None:
             self.ca.append(corrected[0])
         if corrected[1] is not None:
             self.sym.append(corrected[1])
+        # θ_KA 量不到不影響這一幀算不算數，只是這一項少一筆。
+        if ka is not None:
+            self.ka.append(ka)
 
     @property
     def mean_ca(self) -> float | None:
         """整段的 θ_CA 平均。沒有資料時回傳 None 而不是 0，0 是合法的角度。"""
         return float(np.mean(self.ca)) if self.ca else None
+
+    @property
+    def mean_ka(self) -> float | None:
+        """整段的 θ_KA（扣基準）平均。沒有資料或基準沒有這一項時是 None。"""
+        return float(np.mean(self.ka)) if self.ka else None
 
 
 @dataclass

@@ -198,7 +198,7 @@ def test_the_reason_is_written_in_millimetres():
     judge = PostureJudge()
     judge.watch_shoulder_drop(10.0)
     ca, sym = _full(RollingAngle(4), 1.0), _full(RollingAngle(4), 0.5)
-    _, _, drop, _ = judge.update(ca, sym, _full(RollingAngle(4), 40.0))
+    _, _, drop, *_ = judge.update(ca, sym, _full(RollingAngle(4), 40.0))
     assert "mm" in drop.reason
     assert "°" not in drop.reason
 
@@ -207,6 +207,6 @@ def test_the_axis_is_inert_when_it_was_never_switched_on():
     """既有的記錄重播出來要與加這一項之前完全一樣。"""
     judge = PostureJudge()
     ca, sym = _full(RollingAngle(4), 1.0), _full(RollingAngle(4), 0.5)
-    _, _, drop, combined = judge.update(ca, sym, _full(RollingAngle(4), 999.0))
+    _, _, drop, *_, combined = judge.update(ca, sym, _full(RollingAngle(4), 999.0))
     assert drop is None
     assert combined.posture is Posture.OK

@@ -58,6 +58,11 @@ _COLUMNS = (
     "dy_right_shoulder_px",
     "dy_left_shoulder_px",
     "dy_left_ear_px",
+    # θ_KA（2026-11-17 補回）。同樣加在最後面；舊檔沒有這四欄，讀的人要容許缺。
+    "theta_ka_deg",                 # 原始角度
+    "theta_ka_corrected_deg",       # 扣掉個人基準之後（基準沒有 θ_KA 時留空）
+    "theta_ka_mean_deg",            # 當下的移動平均，判定看的是這個
+    "theta_ka_side",                # 髖點來源：both／left／right
 )
 
 _SIGNED_DY_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
@@ -100,6 +105,9 @@ def metadata_lines(
             f"# baseline_captured_at={baseline.captured_at}",
             f"# baseline_frames={baseline.frames}",
         ])
+        # 舊基準沒有這一項。空的整列不寫，日後才分得出「沒記」與「記了空值」。
+        if getattr(baseline, "theta_ka_deg", None) is not None:
+            lines.append(f"# baseline_theta_ka_deg={baseline.theta_ka_deg:.3f}")
     if display:
         # 開視窗會拉低每秒幀數，而視窗長度、遲滯寬度與標準誤差都是按幀數算的。
         # 事後要查得到哪幾段是開著視窗量的。
@@ -161,6 +169,8 @@ class MeasurementLog:
         shoulder_height_mm: float | None = None,
         shoulder_drop_mm: float | None = None,
         shoulder_drop_mean_mm: float | None = None,
+        theta_ka_corrected: float | None = None,
+        theta_ka_mean: float | None = None,
     ) -> None:
         self._frame += 1
         worst = None
@@ -192,6 +202,10 @@ class MeasurementLog:
             _number(shoulder_drop_mean_mm, 1),
             posture,
             *self._signed_dy(measurement),
+            _number(None if measurement is None else measurement.theta_ka_deg),
+            _number(theta_ka_corrected),
+            _number(theta_ka_mean),
+            "" if measurement is None else (measurement.theta_ka_side or ""),
         ])
         self._file.flush()
 

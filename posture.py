@@ -39,7 +39,7 @@ from geometry.baseline import (BaselineCollector,  # noqa: E402
 from geometry.cohort import Separation, collect  # noqa: E402
 from geometry.cohort_report import (session_rows, to_csv,  # noqa: E402
                                     to_text)
-from geometry.judgement import Posture, PostureJudge  # noqa: E402
+from geometry.judgement import MissCounter, Posture, PostureJudge  # noqa: E402
 from geometry.measurement_log import MeasurementLog  # noqa: E402
 from geometry.monitor import MonitorState  # noqa: E402
 from geometry.pipeline import (PersonMatch,  # noqa: E402
@@ -358,6 +358,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     ca_window = RollingAngle(args.window)
     sym_window = RollingAngle(args.window)
     drop_window = RollingAngle(args.window)
+    ka_window = RollingAngle(args.window)
+    ka_misses = MissCounter()
     rejected = 0
     frames_seen = 0
     consecutive_misses = 0
@@ -388,7 +390,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 rejected += 1
                 consecutive_misses += 1
                 forget_if_stale(ca_window, sym_window, consecutive_misses,
-                                drop_window)
+                                drop_window, ka_window)
                 _tell(stuck.saw(str(exc)))
                 # waitKey 是視窗處理事件與重繪的地方。相機掉線時這條路要走
                 # 兩秒半，不打點的話畫面會凍住而且按鍵沒反應。
@@ -401,9 +403,10 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
             reason = unusable_reason(measurement)
             corrected = _corrected(baseline, measurement)
             drop = _shoulder_drop(baseline, measurement)
+            ka = None if baseline is None else baseline.correct_ka(measurement.theta_ka_deg)
             if reason is None:
                 consecutive_misses = 0
-                session.add(corrected)
+                session.add(corrected, ka)
                 if measurement.camera_azimuth_deg is not None:
                     azimuths.append(measurement.camera_azimuth_deg)
                 if corrected[0] is not None:
@@ -412,21 +415,26 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                     sym_window.add(corrected[1])
                 if drop is not None:
                     drop_window.add(drop)
+                if ka is not None:
+                    ka_window.add(ka)
             else:
                 # 壞掉的幀混進平均比印出來更糟，所以先擋掉再計數。
                 rejected += 1
                 consecutive_misses += 1
                 forget_if_stale(ca_window, sym_window, consecutive_misses,
-                                drop_window)
+                                drop_window, ka_window)
                 if args.save_frames and not saved_a_rejected_frame:
                     _save_frames(*frames, args.save_frames, match.left, match.right)
                     saved_a_rejected_frame = True
 
             _tell(stuck.saw(reason))
 
+            # θ_KA 常因髖被擋而沒有值，那一幀仍算數，要自己數缺值才清得掉舊平均。
+            ka_misses.update(ka_window, reason is None and ka is not None)
+
             verdict = None
             if judge is not None:
-                *_, verdict = judge.update(ca_window, sym_window, drop_window)
+                *_, verdict = judge.update(ca_window, sym_window, drop_window, ka_window)
                 if verdict.changed:
                     line = f"{_elapsed(started_at)}  {verdict.posture.value}：{verdict.reason}"
                     transitions.append(line)
@@ -453,6 +461,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 corrected=corrected, ca_window=ca_window, sym_window=sym_window,
                 drop=drop, drop_mean=drop_window.mean, verdict=verdict,
                 elapsed_s=time.perf_counter() - started_at,
+                ka=ka, ka_mean=ka_window.mean,
             )
     except KeyboardInterrupt:
         pass
@@ -471,7 +480,8 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
 
 def _write_frame_row(log, snapshots, measurement, match, frames, *,
                      reason, corrected, ca_window, sym_window,
-                     drop, drop_mean, verdict, elapsed_s) -> None:
+                     drop, drop_mean, verdict, elapsed_s,
+                     ka=None, ka_mean=None) -> None:
     """把這一幀寫進 CSV，時間到了順便存一張畫面。
 
     錄製與 monitor 兩個迴圈共用。先前各寫一份，於是每加一個 CSV 欄位就要記得
@@ -485,6 +495,7 @@ def _write_frame_row(log, snapshots, measurement, match, frames, *,
             ca_standard_error=ca_window.standard_error, posture=posture,
             shoulder_height_mm=measurement.shoulder_height_mm,
             shoulder_drop_mm=drop, shoulder_drop_mean_mm=drop_mean,
+            theta_ka_corrected=ka, theta_ka_mean=ka_mean,
         )
     snapshots.maybe_save(
         0 if log is None else log.frames_written, elapsed_s,
@@ -611,6 +622,7 @@ def _run_monitor(args) -> None:
                 drop=state.shoulder_drop(measurement),
                 drop_mean=state.drop_window.mean, verdict=result.verdict,
                 elapsed_s=time.perf_counter() - started_at,
+                ka=state.trunk_offset(measurement), ka_mean=state.ka_window.mean,
             )
     except KeyboardInterrupt:
         pass
@@ -1043,8 +1055,11 @@ def _make_judge(args, baseline: PostureBaseline | None) -> PostureJudge | None:
         return None
     judge = PostureJudge(margin_factor=args.margin)
     judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
+    judge.watch_trunk(baseline.trunk_threshold_deg)
     extra = ("" if judge.shoulder_drop is None else
              f"、肩部垂直位移 {judge.shoulder_drop.threshold_deg:.0f}mm")
+    if judge.trunk is not None:
+        extra += f"、θ_KA {judge.trunk.threshold_deg:.0f}°（設計值，前傾後仰都算）"
     print(f"判定門檻 θ_CA {judge.theta_ca.threshold_deg:.0f}°（前傾後仰都算）、"
           f"θ_sym {judge.theta_sym.threshold_deg:.0f}°（左右都算）{extra}，"
           f"遲滯寬度 {args.margin:.1f} 倍標準誤差", flush=True)

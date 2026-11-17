@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from geometry.keypoints3d import PersonKeypoints3D
-from geometry.posture_angles import theta_ca, theta_sym
+from geometry.posture_angles import theta_ca, theta_ka, theta_sym
 from pose.topology import NUM_KEYPOINTS, keypoint_index
 
 
@@ -217,3 +217,97 @@ def test_falls_back_to_the_camera_axes_when_a_shoulder_is_missing():
         "right_ear": shoulder + np.array([0.0, -fall, -lean]),
     })
     assert theta_ca(kp) == pytest.approx(15.0, abs=1e-6)
+
+
+# ---- θ_KA（軀幹前傾角）--------------------------------------------------
+
+def _trunk_pose(lean_deg: float, hips: tuple[str, ...] = ("left_hip", "right_hip"),
+                sideways_mm: float = 0.0, trunk_mm: float = 350.0) -> PersonKeypoints3D:
+    """受試者面向相機，雙肩在 x=±90。頸在髖中點上方 trunk_mm，往前（-Z）傾 lean_deg。"""
+    hip_mid = np.array([0.0, 350.0, 600.0])
+    rad = np.radians(lean_deg)
+    neck = hip_mid + trunk_mm * np.array([0.0, -np.cos(rad), -np.sin(rad)])
+    neck = neck + np.array([sideways_mm, 0.0, 0.0])
+    points = {
+        "right_shoulder": neck + np.array([-90.0, 0.0, 0.0]),
+        "left_shoulder": neck + np.array([90.0, 0.0, 0.0]),
+        "neck": neck,
+    }
+    if "left_hip" in hips:
+        points["left_hip"] = hip_mid + np.array([90.0, 0.0, 0.0])
+    if "right_hip" in hips:
+        points["right_hip"] = hip_mid + np.array([-90.0, 0.0, 0.0])
+    return _make_keypoints3d(points)
+
+
+def test_theta_ka_zero_when_neck_is_directly_above_the_hips():
+    angle, source = theta_ka(_trunk_pose(0.0))
+    assert angle == pytest.approx(0.0, abs=1e-6)
+    assert source == "both"
+
+
+def test_theta_ka_known_lean_and_sign():
+    """上身往前傾為正、往後靠為負，與 θ_CA 同一個慣例。
+
+    正負號搞反的話判定整個顛倒，而數值大小完全一樣。
+    """
+    assert theta_ka(_trunk_pose(20.0))[0] == pytest.approx(20.0, abs=1e-6)
+    assert theta_ka(_trunk_pose(-20.0))[0] == pytest.approx(-20.0, abs=1e-6)
+
+
+def test_theta_ka_has_the_same_sign_as_theta_ca_for_the_same_forward_direction():
+    """頭與軀幹往同一個方向傾，兩個角度要同號。"""
+    pose = _trunk_pose(15.0)
+    shoulder = pose.get("right_shoulder")
+    points = pose.points.copy()
+    points[keypoint_index("right_ear")] = shoulder + 120.0 * np.array(
+        [0.0, -np.cos(np.radians(15.0)), -np.sin(np.radians(15.0))])
+    both = PersonKeypoints3D(points=points)
+    assert theta_ca(both) > 0 and theta_ka(both)[0] > 0
+
+
+def test_theta_ka_is_unchanged_when_the_camera_moves_around_the_subject():
+    base = _trunk_pose(12.0)
+    reference = theta_ka(base)[0]
+    for azimuth in (-60.0, -30.0, 15.0, 45.0, 80.0):
+        assert theta_ka(_rotate_about_vertical(base, azimuth))[0] == pytest.approx(
+            reference, abs=1e-6), f"方位角 {azimuth}"
+
+
+def test_theta_ka_ignores_a_sideways_lean():
+    """往旁邊歪（冠狀面）不是前傾，投影到矢狀面之後要被消掉。"""
+    assert theta_ka(_trunk_pose(0.0, sideways_mm=80.0))[0] == pytest.approx(0.0, abs=1e-6)
+    assert theta_ka(_trunk_pose(10.0, sideways_mm=80.0))[0] == pytest.approx(10.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("hips,expected", [(("left_hip",), "left"), (("right_hip",), "right")])
+def test_theta_ka_uses_the_single_visible_hip(hips, expected):
+    angle, source = theta_ka(_trunk_pose(18.0, hips=hips))
+    assert source == expected
+    assert angle == pytest.approx(18.0, abs=1e-6)
+
+
+def test_theta_ka_raises_when_both_hips_are_missing():
+    with pytest.raises(ValueError):
+        theta_ka(_trunk_pose(0.0, hips=()))
+
+
+def test_theta_ka_raises_when_neck_is_missing():
+    pose = _trunk_pose(0.0)
+    pose.points[keypoint_index("neck")] = np.nan
+    with pytest.raises(ValueError):
+        theta_ka(pose)
+
+
+def test_theta_ka_raises_when_neck_and_hip_coincide():
+    """退化資料不能回傳 0°，那會把故障讀成完美坐姿。"""
+    same = np.array([0.0, 0.0, 600.0])
+    kp = _make_keypoints3d({"neck": same, "left_hip": same.copy(), "right_hip": same.copy()})
+    with pytest.raises(ValueError):
+        theta_ka(kp)
+
+
+def test_theta_ka_falls_back_to_the_camera_axes_when_a_shoulder_is_missing():
+    pose = _trunk_pose(15.0)
+    pose.points[keypoint_index("left_shoulder")] = np.nan
+    assert theta_ka(pose)[0] == pytest.approx(15.0, abs=1e-6)
