@@ -34,6 +34,7 @@ k 是信賴邊界。放大會減少誤報但反應變慢、不動作的區間變
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -162,7 +163,9 @@ class AngleJudge:
         ready 是「視窗夠不夠」。還沒填滿時算出來的平均降噪不足，這時候判定
         等於拿一個比宣稱更吵的數字去比門檻。
         """
-        if mean_deg is None:
+        # nan 與任何數字比大小都是 False，會落進「在誤差內維持原狀」而沿用上一個
+        # 判定；inf 則會直接判成超標。兩種都是壞資料，要當成沒有量測。
+        if mean_deg is None or not math.isfinite(mean_deg):
             return self._settle(Posture.UNKNOWN, "沒有可用的量測")
         if not ready:
             return self._settle(Posture.UNKNOWN, "移動平均的視窗還沒填滿")

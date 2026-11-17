@@ -212,3 +212,10 @@ def test_the_threshold_has_one_home():
     from geometry import pipeline
     from geometry.judgement import THETA_CA_THRESHOLD_DEG
     assert pipeline.THETA_CA_THRESHOLD_DEG is THETA_CA_THRESHOLD_DEG
+
+
+def test_a_non_finite_mean_is_unknown_not_the_previous_state():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        judge = _judge()
+        assert judge.update(0.0, 1.0).posture is Posture.OK
+        assert judge.update(bad, 1.0).posture is Posture.UNKNOWN
