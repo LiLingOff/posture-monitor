@@ -157,3 +157,27 @@ def test_refuses_to_overwrite_an_existing_session(tmp_path):
     with MeasurementLog(path, overwrite=True) as log:
         log.write(_measurement())
     assert len(_rows(path)) == 1
+
+
+def test_records_signed_vertical_disparity_of_the_four_angle_points(tmp_path):
+    """最差一點的絕對值分不出固定偏移與雜訊，所以四個角度點各記一欄帶正負號的 dy。"""
+    path = tmp_path / "s.csv"
+    m = _measurement()
+    with MeasurementLog(path) as log:
+        log.write(m)
+
+    row = _rows(path)[0]
+    for name in ("right_ear", "right_shoulder", "left_shoulder", "left_ear"):
+        expected = m.vertical_disparity_px[COCO18_KEYPOINT_NAMES.index(name)]
+        assert float(row[f"dy_{name}_px"]) == pytest.approx(round(float(expected), 2))
+
+
+def test_signed_vertical_disparity_is_blank_not_zero_when_missing(tmp_path):
+    """沒量到的點寫空字串。0 是合法的 dy，混進去會把缺資料看成完美對齊。"""
+    path = tmp_path / "s.csv"
+    with MeasurementLog(path) as log:
+        log.write(None, reject_reason="沒偵測到人")
+
+    row = _rows(path)[0]
+    assert [row[f"dy_{n}_px"] for n in
+            ("right_ear", "right_shoulder", "left_shoulder", "left_ear")] == [""] * 4

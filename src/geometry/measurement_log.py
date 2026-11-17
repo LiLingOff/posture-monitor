@@ -24,6 +24,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
+from pose.topology import COCO18_KEYPOINT_NAMES
+
 _COLUMNS = (
     "frame",            # 從1開始的序號，含被略過的幀
     "elapsed_s",        # 從開始記錄起算的秒數
@@ -46,7 +50,17 @@ _COLUMNS = (
     "shoulder_drop_mm",                 # 比端正坐姿低了多少，往下為正
     "shoulder_drop_mean_mm",            # 當下的移動平均，駝背判定看的是這個
     "posture",                          # 當下的判定：正常／超標／未知
+    # 角度用到的四個點各自的垂直視差，**帶正負號**。上面兩欄只留最差一點的絕對值，
+    # 分不出「整體有一個固定偏移（標定殘餘）」與「各點各自亂跳（關鍵點雜訊或被頭髮、
+    # 身體擋住）」：偏移會讓同一個點的 dy 長期同號，雜訊則正負都有。
+    # 加在最後面，既有的程式與讀 CSV 的人不用改欄位位置；舊檔沒有這四欄，讀的人要容許缺。
+    "dy_right_ear_px",
+    "dy_right_shoulder_px",
+    "dy_left_shoulder_px",
+    "dy_left_ear_px",
 )
+
+_SIGNED_DY_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
 
 
 def _number(value, digits: int = 3):
@@ -177,8 +191,20 @@ class MeasurementLog:
             _number(shoulder_drop_mm, 1),
             _number(shoulder_drop_mean_mm, 1),
             posture,
+            *self._signed_dy(measurement),
         ])
         self._file.flush()
+
+    @staticmethod
+    def _signed_dy(measurement) -> list:
+        """四個角度點各自的垂直視差，帶正負號。沒有左右對應的點寫空字串，不寫 0。"""
+        if measurement is None:
+            return [""] * len(_SIGNED_DY_KEYPOINTS)
+        out = []
+        for name in _SIGNED_DY_KEYPOINTS:
+            d = measurement.vertical_disparity_px[COCO18_KEYPOINT_NAMES.index(name)]
+            out.append(_number(float(d), 2) if np.isfinite(d) else "")
+        return out
 
     def close(self) -> None:
         if not self._file.closed:
