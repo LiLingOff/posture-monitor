@@ -48,6 +48,12 @@ def _angles(summary: SessionSummary) -> list[str]:
         cell("角度", 16) + cell("平均", 20) + cell("單幀標準差", 14) + "範圍",
     ]
     for name, angle in summary.angles.items():
+        if angle.is_sparse:
+            lines.append(cell(name, 16)
+                         + f"資料不足，只有 {angle.count} / {angle.of_frames} 幀有值，不報平均"
+                         + f"（原始值 {'、'.join(f'{v:+.1f}' for v in angle.values[:5])}"
+                         + ("…" if angle.count > 5 else "") + "）")
+            continue
         error = angle.standard_error
         shown = with_error(angle.mean, error)
         lines.append(

@@ -370,3 +370,45 @@ def test_frames_with_no_azimuth_are_accounted_for(tmp_path):
     text = format_session(analyse_session(_write(tmp_path, rows)))
     assert "另有 25 幀量不到方位角" in text
     assert "整段的略過率是 24%" in text
+
+
+_KA_HEADER = _HEADER + ",theta_ka_deg"
+
+
+def _ka_session(tmp_path, total, with_value):
+    """total 幀都可用，前 with_value 幀有 θ_KA，其餘留空（髖被擋住）。"""
+    rows = [_usable_row(i + 1, 8.0, extra=f",{20.0 + i % 3}" if i < with_value else ",")
+            for i in range(total)]
+    return _write(tmp_path, rows, header=_KA_HEADER)
+
+
+def test_theta_ka_with_almost_no_values_is_reported_as_insufficient(tmp_path):
+    """實機 a411348：446 幀只有 2 幀量到 θ_KA，不能拿 2 筆印成平均與標準差。"""
+    summary = analyse_session(_ka_session(tmp_path, total=400, with_value=2))
+    ka = summary.angles["θ_KA 原始"]
+    assert ka.is_sparse
+    assert (ka.count, ka.of_frames) == (2, 400)
+    text = format_session(summary)
+    assert "資料不足，只有 2 / 400 幀有值" in text
+    ka_line = next(l for l in text.splitlines() if l.startswith("θ_KA"))
+    assert "±" not in ka_line.split("不報平均")[0]
+
+
+def test_theta_ka_with_enough_values_is_still_averaged(tmp_path):
+    summary = analyse_session(_ka_session(tmp_path, total=100, with_value=60))
+    ka = summary.angles["θ_KA 原始"]
+    assert not ka.is_sparse
+    assert "資料不足" not in format_session(summary)
+
+
+def test_the_sparse_floor_is_the_larger_of_frames_and_share(tmp_path):
+    """3000 幀時 10% 是 300，高於 30 幀的下限；200 幀有值也算不足。"""
+    assert analyse_session(_ka_session(tmp_path, 3000, 200)).angles["θ_KA 原始"].is_sparse
+    assert not analyse_session(
+        _ka_session(tmp_path, 3000, 400)).angles["θ_KA 原始"].is_sparse
+
+
+def test_other_angles_are_never_marked_sparse(tmp_path):
+    summary = analyse_session(_ka_session(tmp_path, total=400, with_value=2))
+    assert not summary.angles["θ_CA 原始"].is_sparse
+    assert not AngleSummary("x", np.array([1.0, 2.0])).is_sparse

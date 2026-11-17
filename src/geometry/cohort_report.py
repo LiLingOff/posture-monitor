@@ -88,7 +88,7 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "theta_ca_single_frame_std_deg":
                 None if corrected is None else corrected.single_frame_std,
             "theta_sym_deg": None if sym is None else sym.mean,
-            "theta_ka_deg": None if ka is None else ka.mean,
+            "theta_ka_deg": None if ka is None or ka.is_sparse else ka.mean,
             "distance_mm": _column(summary, "距離 mm"),
             "azimuth_deg": _column(summary, "方位角 °"),
             "over_share": over,

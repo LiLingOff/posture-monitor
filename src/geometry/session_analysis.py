@@ -65,12 +65,26 @@ class Column:
         return float(self.values.std())
 
 
+# 有值的幀數低於這兩個下限（取大者）就當資料不足，不報平均與標準差。
+_MIN_SPARSE_FRAMES = 30
+_MIN_SPARSE_SHARE = 0.10
+
+
 @dataclass(frozen=True)
 class AngleSummary:
     """一個角度在整段量測裡的統計。"""
 
     name: str
     values: np.ndarray
+    # 這個角度「應該有值」的幀數（可用幀）。None 表示不檢查稀疏。
+    # θ_KA 要靠髖，髖被桌面擋住時 99% 的幀都沒有值，剩下幾筆的平均沒有意義。
+    of_frames: int | None = None
+
+    @property
+    def is_sparse(self) -> bool:
+        if self.of_frames is None:
+            return False
+        return self.count < max(_MIN_SPARSE_FRAMES, _MIN_SPARSE_SHARE * self.of_frames)
 
     @property
     def count(self) -> int:
@@ -381,7 +395,8 @@ def analyse_session(
     ):
         values = _collect(usable_rows, column)
         if values.size >= 2:
-            summary.angles[label] = AngleSummary(label, values)
+            of = summary.usable if label.startswith("θ_KA") else None
+            summary.angles[label] = AngleSummary(label, values, of_frames=of)
 
     summary.has_baseline = _used_a_baseline(summary, meta)
 
