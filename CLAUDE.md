@@ -18,7 +18,8 @@
 
 - 訊息用繁體中文，寫清楚為什麼改，不只寫改了什麼
 - **不要加 `Co-Authored-By`**，這是使用者明確要求的
-- 只在使用者要求時才 commit 或 push
+- commit 與 push 都可以自己做，不必先問（使用者 2026-11-17 授權）
+- 這台實機沒有 GitHub 帳密，push 要從使用者本機的 clone `git fetch` 這台的 commit、確認可 fast-forward 後再 push
 
 ## 動手之前
 
