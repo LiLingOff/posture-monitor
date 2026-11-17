@@ -63,9 +63,17 @@ _COLUMNS = (
     "theta_ka_corrected_deg",       # 扣掉個人基準之後（基準沒有 θ_KA 時留空）
     "theta_ka_mean_deg",            # 當下的移動平均，判定看的是這個
     "theta_ka_side",                # 髖點來源：both／left／right
+    # θ_KA 為什麼量不到。2026-11-17 第一批實機資料裡有值的可用幀只佔 0～15%，
+    # 而 CSV 沒記頸與髖的狀態，分不出是沒偵測到、垂直視差被擋還是別的原因。
+    # dy 空白 = 左右眼至少有一眼沒有這個點；有值但絕對值 > 8px = 被當成配對錯誤。
+    "dy_neck_px",
+    "dy_left_hip_px",
+    "dy_right_hip_px",
+    "theta_ka_reason",              # θ_KA 留空的原因；有值時空白
 )
 
 _SIGNED_DY_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
+_TRUNK_DY_KEYPOINTS = ("neck", "left_hip", "right_hip")
 
 
 def _number(value, digits: int = 3):
@@ -210,16 +218,28 @@ class MeasurementLog:
             _number(theta_ka_corrected),
             _number(theta_ka_mean),
             "" if measurement is None else (measurement.theta_ka_side or ""),
+            *self._signed_dy(measurement, _TRUNK_DY_KEYPOINTS),
+            self._trunk_reason(measurement),
         ])
         self._file.flush()
 
     @staticmethod
-    def _signed_dy(measurement) -> list:
-        """四個角度點各自的垂直視差，帶正負號。沒有左右對應的點寫空字串，不寫 0。"""
+    def _trunk_reason(measurement) -> str:
+        """θ_KA 量不到的原因。量得到或這一幀根本沒有量測就是空字串。"""
+        if measurement is None or measurement.theta_ka_deg is not None:
+            return ""
+        for error in measurement.angle_errors:
+            if error.startswith("theta_ka:"):
+                return error[len("theta_ka:"):].strip()
+        return ""
+
+    @staticmethod
+    def _signed_dy(measurement, names=_SIGNED_DY_KEYPOINTS) -> list:
+        """指定幾個點各自的垂直視差，帶正負號。沒有左右對應的點寫空字串，不寫 0。"""
         if measurement is None:
-            return [""] * len(_SIGNED_DY_KEYPOINTS)
+            return [""] * len(names)
         out = []
-        for name in _SIGNED_DY_KEYPOINTS:
+        for name in names:
             d = measurement.vertical_disparity_px[COCO18_KEYPOINT_NAMES.index(name)]
             out.append(_number(float(d), 2) if np.isfinite(d) else "")
         return out

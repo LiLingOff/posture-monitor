@@ -183,9 +183,30 @@ def test_new_columns_come_after_the_old_ones(tmp_path):
     with MeasurementLog(path) as log:
         log.write(measurement())
     ordered = list(_rows(path)[0].keys())
-    assert ordered[-4:] == ["theta_ka_deg", "theta_ka_corrected_deg",
-                            "theta_ka_mean_deg", "theta_ka_side"]
-    assert ordered.index("dy_left_ear_px") == len(ordered) - 5
+    assert ordered[-8:] == ["theta_ka_deg", "theta_ka_corrected_deg",
+                            "theta_ka_mean_deg", "theta_ka_side",
+                            "dy_neck_px", "dy_left_hip_px", "dy_right_hip_px",
+                            "theta_ka_reason"]
+    assert ordered.index("dy_left_ear_px") == len(ordered) - 9
+
+
+def test_the_log_says_why_theta_ka_is_missing(tmp_path):
+    """第一批實機資料有值的幀只佔 0～15%，要分得出是沒偵測到還是視差被擋。"""
+    path = tmp_path / "s.csv"
+    missing = measurement(theta_ka=None)
+    missing.angle_errors.append("theta_ka: left_hip與right_hip都未偵測到，無法計算theta_ka")
+    with MeasurementLog(path) as log:
+        log.write(missing)
+        log.write(measurement(theta_ka=5.0))
+        log.write(None, reject_reason="沒有偵測到人")
+    gone, fine, nothing = _rows(path)
+    assert "都未偵測到" in gone["theta_ka_reason"]
+    assert fine["theta_ka_reason"] == ""
+    assert nothing["theta_ka_reason"] == ""
+    # 假量測有頸沒有髖：頸有帶正負號的視差，髖是空字串，不是 0。
+    assert float(gone["dy_neck_px"]) == 0.5
+    assert gone["dy_left_hip_px"] == "" and gone["dy_right_hip_px"] == ""
+    assert nothing["dy_neck_px"] == ""
 
 
 # ---- analyse 與 cohort --------------------------------------------------
