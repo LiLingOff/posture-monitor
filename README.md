@@ -1,15 +1,42 @@
 # posture-monitor
 
-高中科展「基於雙目對極幾何之即時三維坐姿監測系統」的程式部分。用一組雙目模組拍攝坐姿，完成相機標定後把左右兩眼看到的關鍵點還原成真實3D座標，再計算頸椎前傾角與肩膀水平角。前作的正面相機已決定不接，理由見「相機擺哪裡」一節。
+高中科展「基於雙目對極幾何之即時三維坐姿監測系統」的程式部分。用一組雙目模組拍攝坐姿，完成相機標定後把左右兩眼看到的關鍵點還原成真實 3D 座標（mm），再計算頸椎前傾角 θ_CA、肩膀水平角 θ_sym 與肩部垂直位移；軀幹前傾角 θ_KA 是選配的第四個判定軸。
+
+目前 fp32 的關鍵點偵測、三角測量、個人基準、逐幀記錄、分析與判定都已在 Jetson 上跑通。尚未完成的有三項：fp16／TensorRT、LED／蜂鳴器回饋，以及 θ_KA 的實機資料（它的 ±10° 是設計值，不是量出來的門檻）。前作的正面相機已決定不接，理由見「相機擺哪裡」一節。
 
 | 模組 | 狀態 | 內容 |
 |---|---|---|
 | `src/calibration` | 可用 | 棋盤格／ChArUco，單眼＋雙目，已用合成資料驗證準確度 |
 | `src/pose` | 可用（fp32） | Lightweight OpenPose。Jetson 實測 123.7ms/幀，權重載入與拓樸核對都已確認；fp16/TensorRT 尚未啟用 |
 | `src/geometry` | 可用 | 三角測量、θ_CA／θ_sym、肩部垂直位移 |
+| θ_KA（軀幹前傾角） | 程式完成，無實機資料 | 選配，基準有 θ_KA 才判定，門檻 ±10° 為設計值 |
 | 個人基準／平均／記錄 | 可用 | θ_offset 校正、移動平均、逐幀 CSV |
 | 閾值判定 | 可用 | 正常／超標／未知，遲滯寬度取自當下的量測誤差 |
+| 分析與彙整 | 可用 | `analyse` 看單一 session，`cohort` 跨受試者彙整，都不需要相機 |
 | 回饋裝置 | 未開始 | LED／蜂鳴器 |
+
+## 章節導覽
+
+- [環境](#環境)、[安裝與測試](#安裝與測試)、[資料型別](#資料型別)
+- 標定：[拍攝](#標定拍攝)、[計算參數](#標定計算參數)
+- [關鍵點偵測 + TensorRT](#關鍵點偵測--tensorrt)
+- [三角測量與坐姿角度](#三角測量與坐姿角度)：量測指令、角度定義、誤差模型、個人基準、判定、記錄與分析
+- [程式目錄](#程式目錄)、[待確認的假設](#待確認的假設)
+
+## 最短路徑
+
+```
+pip install -r requirements.txt
+python -m pytest -q                                                           # 不需要相機
+python -m src.calibration.capture probe --camera 0                            # 查解析度
+python -m src.calibration.capture stereo --single-device --left-camera 0 --width 2560 --height 720 --charuco
+python -m src.calibration.cli stereo --left-images data/calibration_images/stereo_left --right-images data/calibration_images/stereo_right --charuco
+python posture.py scale --square-size-mm 25.0                                 # 驗證 mm 尺度
+python posture.py once                                                        # 量一次
+python posture.py monitor --subject demo --display                            # 一個視窗跑到底
+```
+
+板子參數（`--squares-x` 等）要與列印的板子一致，每一步的細節與出錯時的症狀在下面各節。
 
 資料沿著這條路徑改變形態：標定先算出相機參數存成 `.npz`，拍攝取得 BGR 影格，關鍵點偵測把影格轉成18個關節的像素座標，三角測量再用標定參數把左右兩組像素座標還原成 mm 為單位的3D座標，最後由3D向量算出角度，判定再把角度變成要不要提醒。回饋裝置接在判定之後，目前還沒開始。
 
@@ -18,7 +45,7 @@
 | | 開發機 | 部署機 |
 |---|---|---|
 | 平台 | Windows，無NVIDIA GPU | Jetson Orin Nano |
-| 系統 | — | JetPack 6、Ubuntu 22.04、Python 3.10、CUDA 12 |
+| 系統 | 不適用 | JetPack 6、Ubuntu 22.04、Python 3.10、CUDA 12 |
 | 能執行的範圍 | 標定、三角測量、全部測試 | 上述全部＋關鍵點偵測推論 |
 
 這個環境差異直接影響程式寫法：`src/pose/engine.py` 裡所有 `import torch` 都放在方法內部，而非檔案開頭。開發機無法安裝這些套件，卻仍需要能 `import pose` 執行測試，因此把 import 延後到真正使用時才執行。沒有安裝 torch 的機器上 `import pose.engine` 依然會成功，只有實際建立 `LightweightOpenPoseEngine` 實例時才需要這些套件。`tests/test_pose_engine_import.py` 以測試鎖定這項性質。程式中若有寫法看起來迂迴，原因通常在此。
@@ -30,7 +57,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-597個測試，全部使用合成資料，不需要相機或GPU。
+746 個測試（2026-11-17），全部使用合成資料，不需要相機或 GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似：標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -238,16 +265,20 @@ fp32 的網路是全卷積的，同一個模型吃任何尺寸。fp16 的 Tensor
 |---|---|
 | 量測一次並印出完整診斷 | `python posture.py once` |
 | 持續量測，逐幀更新 | `python posture.py live` |
-| 取個人基準 | `python posture.py baseline --subject chenyue --out data/baselines/chenyue.json` |
-| 量測並記錄 | `python posture.py live --baseline data/baselines/chenyue.json --log data/sessions/0923.csv` |
+| 取個人基準 | `python posture.py baseline --subject demo --out data/baselines/demo.json` |
+| 量測並記錄 | `python posture.py live --baseline data/baselines/demo.json --log data/sessions/0923.csv` |
 | 調整平均視窗 | 加上 `--window 60`（預設 30 幀，約 5 秒）|
 | 開畫面看骨架與狀態 | 任何一個量測指令加上 `--display` |
-| 一個視窗跑到底，按 c 歸零 | `python posture.py monitor --subject chenyue --display` |
+| 一個視窗跑到底，按 c 歸零 | `python posture.py monitor --subject demo --display` |
+| 整套實驗流程：取基準，再逐一量各種姿勢 | `python posture.py study --subject demo --conditions upright,forward --display` |
+| 分析一份逐幀記錄（不開相機） | `python posture.py analyse data/sessions/0924-upright.csv` |
+| 彙整一整個資料夾（不開相機） | `python posture.py cohort data/sessions` |
+| 面板改成中文 | 加上 `--display-lang zh`（預設 `en`；要有中日韓字型，找不到會退回英文，量測照常） |
 | 驗證三角測量的尺度 | `python posture.py scale --square-size-mm 25.0` |
 
 `once` 會列出每個關鍵點的左右像素座標、3D座標、校正後的垂直視差，以及深度範圍、單幀誤差與兩個角度。加 `--all-keypoints` 可以看全部18點。
 
-`--display` 開一個視窗：左右眼並排、骨架疊在畫面上、下面一條狀態面板。粗線是判定實際看的那兩段，橘圈是貼在畫面邊緣的點，紅圈是左右配對錯的點。視窗是給操作者看的，**螢幕要放在受試者視野之外**：盯著螢幕會轉頭，而解剖平面是由雙肩連線定義的。中文字靠 Pillow，沒裝或找不到字型就自動改用英文。SSH 進去沒有顯示器時不開視窗也不中斷。
+`--display` 開一個視窗：左右眼並排、骨架疊在畫面上、下面一條狀態面板。粗線是判定實際看的那兩段，橘圈是貼在畫面邊緣的點，紅圈是左右配對錯的點。視窗是給操作者看的，**螢幕要放在受試者視野之外**：盯著螢幕會轉頭，而解剖平面是由雙肩連線定義的。面板預設英文；加 `--display-lang zh` 才畫中文，靠 Pillow 與中日韓字型，沒裝或找不到字型就退回英文。SSH 進去沒有顯示器時不開視窗也不中斷。
 
 `live` 印的是**平均值**，單幀值放在括號裡：
 
@@ -295,6 +326,9 @@ m.max_abs_vertical_disparity_px
 |---|---|---|
 | θ_CA | 頭往前伸 | 頭往後仰 |
 | θ_sym | 右肩較高 | 左肩較高 |
+| θ_KA（軀幹前傾角，選配） | 上身往受試者自己的前方傾 | 往後靠 |
+
+θ_KA 與 θ_CA 同號：頸在髖正上方是 0°，前方由雙肩連線決定，與相機架在哪一側無關。髖常被桌面擋住，量不到時只有 θ_KA 留空，不會讓 θ_CA 與 θ_sym 跟著整幀被略過。判定門檻 ±10° 是設計值，沒有文獻依據也沒有實機資料。
 
 前作以 `θ_CA > 10°` 判定頭部前傾，對應的就是正值這一側。正負號搞反的話，後仰會被判成前傾，而數值大小完全一樣、看不出異常。`tests/test_posture_angles.py` 用已知幾何把兩個方向都鎖住。
 
@@ -375,7 +409,7 @@ Z = fx × baseline / disparity        深度誤差 = Z² × 視差誤差 / (fx �
 頸部解剖結構因人而異。兩個人同樣坐得端正，量到的 θ_CA 可以差十幾度，直接比 `θ_CA > 10°` 會讓一個人永遠報警、另一個人永遠不報。前作的自適應歸零處理的就是這件事，實測讓誤報率從 18.7% 降到 4.2%。
 
 ```
-python posture.py baseline --subject chenyue --out data/baselines/chenyue.json
+python posture.py baseline --subject demo --out data/baselines/demo.json
 ```
 
 請受試者坐正、目視前方、雙肩放鬆，保持不動 30 秒（實機 5fps 上下，約 150 幀）。取平均而非單幀的理由與執行期相同：拿單幀當基準等於把一個 ±8° 的偏移永久寫進之後所有判定。30 秒則是因為相鄰幀不獨立，60 幀只能做到 ±3.1°。
@@ -385,7 +419,7 @@ python posture.py baseline --subject chenyue --out data/baselines/chenyue.json
 **散佈偏高時它會先叫你讓受試者坐定，而不是拉長取樣。** 誤差與散佈成正比、與時間的平方根成反比，把散佈壓一半等於取樣時間砍到四分之一。實機看到剛坐下的十幾秒人還在調整，那一段的單幀標準差是後面的兩倍，`--countdown` 就是拿來跳過它的。
 
 ```
-受試者 chenyue（2026-09-23T22:36:12）
+受試者 demo（2026-09-23T22:36:12）
   θ_CA  基準 +12.13° ± 0.42°（單幀標準差 ±3.2°）
   θ_sym 基準  +0.01° ± 0.01°（單幀標準差 ±0.1°）
   取樣 60 幀 / 10.0 秒，略過 0 幀，距離 588 mm，方位角 1°
@@ -398,7 +432,7 @@ python posture.py baseline --subject chenyue --out data/baselines/chenyue.json
 之後帶著基準量測，印出的就是相對這個人端正坐姿的偏移量：
 
 ```
-python posture.py live --baseline data/baselines/chenyue.json --log data/sessions/0923.csv
+python posture.py live --baseline data/baselines/demo.json --log data/sessions/0923.csv
 ```
 
 ### 超標判定
@@ -446,7 +480,7 @@ python posture.py live --baseline data/baselines/chenyue.json --log data/session
 ### 留下畫面
 
 ```bash
-python posture.py live --baseline data/baselines/chenyue.json   --log data/sessions/xxx.csv --snapshots data/sessions/xxx-shots
+python posture.py live --baseline data/baselines/demo.json   --log data/sessions/xxx.csv --snapshots data/sessions/xxx-shots
 ```
 
 每 `--snapshot-every` 秒（預設 10）存一張左眼畫面，關鍵點疊上去，檔名帶著幀號、時間、角度與判定，例如 `000102_t020.1s_ca+018.7_over.png`。
@@ -498,8 +532,8 @@ python posture.py cohort data/sessions
 ```
 ── 逐段 ──────────────────────────────────────────────────
 受試者      姿勢        次  θ_CA                單幀散佈    θ_sym     可用        略過
-chenyue     forward     1   30.41° ± 0.78°      ±5.3°       1.69°     555/559     1%
-chenyue     upright     1   12.37° ± 1.22°      ±7.8°       1.00°     408/418     2%
+demo     forward     1   30.41° ± 0.78°      ±5.3°       1.69°     555/559     1%
+demo     upright     1   12.37° ± 1.22°      ±7.8°       1.00°     408/418     2%
 ```
 
 分組靠 CSV 標頭裡的 `subject` 與 `condition`，不是檔名。`study` 會自動填，`live` 要自己給 `--condition`；沒記的檔案會歸到「未標註」那一組，照樣列在逐段表裡，但不參與比較。
@@ -556,7 +590,7 @@ python posture.py scale --squares-x 10 --squares-y 7 --square-size-mm 25.0
 
 橫向與縱向分開報。尺度錯會讓兩邊一起錯；只有一邊不對的話問題在校正（rectify），不在尺度。
 
-## 目錄
+## 程式目錄
 
 ```
 src/calibration/
@@ -583,6 +617,7 @@ src/geometry/
   posture_angles.py      θ_CA/θ_sym實作
   pipeline.py            把偵測、三角測量、角度串成一次量測＋品質指標
   smoothing.py           移動平均（單幀誤差與判定門檻同量級）
+  legacy_2d.py           前作 2D θ_CA 公式與它隨方位角的偏差，只供對照分析，量測本身不用
   uncertainty.py         平均值的誤差（批次平均法，因為相鄰幀是相關的）
   baseline.py            個人基準 θ_offset 的採集、品質檢查與存取
   judgement.py           超標判定與遲滯（門檻套在扣除基準之後的角度上）
@@ -614,11 +649,9 @@ tests/
   posture_loader.py      把根目錄的 posture.py 當模組載進來
 ```
 
-`posture.py` 放在根目錄而不是做成 `python -m src.geometry.cli`，理由寫在檔案開頭。
-
 ## 待確認的假設
 
-撰寫這些程式時，手邊沒有真實硬體或安裝好的模型可供核對。
+下表是最初寫程式時手邊沒有硬體、只能照上游原始碼假設的部分。標定、fp32 推論與權重載入後來已在 Jetson 上確認（見下面「已在實機確認的項目」），表中仍開著的是 fp16／TensorRT 路徑與幾個經驗值。
 
 | 假設 | 假設有誤時要修改的位置 |
 |---|---|
