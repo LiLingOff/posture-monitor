@@ -19,6 +19,8 @@ from io import StringIO
 
 from .cohort import REJECTION_LIMIT, Cohort, Separation, session_error_deg
 from .judgement import Posture
+from .session_analysis import legacy_2d_by_azimuth, summarise_legacy_pairs
+from .session_report import legacy_2d_lines
 from .terminal import cell, display_width, with_error
 
 _SESSION_COLUMNS = (
@@ -28,6 +30,10 @@ _SESSION_COLUMNS = (
     "theta_sym_deg", "distance_mm", "azimuth_deg", "over_share",
     # 新欄位加在最後面：靠欄位位置讀這份 CSV 的人不會錯位。
     "theta_ka_deg",
+    # 前作 2D θ_CA（說明書表4）。3D 那欄是同一批幀的原始角度，不是上面扣基準的
+    # theta_ca_deg，兩邊才可比。舊檔沒有像素欄時留空。
+    "theta_ca_2d_deg", "theta_ca_3d_paired_deg", "theta_ca_2d_minus_3d_deg",
+    "theta_ca_2d_frames", "theta_ca_2d_azimuth_deg",
 )
 
 # 逐段表每一欄的寬度。手寫而不是照內容算，因為量測之間的數字量級差不多，
@@ -73,6 +79,7 @@ def session_rows(cohort: Cohort) -> list[dict]:
         corrected = summary.angle("θ_CA")
         sym = summary.angle("θ_sym")
         ka = summary.angle("θ_KA")
+        legacy = summary.legacy_2d
         judgement = summary.judgement
         over = None if judgement is None else judgement.share(Posture.OVER.value)
         rows.append({
@@ -92,6 +99,11 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "distance_mm": _column(summary, "距離 mm"),
             "azimuth_deg": _column(summary, "方位角 °"),
             "over_share": over,
+            "theta_ca_2d_deg": None if legacy is None else legacy.theta_2d_deg,
+            "theta_ca_3d_paired_deg": None if legacy is None else legacy.theta_3d_deg,
+            "theta_ca_2d_minus_3d_deg": None if legacy is None else legacy.difference_deg,
+            "theta_ca_2d_frames": None if legacy is None else legacy.frames,
+            "theta_ca_2d_azimuth_deg": None if legacy is None else legacy.azimuth_deg,
         })
     return rows
 
@@ -214,6 +226,42 @@ def separation_text(separation: Separation, cohort: Cohort) -> str:
     return "\n".join(out)
 
 
+def legacy_2d_text(cohort: Cohort, rows: list[dict]) -> str:
+    """前作 2D θ_CA 對照：逐段（各自的實際方位角），再按方位角分箱。
+
+    沒有任何一段有像素欄時回傳空字串。
+    """
+    have = [r for r in rows if r["theta_ca_2d_deg"] is not None]
+    if not have:
+        return ""
+    header = (("受試者", 12), ("姿勢", 12), ("次", 4), ("方位角", 8), ("幀數", 8),
+              ("3D θ_CA", 12), ("2D θ_CA", 12), ("2D − 3D", 10))
+    body = [[
+        r["subject"], r["condition"],
+        "—" if r["trial"] is None else str(r["trial"]),
+        _fmt(r["theta_ca_2d_azimuth_deg"], 1, "°"),
+        str(r["theta_ca_2d_frames"]),
+        _fmt(r["theta_ca_3d_paired_deg"], 2, "°"),
+        _fmt(r["theta_ca_2d_deg"], 2, "°"),
+        f"{r['theta_ca_2d_minus_3d_deg']:+.2f}°",
+    ] for r in have]
+    out = _table(header, body)
+    missing = len(rows) - len(have)
+    if missing:
+        out += ["", f"  另有 {missing} 段沒有像素座標（舊檔或兩側耳肩都沒偵測到），不在上表。"]
+    pairs = cohort.legacy_pairs
+    bins = legacy_2d_by_azimuth(pairs)
+    pooled = summarise_legacy_pairs(pairs)
+    lines = legacy_2d_lines(
+        pooled, bins,
+        "  下表把略過率沒超標的段落的幀倒在一起，只為了按方位角分箱；"
+        "上表才是每一段各自的實際方位角。",
+    )
+    if lines:
+        out += ["", "按實際方位角分箱（所有段合併）", *lines]
+    return "\n".join(out)
+
+
 def to_text(cohort: Cohort, separation: Separation | None,
             rows: list[dict] | None = None) -> str:
     rows = session_rows(cohort) if rows is None else rows
@@ -228,6 +276,9 @@ def to_text(cohort: Cohort, separation: Separation | None,
     subjects = subjects_table(cohort)
     if subjects:
         parts += ["", _heading("逐受試者的 θ_CA"), subjects]
+    legacy = legacy_2d_text(cohort, rows)
+    if legacy:
+        parts += ["", _heading("前作 2D θ_CA 對照"), legacy]
     if separation is not None:
         parts += ["", _heading("姿勢之間的差距"),
                   separation_text(separation, cohort)]

@@ -70,9 +70,19 @@ _COLUMNS = (
     "dy_left_hip_px",
     "dy_right_hip_px",
     "theta_ka_reason",              # θ_KA 留空的原因；有值時空白
+    # 角度用到的四個點在左右眼影像上的像素座標（2026-11-17）。為了事後算前作的 2D θ_CA
+    # （legacy_2d.py），表4 要拿它與 3D 的 θ_CA 比。**原始影像像素，沒有去畸變也沒有校正**，
+    # 與前作拿 OpenPose 輸出直接算是同一種座標。命名：lx、ly 是左眼，rx、ry 是右眼。
+    # 偵測不到的點留空，不寫 0（0 是合法的像素座標）。被略過但有影像的幀也記；
+    # 相機斷線、根本沒有影像的幀整列留空。舊檔沒有這十六欄，讀的人要容許缺。
+    *(f"{name}_{eye}{axis}_px"
+      for name in ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
+      for eye in ("l", "r")
+      for axis in ("x", "y")),
 )
 
 _SIGNED_DY_KEYPOINTS = ("right_ear", "right_shoulder", "left_shoulder", "left_ear")
+_PIXEL_KEYPOINTS = _SIGNED_DY_KEYPOINTS
 _TRUNK_DY_KEYPOINTS = ("neck", "left_hip", "right_hip")
 
 
@@ -183,7 +193,9 @@ class MeasurementLog:
         shoulder_drop_mean_mm: float | None = None,
         theta_ka_corrected: float | None = None,
         theta_ka_mean: float | None = None,
+        keypoints_2d=None,
     ) -> None:
+        """keypoints_2d 是 (左眼點陣列, 右眼點陣列)，各 shape (18, 2)，沒有影像時給 None。"""
         self._frame += 1
         worst = None
         worst_angle = None
@@ -220,8 +232,24 @@ class MeasurementLog:
             "" if measurement is None else (measurement.theta_ka_side or ""),
             *self._signed_dy(measurement, _TRUNK_DY_KEYPOINTS),
             self._trunk_reason(measurement),
+            *self._pixels(keypoints_2d),
         ])
         self._file.flush()
+
+    @staticmethod
+    def _pixels(keypoints_2d) -> list:
+        """四個點 × 左右眼 × (x, y)，順序與 _COLUMNS 一致。缺的、NaN 的一律空字串。"""
+        names = _PIXEL_KEYPOINTS
+        if keypoints_2d is None:
+            return [""] * (len(names) * 4)
+        left, right = keypoints_2d
+        out = []
+        for name in names:
+            i = COCO18_KEYPOINT_NAMES.index(name)
+            for points in (left, right):
+                for value in points[i]:
+                    out.append(_number(float(value), 2) if np.isfinite(value) else "")
+        return out
 
     @staticmethod
     def _trunk_reason(measurement) -> str:

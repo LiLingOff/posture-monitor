@@ -7,7 +7,8 @@
 """
 from __future__ import annotations
 
-from .session_analysis import SessionSummary, compare, correlation
+from .session_analysis import (SessionSummary, compare, correlation,
+                               legacy_2d_by_azimuth)
 from .terminal import cell, display_width, with_error
 
 _LABEL = 22
@@ -169,6 +170,40 @@ def _azimuth(summary: SessionSummary) -> list[str]:
     return lines
 
 
+def legacy_2d_lines(stats, bins, pooled_note: str = "") -> list[str]:
+    """前作 2D θ_CA 與 3D θ_CA 的對照表。session 與 cohort 的報表共用。
+
+    stats 是整批的 Legacy2DSummary（可為 None），bins 是 Legacy2DBin 的串列。
+    兩邊都空就回傳空串列，舊檔沒有像素欄時整段不印。
+    """
+    if stats is None:
+        return []
+    header = (cell("方位角", 12) + cell("幀數", 8) + cell("3D θ_CA", 12)
+              + cell("2D θ_CA", 12) + "2D − 3D")
+    lines = [header]
+    rows = [(f"{b.low:.0f}~{b.high:.0f}°", b.stats) for b in bins]
+    rows.append((f"全部 {stats.azimuth_deg:.1f}°", stats))
+    for label, s in rows:
+        lines.append(
+            cell(label, 12) + cell(f"{s.frames}", 8)
+            + cell(f"{s.theta_3d_deg:+.2f}°", 12)
+            + cell(f"{s.theta_2d_deg:+.2f}°", 12)
+            + f"{s.difference_deg:+.2f}°"
+        )
+    lines.append("")
+    lines.append("  2D 是前作公式 arctan[Δx / sin45° / Δy]，用左眼影像的原始像素座標；"
+                 "兩邊都是未扣基準的原始角度。")
+    lines.append("  弱透視、相機水平時 tan θ_2D = (sin φ / sin45°)·tan θ_3D：φ < 45° 低估、"
+                 "φ > 45° 高估。相機有俯仰時 45° 也不再無偏。")
+    if pooled_note:
+        lines.append(pooled_note)
+    return lines
+
+
+def _legacy_2d(summary: SessionSummary) -> list[str]:
+    return legacy_2d_lines(summary.legacy_2d, legacy_2d_by_azimuth(summary.legacy_pairs))
+
+
 def _judgement(summary: SessionSummary) -> list[str]:
     replay = summary.judgement
     if replay is None:
@@ -204,6 +239,7 @@ def format_session(summary: SessionSummary) -> str:
         ("相鄰幀的相關性", _correlation_evidence(summary)),
         ("量測條件", _conditions(summary)),
         ("方位角與遮擋", _azimuth(summary)),
+        ("前作 2D θ_CA 對照", _legacy_2d(summary)),
         ("判定", _judgement(summary)),
     ]
     out = [title, "=" * 60]

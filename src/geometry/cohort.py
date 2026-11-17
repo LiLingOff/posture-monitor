@@ -113,6 +113,17 @@ class Cohort:
         }
 
     @cached_property
+    def legacy_pairs(self) -> list:
+        """前作 2D 與 3D θ_CA 的逐幀配對，把略過率沒超標的 session 倒在一起。
+
+        這裡倒在一起是刻意的：它只用來按方位角分箱，箱子要的是各方位角下的幀。
+        跨受試者的 θ_CA 誤差不走這條路（那邊分母是人數）。
+        """
+        return [pair for summary in self.sessions
+                if summary.rejection_rate <= REJECTION_LIMIT
+                for pair in summary.legacy_pairs]
+
+    @cached_property
     def subjects(self) -> list[str]:
         return sorted({subject for subject, _ in self._groups})
 

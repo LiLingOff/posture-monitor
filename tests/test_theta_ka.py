@@ -183,11 +183,13 @@ def test_new_columns_come_after_the_old_ones(tmp_path):
     with MeasurementLog(path) as log:
         log.write(measurement())
     ordered = list(_rows(path)[0].keys())
-    assert ordered[-8:] == ["theta_ka_deg", "theta_ka_corrected_deg",
-                            "theta_ka_mean_deg", "theta_ka_side",
-                            "dy_neck_px", "dy_left_hip_px", "dy_right_hip_px",
-                            "theta_ka_reason"]
-    assert ordered.index("dy_left_ear_px") == len(ordered) - 9
+    # 2026-11-17 之後最後面又接了十六個像素座標欄（見 test_keypoints_2d.py）。
+    block = ordered[:-16]
+    assert block[-8:] == ["theta_ka_deg", "theta_ka_corrected_deg",
+                          "theta_ka_mean_deg", "theta_ka_side",
+                          "dy_neck_px", "dy_left_hip_px", "dy_right_hip_px",
+                          "theta_ka_reason"]
+    assert block.index("dy_left_ear_px") == len(block) - 9
 
 
 def test_the_log_says_why_theta_ka_is_missing(tmp_path):
@@ -266,7 +268,9 @@ def test_cohort_csv_puts_the_new_column_last(tmp_path):
     """靠欄位位置讀這份 CSV 的人不會因為新欄位而錯位。"""
     _write_session(tmp_path, "a.csv", ka=8.0)
     header = to_csv(session_rows(collect([tmp_path]))).splitlines()[0].split(",")
-    assert header[-1] == "theta_ka_deg"
+    # θ_KA 之後又加了 2D θ_CA 的五欄，θ_KA 仍緊接在舊欄位後面。
+    assert header[-6] == "theta_ka_deg"
+    assert header[-1] == "theta_ca_2d_azimuth_deg"
     assert header.index("distance_mm") == header.index("theta_sym_deg") + 1
 
 

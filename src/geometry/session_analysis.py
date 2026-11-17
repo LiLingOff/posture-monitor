@@ -28,6 +28,7 @@ import numpy as np
 
 from .baseline import group_rejection_reason
 from .judgement import MissCounter, Posture, PostureJudge, windows_are_stale
+from .legacy_2d import theta_ca_2d_from_row
 from .smoothing import RollingAngle
 from .terminal import with_error
 from .uncertainty import lag1_autocorrelation, standard_error
@@ -181,6 +182,12 @@ class SessionSummary:
     has_baseline: bool = False
     judgement: JudgementReplay | None = None
     azimuth_bins: list = field(default_factory=list)
+    # 前作 2D θ_CA 與 3D θ_CA 的逐幀配對 (方位角, 3D, 2D)，舊檔沒有像素欄時是空的。
+    legacy_pairs: list = field(default_factory=list)
+
+    @property
+    def legacy_2d(self) -> Legacy2DSummary | None:
+        return summarise_legacy_pairs(self.legacy_pairs)
 
     @property
     def subject(self) -> str | None:
@@ -416,6 +423,7 @@ def analyse_session(
             summary.columns[label] = Column(label, values)
 
     summary.azimuth_bins = rejection_by_azimuth(rows)
+    summary.legacy_pairs = legacy_2d_pairs(rows)
     stored = None if force_replay else _read_judgement(rows)
     summary.judgement = stored or _replay_judgement(rows, window, margin)
     return summary
@@ -550,5 +558,90 @@ def rejection_by_azimuth(rows: list[dict]) -> list[AzimuthBin]:
             rejected=len(rejected),
             shoulder_rejected=len(shoulder),
             shared_keypoints=float(np.mean(shared)) if shared else None,
+        ))
+    return out
+
+
+# 前作 2D θ_CA 與 3D θ_CA 的比較（說明書表4）。
+# 兩邊都用原始角度，不用扣基準的：前作公式沒有基準可扣，扣了就不是同一個量。
+# 只取 usable 的幀，讓分母與其他角度的統計一致。
+_LEGACY_BIN_DEG = _AZIMUTH_BIN_DEG
+_MINIMUM_LEGACY_FRAMES = _MINIMUM_BIN_FRAMES
+
+
+@dataclass(frozen=True)
+class Legacy2DSummary:
+    """一批幀上，前作 2D θ_CA 與 3D θ_CA 的平均與差。"""
+
+    frames: int
+    azimuth_deg: float      # 這些幀的平均方位角，**實際算出來的**，不是目標值
+    theta_3d_deg: float
+    theta_2d_deg: float
+
+    @property
+    def difference_deg(self) -> float:
+        """2D − 3D。正是 2D 高估。"""
+        return self.theta_2d_deg - self.theta_3d_deg
+
+
+@dataclass(frozen=True)
+class Legacy2DBin:
+    """一段方位角範圍內的 2D 與 3D 比較。"""
+
+    low: float
+    high: float
+    stats: Legacy2DSummary
+
+
+def legacy_2d_pairs(rows: list[dict]) -> list[tuple[float, float, float]]:
+    """可用幀裡 (方位角, 3D θ_CA, 2D θ_CA) 三者齊全的那些。
+
+    缺任何一個就整幀不收，不補值。舊檔沒有像素欄時回傳空的。
+    """
+    pairs = []
+    for row in rows:
+        if row.get("usable") != "1":
+            continue
+        azimuth = _number(row.get("azimuth_deg", ""))
+        theta_3d = _number(row.get("theta_ca_deg", ""))
+        legacy = theta_ca_2d_from_row(row)
+        if azimuth is None or theta_3d is None or legacy is None:
+            continue
+        pairs.append((azimuth, theta_3d, legacy[0]))
+    return pairs
+
+
+def summarise_legacy_pairs(pairs: list) -> Legacy2DSummary | None:
+    if not pairs:
+        return None
+    a = np.array(pairs, dtype=float)
+    return Legacy2DSummary(
+        frames=len(pairs),
+        azimuth_deg=float(a[:, 0].mean()),
+        theta_3d_deg=float(a[:, 1].mean()),
+        theta_2d_deg=float(a[:, 2].mean()),
+    )
+
+
+def legacy_2d_by_azimuth(pairs: list) -> list[Legacy2DBin]:
+    """按實際方位角分箱（10° 一箱，少於 15 幀的箱不報）。
+
+    與 `rejection_by_azimuth` 不同，這裡**不要求方位角有跨度**：表4 每一段是定點量測，
+    一段只落在一兩個箱裡才是預期的樣子。
+    """
+    # 90° 是合法的端點（正側面），歸進最後一箱 80~90°，不另開一個 90~100°。
+    last = int(90.0 // _LEGACY_BIN_DEG) - 1
+    buckets: dict[int, list] = {}
+    for pair in pairs:
+        buckets.setdefault(min(int(pair[0] // _LEGACY_BIN_DEG), last), []).append(pair)
+    out = []
+    for index in sorted(buckets):
+        group = buckets[index]
+        if len(group) < _MINIMUM_LEGACY_FRAMES:
+            continue
+        out.append(Legacy2DBin(
+            low=index * _LEGACY_BIN_DEG,
+            high=(index + 1) * _LEGACY_BIN_DEG,
+            stats=summarise_legacy_pairs(group),
         ))
     return out

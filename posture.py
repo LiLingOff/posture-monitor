@@ -498,6 +498,7 @@ def _write_frame_row(log, snapshots, measurement, match, frames, *,
             shoulder_height_mm=measurement.shoulder_height_mm,
             shoulder_drop_mm=drop, shoulder_drop_mean_mm=drop_mean,
             theta_ka_corrected=ka, theta_ka_mean=ka_mean,
+            keypoints_2d=(match.left.points, match.right.points),
         )
     snapshots.maybe_save(
         0 if log is None else log.frames_written, elapsed_s,
