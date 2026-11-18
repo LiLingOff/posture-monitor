@@ -58,6 +58,8 @@ from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.triangulation import triangulate_points  # noqa: E402
+from geometry.trip_report import trip_csvs, trip_sections  # noqa: E402
+from geometry.trips import read_groups  # noqa: E402
 from geometry.live_report import (elapsed_text, live_line,  # noqa: E402
                                   monitor_line, study_summary_lines,
                                   summary_lines, transition_lines)
@@ -1239,7 +1241,8 @@ def _run_cohort(args) -> None:
     # 逐段的數字只算一次，文字報告與 CSV 共用。每個 session 的標準誤差要掃
     # 過它所有的幀，重建三次就是三倍的工，而這個指令的用途正是吃一整個資料夾。
     rows = session_rows(cohort)
-    report = to_text(cohort, separation, rows)
+    groups = _subject_groups(args)
+    report = to_text(cohort, separation, rows, groups)
     print(report)
 
     if args.out is not None:
@@ -1247,6 +1250,25 @@ def _run_cohort(args) -> None:
         (args.out / "cohort.txt").write_text(report, encoding="utf-8")
         (args.out / "cohort.csv").write_text(to_csv(rows), encoding="utf-8")
         print(f"已寫到 {args.out / 'cohort.txt'} 與 {args.out / 'cohort.csv'}")
+        _write_trip_csvs(args.out, cohort.sessions, groups)
+
+
+def _subject_groups(args) -> dict | None:
+    """--subject-groups 給的身高層對照表。不給就是 None（表4 全部歸未分組）。"""
+    path = getattr(args, "subject_groups", None)
+    if path is None:
+        return None
+    try:
+        return read_groups(path)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"--subject-groups 讀不進來：{exc}")
+
+
+def _write_trip_csvs(out: Path, summaries, groups=None) -> None:
+    """配對差值、側傾、表4 比值各一份 CSV，給迴歸與報告用。沒有資料的不寫。"""
+    for name, text in trip_csvs(summaries, groups).items():
+        (out / name).write_text(text, encoding="utf-8")
+        print(f"已寫到 {out / name}")
 
 
 def _run_analyse(args) -> None:
@@ -1265,6 +1287,14 @@ def _run_analyse(args) -> None:
             if table:
                 print()
                 print(f"{summary.path.name}{table}")
+    # 同一趟的段落一起給時才有配對差值、側傾與表4 比值；沒有就什麼都不印。
+    for title, text in trip_sections(summaries):
+        print()
+        print(f"── {title} ──")
+        print(text)
+    if getattr(args, "out", None) is not None:
+        args.out.mkdir(parents=True, exist_ok=True)
+        _write_trip_csvs(args.out, summaries)
 
 
 def _run_rating_pack(args) -> None:
@@ -1306,6 +1336,9 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--out", type=Path, default=None,
                     help="把報告與 CSV 寫到這個資料夾。不給就只印出來。"
                          "要放進報告的表格從 CSV 匯入")
+    ch.add_argument("--subject-groups", type=Path, default=None,
+                    help="受試者分組表（CSV，欄位 subject,group），表4 依身高層"
+                         "分組報告時用。不給就全部歸未分組")
 
     # analyse 不開相機，所以那些硬體參數對它沒有意義，單獨建 parser。
     ap = sub.add_parser("analyse", help="分析 live 留下的逐幀 CSV，不需要相機")
@@ -1319,6 +1352,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="即使 CSV 有 posture 欄也重新判一次，用來換參數比較")
     ap.add_argument("--segments", type=int, default=0,
                     help="把整段切成幾塊各自印統計，用來看漂移。0 是不印")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="把配對差值、側傾、表4 比值的 CSV 寫到這個資料夾。"
+                         "不給就只印出來")
 
     # 外部評分者盲評（說明書表3）。兩個都不開相機。
     rp = sub.add_parser("rating-pack", help="匯出給外部評分者的盲評包，不需要相機")

@@ -17,11 +17,14 @@ from __future__ import annotations
 import csv
 from io import StringIO
 
-from .cohort import REJECTION_LIMIT, Cohort, Separation, session_error_deg
+from .cohort import Cohort, Separation, session_error_deg
 from .judgement import Posture
 from .session_analysis import legacy_2d_by_azimuth, summarise_legacy_pairs
 from .session_report import legacy_2d_lines
 from .terminal import cell, display_width, with_error
+from .trip_report import trip_sections
+from .trips import (AXIS_LIMITS, INCLUDED, NOTED, SENSITIVITY_LIMITS, VOID,
+                    axis_rejection_rate, is_turned)
 
 _SESSION_COLUMNS = (
     "subject", "condition", "trial", "file",
@@ -34,6 +37,10 @@ _SESSION_COLUMNS = (
     # theta_ca_deg，兩邊才可比。舊檔沒有像素欄時留空。
     "theta_ca_2d_deg", "theta_ca_3d_paired_deg", "theta_ca_2d_minus_3d_deg",
     "theta_ca_2d_frames", "theta_ca_2d_azimuth_deg",
+    # 2026-11-18：分軸略過率、納入狀態與趟次中繼資料。舊檔沒有趟次中繼資料時留空。
+    "theta_ca_rejection_rate", "theta_sym_rejection_rate",
+    "theta_ca_inclusion", "theta_sym_inclusion", "turned_deg",
+    "trip_id", "desk_level", "lift_cm", "desk_offset_cm",
 )
 
 # 逐段表每一欄的寬度。手寫而不是照內容算，因為量測之間的數字量級差不多，
@@ -81,6 +88,9 @@ def session_rows(cohort: Cohort) -> list[dict]:
         ka = summary.angle("θ_KA")
         legacy = summary.legacy_2d
         judgement = summary.judgement
+        turn = cohort.turned.get(summary.path)
+        ca_rate = axis_rejection_rate(summary, "θ_CA")
+        sym_rate = axis_rejection_rate(summary, "θ_sym")
         over = None if judgement is None else judgement.share(Posture.OVER.value)
         rows.append({
             "subject": summary.subject_key,
@@ -104,8 +114,32 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "theta_ca_2d_minus_3d_deg": None if legacy is None else legacy.difference_deg,
             "theta_ca_2d_frames": None if legacy is None else legacy.frames,
             "theta_ca_2d_azimuth_deg": None if legacy is None else legacy.azimuth_deg,
+            "theta_ca_rejection_rate": ca_rate,
+            "theta_sym_rejection_rate": sym_rate,
+            "theta_ca_inclusion": _inclusion(ca_rate, "θ_CA", turn),
+            "theta_sym_inclusion": _inclusion(sym_rate, "θ_sym", turn),
+            "turned_deg": turn,
+            "trip_id": summary.meta.get("trip_id"),
+            "desk_level": summary.meta.get("desk_level"),
+            "lift_cm": summary.meta.get("lift_cm"),
+            "desk_offset_cm": summary.meta.get("desk_offset_cm"),
         })
     return rows
+
+
+def _inclusion(rate: float, axis: str, turn) -> str:
+    if is_turned(turn):
+        return VOID
+    return NOTED if rate > AXIS_LIMITS[axis] else INCLUDED
+
+
+def _flag(r: dict) -> str:
+    """略過那一格後面的字：作廢、偏高（附註納入），沒事就空的。"""
+    if r.get("theta_ca_inclusion") == VOID:
+        return " 作廢"
+    if NOTED in (r.get("theta_ca_inclusion"), r.get("theta_sym_inclusion")):
+        return " 偏高"
+    return ""
 
 
 def _column(summary, name: str):
@@ -121,7 +155,6 @@ def sessions_table(rows: list[dict]) -> str:
     for r in rows:
         # 先算好每一格再組列。塞進一行裡的條件運算式在十一欄的寬度下讀不出來，
         # 而錯位一格在成品上看不出來。
-        over_limit = r["rejection_rate"] > REJECTION_LIMIT
         body.append([
             r["subject"],
             r["condition"],
@@ -131,7 +164,7 @@ def sessions_table(rows: list[dict]) -> str:
             _fmt(r["theta_sym_deg"], 2, "°"),
             _fmt(r["theta_ka_deg"], 2, "°"),
             f"{r['usable']}/{r['frames']}",
-            _percent(r["rejection_rate"]) + (" 偏高" if over_limit else ""),
+            _percent(r["rejection_rate"]) + _flag(r),
             _percent(r["over_share"]),
             _fmt(r["distance_mm"], 0, "mm"),
             _fmt(r["azimuth_deg"], 0, "°"),
@@ -139,10 +172,16 @@ def sessions_table(rows: list[dict]) -> str:
     out = _table(_COLUMNS, body)
     # 說明只在真的有那種列時才印。沒有東西被標卻印一行解釋，讀的人會回頭
     # 找它在哪裡。
-    if any(r["rejection_rate"] > REJECTION_LIMIT for r in rows):
+    flags = {_flag(r).strip() for r in rows} - {""}
+    if flags:
         out.append("")
-        out.append(f"  標「偏高」的是略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落。"
-                   f"留下來的幀代表不了整段姿勢，這些不列入下面的統計。")
+    if "偏高" in flags:
+        out.append(f"  標「偏高」的是略過率超過分軸上限（θ_CA "
+                   f"{AXIS_LIMITS['θ_CA'] * 100:.0f}%、θ_sym {AXIS_LIMITS['θ_sym'] * 100:.0f}%）"
+                   f"的段落。照樣列入下面的統計（附註納入），另附 15% 與 20% 的敏感度分析。")
+    if "作廢" in flags:
+        out.append("  標「作廢」的是方位角相對參考值漂了 10° 以上的段落（受試者轉身），"
+                   "不列入統計，略過率放寬也不收。")
     return "\n".join(out)
 
 
@@ -183,9 +222,8 @@ def _why_no_separation(separation: Separation, cohort: Cohort) -> str:
             f"因為事後補標會變成猜，而猜錯的地方不會有任何痕跡。"
         )
     if not missing and not unlabelled:
-        lines.append(f"  兩種姿勢都有資料，但沒有受試者同時具備兩者的可用段落。"
-                     f"略過率超過 {REJECTION_LIMIT * 100:.0f}% 的段落不列入統計，"
-                     f"檢查上面標了「偏高」的那幾列。")
+        lines.append("  兩種姿勢都有資料，但沒有受試者同時具備兩者的可用段落。"
+                     "轉身作廢的段落不列入統計，檢查上面標了「作廢」的那幾列。")
     return "\n".join(lines)
 
 
@@ -262,8 +300,24 @@ def legacy_2d_text(cohort: Cohort, rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def separation_sensitivity_text(separation: Separation, cohort: Cohort) -> str:
+    """同一個差距在主要結果與 15%、20% 兩套略過率門檻下各是多少。"""
+    lines = ["略過率敏感度分析（θ_CA 這一軸）"]
+    for cutoff in (None, *SENSITIVITY_LIMITS):
+        other = cohort if cutoff is None else cohort.with_limit(cutoff)
+        sep = Separation(separation.baseline_condition, separation.other,
+                         other.differences(separation.baseline_condition, separation.other))
+        name = "主要（附註納入）" if cutoff is None else f"排除略過率 >{cutoff * 100:.0f}%"
+        if sep.mean_deg is None:
+            lines.append(f"  {cell(name, 20)}沒有可配對的受試者")
+        else:
+            lines.append(f"  {cell(name, 20)}{with_error(sep.mean_deg, sep.error_deg)}"
+                         f"（n = {sep.subjects}）")
+    return "\n".join(lines)
+
+
 def to_text(cohort: Cohort, separation: Separation | None,
-            rows: list[dict] | None = None) -> str:
+            rows: list[dict] | None = None, groups: dict | None = None) -> str:
     rows = session_rows(cohort) if rows is None else rows
     parts = [
         "量測結果彙整",
@@ -282,6 +336,10 @@ def to_text(cohort: Cohort, separation: Separation | None,
     if separation is not None:
         parts += ["", _heading("姿勢之間的差距"),
                   separation_text(separation, cohort)]
+        if separation.per_subject:
+            parts += ["", separation_sensitivity_text(separation, cohort)]
+    for title, text in trip_sections(cohort.sessions, groups):
+        parts += ["", _heading(title), text]
     return "\n".join(parts) + "\n"
 
 

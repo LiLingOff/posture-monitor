@@ -140,18 +140,26 @@ def test_only_subjects_with_both_conditions_contribute(tmp_path):
 
 # ---- 略過率 ------------------------------------------------------------
 
-def test_a_high_rejection_session_is_shown_but_not_counted(tmp_path):
-    """留下來的幀代表不了整段姿勢，但把它藏起來更糟。"""
+def test_a_high_rejection_session_is_noted_and_kept_with_a_sensitivity_run(tmp_path):
+    """2026-11-17 定案：超過上限的段落附註納入，不排除；15%、20% 兩套門檻另算。
+
+    先前這裡是直接排除（只留 15% 以內）。現在主要結果收它、標「偏高」，
+    排除的版本留給敏感度分析，兩者都看得到。
+    """
     _session(tmp_path, "A", "upright", ca=0.0, frames=60, trial=1)
     _session(tmp_path, "A", "upright", ca=30.0, frames=60, rejected=40, trial=2)
     cohort = collect([tmp_path])
 
     result = cohort.result("A", "upright")
     assert len(result.sessions) == 2
-    assert len(result.usable_sessions) == 1
-    assert result.theta_ca_deg == pytest.approx(0.0, abs=0.1)
+    assert len(result.usable_sessions) == 2
+    assert result.theta_ca_deg == pytest.approx(15.0, abs=0.1)
+    strict = cohort.with_limit(0.15).result("A", "upright")
+    assert len(strict.usable_sessions) == 1
+    assert strict.theta_ca_deg == pytest.approx(0.0, abs=0.1)
     table = sessions_table(session_rows(cohort))
     assert "偏高" in table
+    assert "附註納入" in table
     rows_for_a = [line for line in table.splitlines() if line.startswith("A")]
     assert len(rows_for_a) == 2, "兩段都要列出來"
 

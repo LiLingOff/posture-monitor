@@ -268,9 +268,10 @@ def test_cohort_csv_puts_the_new_column_last(tmp_path):
     """靠欄位位置讀這份 CSV 的人不會因為新欄位而錯位。"""
     _write_session(tmp_path, "a.csv", ka=8.0)
     header = to_csv(session_rows(collect([tmp_path]))).splitlines()[0].split(",")
-    # θ_KA 之後又加了 2D θ_CA 的五欄，θ_KA 仍緊接在舊欄位後面。
-    assert header[-6] == "theta_ka_deg"
-    assert header[-1] == "theta_ca_2d_azimuth_deg"
+    # θ_KA 之後又加了 2D θ_CA 的五欄與 2026-11-18 的分軸略過率、趟次欄位，
+    # θ_KA 仍緊接在舊欄位後面。
+    assert header[header.index("over_share") + 1] == "theta_ka_deg"
+    assert header[-1] == "desk_offset_cm"
     assert header.index("distance_mm") == header.index("theta_sym_deg") + 1
 
 

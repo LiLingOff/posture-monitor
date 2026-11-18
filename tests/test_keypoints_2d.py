@@ -243,9 +243,12 @@ def test_reports_and_cohort_csv_carry_the_2d_columns(tmp_path):
     assert diffs == [-7.79, 0.0, 3.78]
 
     header = to_csv(session_rows(cohort)).splitlines()[0].split(",")
-    assert header[-5:] == ["theta_ca_2d_deg", "theta_ca_3d_paired_deg",
-                           "theta_ca_2d_minus_3d_deg", "theta_ca_2d_frames",
-                           "theta_ca_2d_azimuth_deg"]
+    start = header.index("theta_ca_2d_deg")
+    assert header[start:start + 5] == ["theta_ca_2d_deg", "theta_ca_3d_paired_deg",
+                                       "theta_ca_2d_minus_3d_deg", "theta_ca_2d_frames",
+                                       "theta_ca_2d_azimuth_deg"]
+    # 之後加的欄位（2026-11-18 分軸略過率與趟次）接在它們後面，不插隊。
+    assert header[start - 1] == "theta_ka_deg"
     text = to_text(cohort, None)
     assert "前作 2D θ_CA 對照" in text
     assert "按實際方位角分箱" in text

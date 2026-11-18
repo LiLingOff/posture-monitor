@@ -30,6 +30,7 @@ from .baseline import REJECTION_LIMIT
 from .judgement import Posture
 from .session_analysis import (UNLABELLED, Comparison, SessionSummary,
                                analyse_session)
+from .trips import axis_rejection_rate, is_turned, trips, turned_deg
 from .uncertainty import standard_error
 
 # UNLABELLED 與 REJECTION_LIMIT 都從別處 re-export，讓 cohort 的使用者不必
@@ -43,6 +44,11 @@ class ConditionResult:
     subject: str
     condition: str
     sessions: list[SessionSummary]
+    # 略過率超過這個值就排除（敏感度分析用）。None 是主要結果：超過分軸上限的段落
+    # 附註納入，不排除（2026-11-17 定案，見 trips 模組說明）。
+    limit: float | None = None
+    # 轉身作廢的段落（路徑）。不受略過率放寬影響。
+    void: frozenset = frozenset()
 
     @cached_property
     def usable(self) -> list[tuple[SessionSummary, float]]:
@@ -51,10 +57,15 @@ class ConditionResult:
         平均跟著一起回傳，因為篩選本來就得算它來判斷算不算得出來，而
         `theta_ca_deg` 接著又要用同一個值。分開寫的話每個 session 的平均
         會算兩次。
+
+        略過率看的是 θ_CA 這一軸（這裡的統計量就是 θ_CA）。
         """
         out = []
         for summary in self.sessions:
-            if summary.rejection_rate > REJECTION_LIMIT:
+            if summary.path in self.void:
+                continue
+            if (self.limit is not None
+                    and axis_rejection_rate(summary, "θ_CA") > self.limit):
                 continue
             angle = summary.angle("θ_CA")
             if angle is not None:
@@ -92,6 +103,28 @@ class Cohort:
     """一整批資料，按受試者與姿勢分組。"""
 
     sessions: list[SessionSummary] = field(default_factory=list)
+    # 見 ConditionResult.limit。None 是主要結果。
+    limit: float | None = None
+
+    @cached_property
+    def turned(self) -> dict:
+        """路徑 → 相對參考方位角轉了多少（算不出來的不列）。"""
+        index = trips(self.sessions)
+        out = {}
+        for summary in self.sessions:
+            turn = turned_deg(summary, index)
+            if turn is not None:
+                out[summary.path] = turn
+        return out
+
+    @cached_property
+    def void(self) -> frozenset:
+        """轉身作廢的段落。"""
+        return frozenset(path for path, turn in self.turned.items() if is_turned(turn))
+
+    def with_limit(self, limit: float | None) -> Cohort:
+        """同一批資料換一個略過率門檻，給敏感度分析用。"""
+        return Cohort(sessions=self.sessions, limit=limit)
 
     @cached_property
     def _groups(self) -> dict[tuple[str, str], ConditionResult]:
@@ -108,7 +141,8 @@ class Cohort:
                 (summary.subject_key, summary.condition_key), []
             ).append(summary)
         return {
-            key: ConditionResult(subject=key[0], condition=key[1], sessions=group)
+            key: ConditionResult(subject=key[0], condition=key[1], sessions=group,
+                                 limit=self.limit, void=self.void)
             for key, group in buckets.items()
         }
 
@@ -137,7 +171,8 @@ class Cohort:
     def result(self, subject: str, condition: str) -> ConditionResult:
         return self._groups.get(
             (subject, condition),
-            ConditionResult(subject=subject, condition=condition, sessions=[]),
+            ConditionResult(subject=subject, condition=condition, sessions=[],
+                            limit=self.limit, void=self.void),
         )
 
     def differences(self, baseline_condition: str, other: str) -> dict[str, float]:
