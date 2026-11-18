@@ -98,6 +98,7 @@ def metadata_lines(
     baseline_file=None,
     baseline=None,
     display: bool = False,
+    extra: dict | None = None,
 ) -> list[str]:
     """標頭的 `# key=value` 區塊。
 
@@ -134,6 +135,11 @@ def metadata_lines(
         # 開視窗會拉低每秒幀數，而視窗長度、遲滯寬度與標準誤差都是按幀數算的。
         # 事後要查得到哪幾段是開著視窗量的。
         lines.append("# display=on")
+    # study 的趟次中繼資料（trip_id、desk_level…，2026-11-18）。加在最後面，
+    # 舊檔沒有這幾列，讀的人要容許缺。空值整列不寫，理由同上。
+    for key, value in (extra or {}).items():
+        if value is not None and str(value) != "":
+            lines.append(f"# {key}={value}")
     return lines
 
 
@@ -154,6 +160,7 @@ class MeasurementLog:
         baseline_file: Path | str | None = None,
         baseline=None,
         display: bool = False,
+        extra: dict | None = None,
     ):
         self._path = Path(path)
         if self._path.exists() and not overwrite:
@@ -165,7 +172,7 @@ class MeasurementLog:
         self._file = self._path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
         for line in metadata_lines(subject, condition, trial, baseline_file,
-                                   baseline, display):
+                                   baseline, display, extra):
             self._file.write(line + "\n")
         self._writer.writerow(_COLUMNS)
         self._start = time.perf_counter()

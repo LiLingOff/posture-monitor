@@ -20,6 +20,7 @@ import shutil
 import sys
 import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -58,9 +59,11 @@ from geometry.live_report import (elapsed_text, live_line,  # noqa: E402
                                   summary_lines, transition_lines)
 from geometry.scale_check import (check_scale,  # noqa: E402
                                  format_scale_check)
-from geometry.study import (baseline_path, condition_brief,  # noqa: E402
-                            next_trial, parse_conditions, review,
-                            session_paths)
+from geometry.study import (baseline_path, build_trip_options,  # noqa: E402
+                            condition_brief, is_tilt, next_trial,
+                            parse_conditions, parse_number_list,
+                            parse_optional_conditions, review,
+                            segment_metadata, session_paths)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -683,7 +686,7 @@ def _save_monitor_baseline(args, baseline) -> None:
 
 
 def _open_log(args, baseline, path, condition: str, trial: int | None,
-              baseline_file):
+              baseline_file, extra: dict | None = None):
     """開一份逐幀記錄。中繼資料一併寫進標頭。
 
     變動的四項（路徑、姿勢、第幾次、基準檔）一律由呼叫端傳，沒有預設值。
@@ -697,6 +700,7 @@ def _open_log(args, baseline, path, condition: str, trial: int | None,
         path, subject=args.subject, overwrite=args.overwrite,
         condition=condition, trial=trial,
         baseline_file=baseline_file, baseline=baseline, display=args.display,
+        extra=extra,
     )
     print(f"逐幀記錄到 {log.path}（含被略過的幀）", flush=True)
     return log
@@ -877,11 +881,14 @@ def _run_study(args) -> None:
     最關鍵的一點是**基準與量測之間沒有模型重載的空檔**。先前那兩件事是兩次
     獨立的指令，中間要重新載入模型，受試者就會站起來活動一下。誤報率 63%
     就是從那個空檔來的。
+
+    `--before-baseline` 的段落排在取基準之前（2026-11-18）：自然坐若排在
+    「請坐正」之後，受試者已經意識到坐姿，量到的不是平常的坐法。這些段落
+    不扣基準，只記原始角度，分析時與同一趟（同一個 trip_id）的端正坐配對。
+    `--conditions` 是空的就不取基準（趟 5，表4）。
     """
-    try:
-        conditions = parse_conditions(args.conditions)
-    except ValueError as exc:
-        raise SystemExit(f"--conditions {exc}")
+    before, conditions = _study_plan(args)
+    trip = _trip_options(args, before + conditions)
 
     calib, engine, cap = _prepare(args)
     display = _open_display(args)
@@ -889,13 +896,17 @@ def _run_study(args) -> None:
     recordings = []
     reopens = 0
     baseline = None
+    queue = _study_queue(before, conditions)
     try:
-        baseline = _study_baseline(engine, calib, cap, args, root, display)
-        queue = list(conditions)
         while queue:
-            condition = queue.pop(0)
-            recording = _study_one(engine, calib, cap, args, baseline, condition,
-                                   root, display)
+            item = queue.pop(0)
+            condition, is_before, index, tilt_index = item
+            if not is_before and baseline is None:
+                baseline = _study_baseline(engine, calib, cap, args, root, display)
+            recording = _study_one(
+                engine, calib, cap, args, None if is_before else baseline,
+                condition, root, display, before=is_before,
+                trip=trip, segment_index=index, tilt_index=tilt_index)
             recordings.append(recording)
             if recording.camera_lost is None:
                 continue
@@ -914,13 +925,69 @@ def _run_study(args) -> None:
                 break
             # 同一種姿勢重量一次。改成跳到下一種的話，這一種就得另外找一趟補，
             # 而那一趟的基準不是這一份。
-            queue.insert(0, condition)
+            queue.insert(0, item)
     finally:
         display.close()
         if cap is not None:
             cap.release()
 
     _study_summary(recordings, args, baseline)
+
+
+def _study_queue(before: list[str], conditions: list[str]) -> list[tuple]:
+    """依序要量的段落：(條件, 是否在基準之前, 第幾段, 第幾段側傾或 None)。
+
+    位置在排程時就定下來，掉線重量時同一個項目插回最前面，標頭的
+    目標角度與方位角標記才不會因為多量一次而錯位。
+    """
+    queue, tilts = [], 0
+    for index, (condition, is_before) in enumerate(
+            [(c, True) for c in before] + [(c, False) for c in conditions]):
+        tilt_index = None
+        if is_tilt(condition):
+            tilt_index, tilts = tilts, tilts + 1
+        queue.append((condition, is_before, index, tilt_index))
+    return queue
+
+
+def _study_plan(args) -> tuple[list[str], list[str]]:
+    """拆出 (基準前的段落, 基準後的段落)。
+
+    沒給 --before-baseline 時與先前完全一樣：--conditions 不能是空的。
+    給了的話兩邊都可以空，但不能兩邊都空。
+    """
+    before_text = getattr(args, "before_baseline", None)
+    if before_text is None:
+        try:
+            return [], parse_conditions(args.conditions)
+        except ValueError as exc:
+            raise SystemExit(f"--conditions {exc}")
+    before = parse_optional_conditions(before_text)
+    conditions = parse_optional_conditions(args.conditions)
+    if not before and not conditions:
+        raise SystemExit("--before-baseline 與 --conditions 都是空的，"
+                         "至少要有一種姿勢，例如 --before-baseline natural")
+    return before, conditions
+
+
+def _trip_options(args, segments: list[str]):
+    """這一趟的中繼資料，選項對不上的話在開相機之前就停。"""
+    try:
+        return build_trip_options(
+            datetime.now().isoformat(timespec="seconds"), segments,
+            desk_level=getattr(args, "desk_level", None),
+            lift_cm=getattr(args, "lift_cm", None),
+            desk_offset_cm=getattr(args, "desk_offset_cm", None),
+            task=getattr(args, "task", None),
+            target_angles=parse_number_list(
+                getattr(args, "target_angle_deg", None), "--target-angle-deg"),
+            measured_angles=parse_number_list(
+                getattr(args, "measured_angle_deg", None), "--measured-angle-deg"),
+            azimuth_targets=parse_number_list(
+                getattr(args, "azimuth_target_deg", None), "--azimuth-target-deg"),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc))
 
 
 # 一趟 study 裡掉線之後重新找相機的次數上限。掉兩次以上就不是偶發，硬撐只會
@@ -995,15 +1062,32 @@ def _ask_yes(question: str) -> bool:
 
 
 def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
-               display=NO_DISPLAY):
-    """量一種姿勢。"""
+               display=NO_DISPLAY, before: bool = False, trip=None,
+               segment_index: int = 0, tilt_index: int | None = None):
+    """量一種姿勢。
+
+    before=True 是取基準之前的段落：不扣基準、標頭不記基準檔，開始前也要倒數。
+    剛坐下的十幾秒人還在調整，這條規則與取基準的倒數相同。
+    """
     trial = next_trial(root, args.subject, condition)
     csv_path, shots_dir = session_paths(root, args.subject, condition, trial)
-    _prompt(f"接下來量「{condition}」第 {trial} 次，{args.seconds_each:.0f} 秒。\n"
-            + condition_brief(condition), not args.no_prompt)
+    head = f"接下來量「{condition}」第 {trial} 次，{args.seconds_each:.0f} 秒。"
+    if before:
+        head += "這一段在取基準之前，不扣基準。"
+    _prompt(head + "\n" + condition_brief(condition), not args.no_prompt)
+
+    extra = None
+    if trip is not None:
+        measured = None
+        if tilt_index is not None and not trip.measured_angles and not args.no_prompt:
+            measured = _ask_angle("量角器量到的實際角度是幾度？（直接按 Enter 留空）")
+        extra = segment_metadata(trip, condition, segment_index, tilt_index, measured)
+    if before:
+        _countdown(args.countdown)
+        print("\r開始量測        ", flush=True)
 
     log = _open_log(args, baseline, csv_path, condition, trial,
-                    baseline_path(root, args.subject))
+                    None if before else baseline_path(root, args.subject), extra)
     snapshots = _open_snapshots(args, shots_dir)
     try:
         recording = _record(engine, calib, cap, args, baseline, log, snapshots,
@@ -1013,7 +1097,24 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
         log.close()
     # replace 而不是直接指派：回傳的 Recording 一建好就是完整的，不會有
     # 「要等 _study_one 跑完才算有效」的中間狀態。
-    return replace(recording, condition=condition, trial=trial)
+    return replace(recording, condition=condition, trial=trial,
+                   before_baseline=before)
+
+
+def _ask_angle(question: str) -> float | None:
+    """問操作者一個角度。讀不到 stdin、留空或不是數字都回傳 None（標頭留空）。"""
+    try:
+        answer = input(f"  {question}").strip()
+    except (EOFError, OSError):
+        return None
+    if not answer:
+        return None
+    try:
+        value = float(answer)
+    except ValueError:
+        print(f"  {answer!r} 不是數字，這一段的實測角度留空", flush=True)
+        return None
+    return abs(value)
 
 
 def _study_summary(recordings, args, baseline=None) -> None:
@@ -1340,7 +1441,34 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "study":
             p.add_argument("--conditions", default="upright,forward",
                            help="要量的姿勢，逗號分隔。名稱可以自己取，"
-                                "程式不限定種類，只把它寫進 CSV 與檔名")
+                                "程式不限定種類，只把它寫進 CSV 與檔名。"
+                                "有給 --before-baseline 時可以是空字串，"
+                                "那一趟就不取基準（表4 那一趟）")
+            p.add_argument("--before-baseline", default=None,
+                           help="取基準之前先量的姿勢，逗號分隔，例如 natural。"
+                                "這些段落不扣基準、只記原始角度，分析時靠 "
+                                "trip_id 與同一趟的 upright 配對。不給就與先前一樣")
+            p.add_argument("--desk-level", default=None,
+                           choices=["base", "desk-up", "seat-up"],
+                           help="桌面相對手肘高度的做法：base 原桌椅、desk-up "
+                                "桌腳墊高、seat-up 座面墊高加腳踏。寫進 CSV 標頭")
+            p.add_argument("--lift-cm", type=float, default=None,
+                           help="實際墊高幾公分。base 自動記 0")
+            p.add_argument("--desk-offset-cm", type=float, default=None,
+                           help="桌面高減手肘高（公分，保留正負號），操作者手量")
+            p.add_argument("--task", default=None,
+                           help="自然坐的任務名稱，只寫進 natural 段落。"
+                                "不給時記 copy-text；要抄的文字由操作者準備")
+            p.add_argument("--target-angle-deg", default=None,
+                           help="側傾的目標角度，逗號分隔，依序對應這一趟的 "
+                                "tilt-left、tilt-right 段落")
+            p.add_argument("--measured-angle-deg", default=None,
+                           help="側傾的量角器實測值，逗號分隔，依序對應側傾段落。"
+                                "不給的話每段開始前會問")
+            p.add_argument("--azimuth-target-deg", default=None,
+                           help="表4 那一趟的目標方位角，一個值套用到每段，"
+                                "或逗號分隔依序每段一個。只是標記，"
+                                "分析用實際算出的方位角")
             p.add_argument("--seconds", type=float, default=30.0,
                            help="取基準的取樣長度")
             p.add_argument("--seconds-each", type=float, default=90.0,
