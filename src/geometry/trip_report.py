@@ -172,10 +172,17 @@ def tilt_text(rows) -> str:
 
     by_angle = tilt_by_angle(rows)
     if by_angle:
-        out += ["", "依目標角度（誤差會不會隨角度變大；分母是人數）", ""]
-        out += _table([("側", 4), ("目標", 8), ("誤差平均", 22), ("n", 4)],
-                      [[side, _fmt(target, 0, "°", signed=False),
-                        with_error(g.mean, g.error), str(g.n)]
+        strict = {c: tilt_by_angle(rows, c) for c in SENSITIVITY_LIMITS}
+
+        def cell_text(g):
+            return "—" if g is None or g.mean is None else (
+                f"{with_error(g.mean, g.error)}（n={g.n}）")
+
+        out += ["", "依目標角度（誤差會不會隨角度變大；分母是人數），附略過率敏感度分析", ""]
+        out += _table([("側", 4), ("目標", 8), ("主要（附註納入）", 24)]
+                      + [(f"≤{c * 100:.0f}%", 24) for c in SENSITIVITY_LIMITS],
+                      [[side, _fmt(target, 0, "°", signed=False), cell_text(g)]
+                       + [cell_text(strict[c].get((side, target))) for c in SENSITIVITY_LIMITS]
                        for (side, target), g in by_angle.items()])
     symmetry = tilt_symmetry(rows)
     if symmetry:
@@ -310,6 +317,9 @@ def trip_sections(summaries, groups=None) -> list[tuple[str, str]]:
     if any(r.paired for r in forward):
         out.append(("軀幹前傾：肩高與 θ_KA", paired_text(
             forward, FORWARD_QUANTITIES, "軀幹前傾", _FORWARD_NOTE)))
+        sens = sensitivity_text(forward, FORWARD_QUANTITIES)
+        if sens:
+            out.append(("軀幹前傾：跨受試者平均與敏感度分析", sens))
     tilts = tilt_rows(summaries)
     if tilts:
         out.append(("側傾：θ_sym 對量角器", tilt_text(tilts)))

@@ -41,6 +41,8 @@ _SESSION_COLUMNS = (
     "theta_ca_rejection_rate", "theta_sym_rejection_rate",
     "theta_ca_inclusion", "theta_sym_inclusion", "turned_deg",
     "trip_id", "desk_level", "lift_cm", "desk_offset_cm",
+    # θ_KA 沿用 θ_CA 的略過率與 15%，數字會一樣，列出來是讓只取 θ_KA 的人看得到納入狀態。
+    "theta_ka_rejection_rate", "theta_ka_inclusion",
 )
 
 # 逐段表每一欄的寬度。手寫而不是照內容算，因為量測之間的數字量級差不多，
@@ -123,6 +125,9 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "desk_level": summary.meta.get("desk_level"),
             "lift_cm": summary.meta.get("lift_cm"),
             "desk_offset_cm": summary.meta.get("desk_offset_cm"),
+            "theta_ka_rejection_rate": axis_rejection_rate(summary, "θ_KA"),
+            "theta_ka_inclusion": _inclusion(axis_rejection_rate(summary, "θ_KA"),
+                                             "θ_KA", turn),
         })
     return rows
 

@@ -126,7 +126,8 @@ def test_unpaired_natural_segments_are_listed_with_a_reason(tmp_path):
 def test_a_natural_segment_that_turned_is_void_even_if_clean(tmp_path):
     folder = tmp_path / "s01"
     _write(folder, "natural-1.csv", condition="natural", azimuth=58.0)
-    _write(folder, "upright-1.csv", azimuth=44.0, captured_at="2026-11-18T10:02:00")
+    _write(folder, "upright-1.csv", azimuth=44.0, baseline=(0.0, 0.0, 44.0),
+           captured_at="2026-11-18T10:02:00")
     row = paired_differences(_load(tmp_path))[0]
     assert row.turned_deg == pytest.approx(14.0)
     assert row.differences["θ_CA"].status == VOID
@@ -338,3 +339,73 @@ def test_old_files_produce_no_trip_sections(tmp_path):
     _write(tmp_path / "s01", "upright-1.csv", trip=None)
     assert trip_sections(_load(tmp_path)) == []
     assert trip_csvs(_load(tmp_path)) == {}
+
+
+# ---- 2026-11-18 GPT 審查補的情境 -----------------------------------------
+
+def test_a_pair_is_void_when_the_reference_upright_itself_turned(tmp_path):
+    """upright 相對基準轉了 20°，自然坐相對它只差 1°；這一列不能算數。"""
+    folder = tmp_path / "s01"
+    _write(folder, "natural-1.csv", condition="natural", azimuth=61.0)
+    _write(folder, "upright-1.csv", azimuth=60.0, baseline=(0.0, 0.0, 40.0),
+           captured_at="2026-11-18T10:02:00")
+    row = paired_differences(_load(tmp_path))[0]
+    assert row.turned_deg == pytest.approx(1.0)
+    assert row.reference_turned_deg == pytest.approx(20.0)
+    assert row.differences["θ_CA"].status == VOID
+    assert sensitivity([row], "θ_CA").n == 0
+
+
+def test_a_trip_without_any_baseline_never_voids_for_turning(tmp_path):
+    """整趟沒有基準時，即使有 upright，方位角差也不判轉身。"""
+    folder = tmp_path / "s01"
+    _write(folder, "natural-1.csv", condition="natural", azimuth=30.0)
+    _write(folder, "upright-1.csv", azimuth=55.0, captured_at="2026-11-18T10:02:00")
+    row = paired_differences(_load(tmp_path))[0]
+    assert row.turned_deg is None
+    assert row.differences["θ_CA"].status != VOID
+
+
+def test_the_camera_lost_upright_is_skipped_as_the_reference(tmp_path):
+    """掉線的那份 upright 檔尾有 camera_lost，配對改用重量的那一份。"""
+    folder = tmp_path / "s01"
+    _write(folder, "natural-1.csv", condition="natural", ca=20.0)
+    lost = _write(folder, "upright-1.csv", ca=0.0, frames=10,
+                  captured_at="2026-11-18T10:02:00")
+    with lost.open("a", encoding="utf-8") as handle:
+        handle.write("# camera_lost=1\n")
+    _write(folder, "upright-2.csv", trial=2, ca=8.0, captured_at="2026-11-18T10:04:00")
+    row = paired_differences(_load(tmp_path))[0]
+    assert row.reference.path.name == "upright-2.csv"
+    assert row.differences["θ_CA"].value == pytest.approx(12.0)
+
+
+def test_the_ratio_error_survives_a_zero_numerator(tmp_path):
+    """mean(tan θ_2D) = 0 時比值是 0，誤差仍然算得出來（σ_r = σ_a / |b|）。"""
+    _write(tmp_path / "s01", "head-forward-1.csv", condition="head-forward", ca=20.0,
+           theta_2d=0.0, extra={"azimuth_target_deg": 45})
+    path = next((tmp_path / "s01").glob("*.csv"))
+    # 把 2D 的耳朵 x 改成繞著肩膀晃，平均 tan θ_2D 是 0、但有散佈
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header_at = next(i for i, l in enumerate(lines) if l.startswith("frame,"))
+    columns = lines[header_at].split(",")
+    x = columns.index("right_ear_lx_px")
+    for k, i in enumerate(range(header_at + 1, len(lines))):
+        cells = lines[i].split(",")
+        cells[x] = str(500.0 + (-6.0, 1.0, 5.0)[k % 3])   # 三個一組平均為 0，區塊長度 8 切不齊
+        lines[i] = ",".join(cells)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    row = ratio_rows(_load(tmp_path))[0]
+    assert row.ratio == pytest.approx(0.0, abs=1e-9)
+    assert row.ratio_error is not None and row.ratio_error > 0
+
+
+def test_forward_and_tilt_carry_the_sensitivity_runs(tmp_path):
+    folder = tmp_path / "s01"
+    _write(folder, "upright-1.csv", shoulder=-100.0, ka=2.0, baseline=(0, 0, 40.0))
+    _write(folder, "forward-1.csv", condition="forward", shoulder=-130.0, ka=22.0,
+           baseline=(0, 0, 40.0), captured_at="2026-11-18T10:05:00")
+    _tilt(folder, "tilt-left-1.csv", "tilt-left", sym=18.0, measured=20, target=20)
+    sections = dict(trip_sections(_load(tmp_path)))
+    assert "軀幹前傾：跨受試者平均與敏感度分析" in sections
+    assert "≤15%" in sections["側傾：θ_sym 對量角器"]

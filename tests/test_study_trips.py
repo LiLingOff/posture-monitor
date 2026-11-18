@@ -352,3 +352,31 @@ def test_old_csv_without_the_new_header_lines_still_reads(tmp_path):
                     encoding="utf-8")
     rows, meta = read_rows(path)
     assert "trip_id" not in meta and rows
+
+
+# ---- 2026-11-18 GPT 審查補的情境 -----------------------------------------
+
+def test_a_no_baseline_trip_with_an_upright_still_never_flags_a_turn():
+    segments = review([_rec("head-forward", [30.0], before=True),
+                       _rec("upright", [45.0], before=True),
+                       _rec("head-forward", [55.0], before=True)], None)
+    assert not any(s.turned_too_far for s in segments)
+    assert not any(s.needs_redo for s in segments)
+
+
+def test_a_retaken_upright_is_not_the_turn_reference():
+    """upright-1 掉線、upright-2 重量；自然坐要對重量的那一份。"""
+    lost = _rec("upright", [70.0])
+    lost.camera_lost = "相機掉線"
+    segments = review([_rec("natural", [44.0], before=True), lost,
+                       _rec("upright", [45.0])], _baseline(azimuth_deg=45.0))
+    assert segments[0].turned_deg == pytest.approx(-1.0)
+    assert not segments[0].turned_too_far
+
+
+def test_a_lost_segment_gets_a_camera_lost_line_at_the_end(tmp_path, monkeypatch):
+    _patch(monkeypatch, _Events(lost_on={1}))
+    posture._run_study(_args(tmp_path, conditions="upright"))
+    folder = tmp_path / "s01"
+    assert _meta(folder / "upright-1.csv").get("camera_lost") == "1"
+    assert "camera_lost" not in _meta(folder / "upright-2.csv")

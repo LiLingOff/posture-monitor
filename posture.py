@@ -1105,6 +1105,11 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
         _report(recording, baseline, log)
     finally:
         log.close()
+    if recording.camera_lost is not None:
+        # 標頭在開始時就寫完了，掉線是事後才知道的，所以補在檔尾。`read_rows` 收
+        # 任何位置的 `# key=value`；分析端靠它不拿殘缺的 upright 當同趟對照。
+        with open(log.path, "a", encoding="utf-8") as handle:
+            handle.write("# camera_lost=1\n")
     # replace 而不是直接指派：回傳的 Recording 一建好就是完整的，不會有
     # 「要等 _study_one 跑完才算有效」的中間狀態。
     return replace(recording, condition=condition, trial=trial,

@@ -271,7 +271,7 @@ def test_cohort_csv_puts_the_new_column_last(tmp_path):
     # θ_KA 之後又加了 2D θ_CA 的五欄與 2026-11-18 的分軸略過率、趟次欄位，
     # θ_KA 仍緊接在舊欄位後面。
     assert header[header.index("over_share") + 1] == "theta_ka_deg"
-    assert header[-1] == "desk_offset_cm"
+    assert header[-1] == "theta_ka_inclusion"
     assert header.index("distance_mm") == header.index("theta_sym_deg") + 1
 
 

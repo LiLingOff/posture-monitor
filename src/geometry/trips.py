@@ -88,14 +88,27 @@ def trips(summaries: list[SessionSummary]) -> dict[tuple[str, str], list[Session
 
 def trip_upright(summary: SessionSummary,
                  index: dict[tuple[str, str], list[SessionSummary]]) -> SessionSummary | None:
-    """同一趟的第一段端正坐。沒有 trip_id 或那一趟沒有端正坐就是 None。"""
+    """同一趟的第一段端正坐。沒有 trip_id 或那一趟沒有端正坐就是 None。
+
+    相機掉線的那一份（檔尾有 `# camera_lost=1`）跳過：study 會在同一趟裡重量，
+    殘缺的那份往往只有幾秒。
+    """
     tid = trip_id(summary)
     if tid is None:
         return None
     for other in index.get((summary.subject_key, tid), []):
-        if other.condition == UPRIGHT:
+        if other.condition == UPRIGHT and "camera_lost" not in other.meta:
             return other
     return None
+
+
+def trip_has_baseline(summary: SessionSummary,
+                      index: dict[tuple[str, str], list[SessionSummary]]) -> bool:
+    """這一趟有沒有任何一段扣了基準。沒有 trip_id 時只看這一段自己。"""
+    tid = trip_id(summary)
+    if tid is None:
+        return summary.has_baseline
+    return any(s.has_baseline for s in index.get((summary.subject_key, tid), []))
 
 
 # ---- 方位角與轉身 ------------------------------------------------------
@@ -116,9 +129,9 @@ def turned_deg(summary: SessionSummary,
 
     - 有基準的段落：對標頭記的 baseline_azimuth_deg。
     - 沒有基準的段落（自然坐）：對同一趟第一段端正坐的平均方位角。
-    - 表4 那一趟、或找不到參考值：None（不判轉身）。
+    - 表4 那一趟、整趟沒有基準、或找不到參考值：None（不判轉身）。
     """
-    if is_azimuth_trip(summary):
+    if is_azimuth_trip(summary) or not trip_has_baseline(summary, index):
         return None
     mean = mean_azimuth(summary)
     if mean is None:
@@ -219,6 +232,8 @@ class PairedRow:
     reference: SessionSummary | None
     differences: dict[str, Difference] = field(default_factory=dict)
     turned_deg: float | None = None
+    # 參考的 upright 自己相對基準轉了多少。它轉身的話這一列也作廢（GPT 審查第 2 條）。
+    reference_turned_deg: float | None = None
     reason: str = ""          # 未配對時寫原因
 
     @property
@@ -266,10 +281,13 @@ def paired_differences(summaries: list[SessionSummary], select=is_natural,
             rows.append(PairedRow(summary, None, reason="同一趟沒有 upright"))
             continue
         turn = turned_deg(summary, index)
-        row = PairedRow(summary, reference, turned_deg=turn)
+        reference_turn = turned_deg(reference, index)
+        row = PairedRow(summary, reference, turned_deg=turn,
+                        reference_turned_deg=reference_turn)
+        void = is_turned(turn) or is_turned(reference_turn)
         for quantity in quantities:
             row.differences[quantity.label] = _difference(
-                summary, reference, quantity, is_turned(turn))
+                summary, reference, quantity, void)
         rows.append(row)
     return rows
 
@@ -478,10 +496,11 @@ def ratio_rows(summaries: list[SessionSummary]) -> list[RatioRow]:
         a, b = float(tan_2d.mean()), float(tan_3d.mean())
         ratio = None if b == 0 else a / b
         error = None
-        if ratio is not None and a != 0:
+        if ratio is not None:
             ea, eb = standard_error(tan_2d), standard_error(tan_3d)
             if ea is not None and eb is not None:
-                error = abs(ratio) * math.hypot(ea / a, eb / b)
+                # σ_r² = (σ_a/b)² + (a·σ_b/b²)²。不寫成相對誤差，分子平均是 0 時才算得出來。
+                error = math.hypot(ea / b, a * eb / (b * b))
         out.append(RatioRow(
             summary=summary, target_deg=_meta_float(summary, "azimuth_target_deg"),
             azimuth_deg=float(pairs[:, 0].mean()), frames=int(pairs.shape[0]),

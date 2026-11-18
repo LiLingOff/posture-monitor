@@ -354,12 +354,18 @@ def _reference_azimuth(recording, recordings, baseline) -> tuple[float | None, b
     """
     if not getattr(recording, "before_baseline", False):
         return (None if baseline is None else baseline.azimuth_deg), True
-    for other in recordings:
-        if other.condition == UPRIGHT and other.azimuths:
-            return _mean_azimuth(other), True
     if baseline is None:
+        # 整趟沒有基準：就算這一趟裡有 upright 也一樣不判轉身（GPT 審查第 1 條）。
         first = next((r for r in recordings if r.azimuths), None)
         return (None if first is None else _mean_azimuth(first)), False
+    for i, other in enumerate(recordings):
+        if other.condition != UPRIGHT or not other.azimuths:
+            continue
+        # 掉線之後同一種姿勢又重量了，殘缺的那份不當參考（審查第 5 條）。
+        if other.camera_lost is not None and any(
+                r.condition == UPRIGHT for r in recordings[i + 1:]):
+            continue
+        return _mean_azimuth(other), True
     return None, True
 
 
