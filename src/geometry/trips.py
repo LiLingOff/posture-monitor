@@ -358,7 +358,7 @@ class TiltRow:
     def sign_ok(self) -> bool | None:
         if self.theta_sym_deg is None:
             return None
-        return np.sign(self.theta_sym_deg) == TILT_SIGN[self.summary.condition]
+        return bool(np.sign(self.theta_sym_deg) == TILT_SIGN[self.summary.condition])
 
 
 def tilt_rows(summaries: list[SessionSummary]) -> list[TiltRow]:
