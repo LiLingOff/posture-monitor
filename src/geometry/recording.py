@@ -214,10 +214,17 @@ class Snapshots:
     存左眼就夠。要確認的是姿勢而不是立體配對，而且一半的張數換一半的磁碟。
     """
 
-    def __init__(self, out_dir: Path | None, every_s: float):
+    # 不疊加任何資訊的原圖放在快照資料夾底下的這個子資料夾，檔名與疊加版相同。
+    RAW_DIR = "raw"
+
+    def __init__(self, out_dir: Path | None, every_s: float, keep_raw: bool = False):
         self._dir = out_dir
         self._every = every_s
         self._next_at = 0.0
+        # 外部評分者盲評用（`rating-pack`）。疊加版畫著系統偵測到的骨架與點名，
+        # 評分者看了會被系統的判讀帶著走，所以盲評要用沒有疊加的原圖。
+        # 預設關閉：多存一份就多一倍磁碟，而且只有要給評分者的受試者需要。
+        self._keep_raw = keep_raw
 
     @property
     def enabled(self) -> bool:
@@ -231,6 +238,8 @@ class Snapshots:
         self._next_at = elapsed_s + self._every
         name = snapshot_name(frame_index, elapsed_s, theta_ca_deg, posture)
         write_frame(left_frame, self._dir / name, left_kp)
+        if self._keep_raw:
+            write_raw_frame(left_frame, self._dir / self.RAW_DIR / name)
         return name
 
 
@@ -254,6 +263,14 @@ def write_frame(frame, path: Path, keypoints=None) -> None:
     overlay.draw_keypoints(canvas, keypoints, 1.0)
     overlay.label_keypoints(canvas, keypoints, 1.0)
     cv2.imwrite(str(path), canvas)
+
+
+def write_raw_frame(frame, path: Path) -> None:
+    """原樣寫成 png，不疊骨架、點名或任何文字。盲評包只收這個版本。"""
+    import cv2
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), frame)
 
 
 def forget_if_stale(

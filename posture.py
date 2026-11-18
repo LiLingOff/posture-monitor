@@ -50,6 +50,10 @@ from geometry.pipeline import (PersonMatch,  # noqa: E402
 from geometry.recording import (CameraRetry, Recording,  # noqa: E402
                                 Session, Snapshots, StuckWatcher,
                                 forget_if_stale, write_frame)
+from geometry.rating_config import RatingConfigError  # noqa: E402
+from geometry.rating_import import RatingImportError  # noqa: E402
+from geometry.rating_pack import RatingPackError  # noqa: E402
+from geometry.rating_workflow import analyse_ratings, export_pack  # noqa: E402
 from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
@@ -722,10 +726,14 @@ def _open_display(args):
 
 
 def _open_snapshots(args, out_dir):
-    snapshots = Snapshots(out_dir, args.snapshot_every)
+    keep_raw = getattr(args, "snapshot_raw", False)
+    snapshots = Snapshots(out_dir, args.snapshot_every, keep_raw=keep_raw)
     if snapshots.enabled:
         print(f"每 {args.snapshot_every:.0f} 秒存一張畫面到 {out_dir}，"
               f"事後可以核對當時的姿勢", flush=True)
+        if keep_raw:
+            print(f"另存不疊加資訊的原圖到 {out_dir / Snapshots.RAW_DIR}，"
+                  f"給外部評分者盲評用", flush=True)
     return snapshots
 
 
@@ -1259,6 +1267,25 @@ def _run_analyse(args) -> None:
                 print(f"{summary.path.name}{table}")
 
 
+def _run_rating_pack(args) -> None:
+    """匯出給外部評分者的盲評包。不碰相機。"""
+    raters = [r.strip() for r in args.raters.split(",") if r.strip()]
+    try:
+        print(export_pack(args.paths, args.out, raters, args.config, args.seed,
+                          args.per_segment, args.allow_overlay))
+    except (RatingPackError, RatingConfigError) as exc:
+        raise SystemExit(str(exc))
+
+
+def _run_ratings(args) -> None:
+    """讀回評分，算評分者信度與有效警報。沒有評分檔時照實說，不當掉。"""
+    try:
+        print(analyse_ratings(args.key, args.ratings, args.config, args.sessions,
+                              args.out, args.bootstrap))
+    except (RatingImportError, RatingConfigError, FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """建整套 CLI。
 
@@ -1292,6 +1319,39 @@ def build_parser() -> argparse.ArgumentParser:
                     help="即使 CSV 有 posture 欄也重新判一次，用來換參數比較")
     ap.add_argument("--segments", type=int, default=0,
                     help="把整段切成幾塊各自印統計，用來看漂移。0 是不印")
+
+    # 外部評分者盲評（說明書表3）。兩個都不開相機。
+    rp = sub.add_parser("rating-pack", help="匯出給外部評分者的盲評包，不需要相機")
+    rp.add_argument("paths", type=Path, nargs="+",
+                    help="受試者資料夾（data/sessions/<subject>）或整個 data/sessions")
+    rp.add_argument("--out", type=Path, required=True,
+                    help="盲評包的資料夾，要不存在或是空的。底下 raters/ 給評分者，"
+                         "key/ 自己留著")
+    rp.add_argument("--raters", required=True,
+                    help="評分者代號，逗號分隔，例如 R1,R2。每人一份，順序各自隨機")
+    rp.add_argument("--config", type=Path, default=None,
+                    help="評分設定檔（JSON）。給了評分表才有評分欄，見文件 10")
+    rp.add_argument("--per-segment", type=int, default=0,
+                    help="每段最多取幾張快照（平均挑）。0 是全部")
+    rp.add_argument("--seed", type=int, default=None,
+                    help="亂數種子。不給就用系統亂數，每次匯出都不同")
+    rp.add_argument("--allow-overlay", action="store_true",
+                    help="沒有原圖（量測時沒加 --snapshot-raw）時改用疊加骨架的快照。"
+                         "評分者會看到系統的骨架，盲評的前提打折")
+
+    rt = sub.add_parser("ratings", help="讀回評分，算評分者信度與有效警報，不需要相機")
+    rt.add_argument("--key", type=Path, required=True,
+                    help="rating-pack 產生的 key/key.csv")
+    rt.add_argument("--ratings", type=Path, nargs="*", default=[],
+                    help="評分者交回的 CSV 或放它們的資料夾。沒有的話印「沒有評分檔」")
+    rt.add_argument("--config", type=Path, required=True,
+                    help="匯出時用的同一份評分設定檔")
+    rt.add_argument("--sessions", type=Path, default=None,
+                    help="逐幀 CSV 的根目錄（data/sessions）。不給就用 key 檔記的路徑")
+    rt.add_argument("--out", type=Path, default=None,
+                    help="把報告與逐段 CSV 寫到這個資料夾")
+    rt.add_argument("--bootstrap", type=int, default=2000,
+                    help="信賴區間的 bootstrap 次數")
 
     modes = (
         ("once", "量測一次並印出完整診斷"),
@@ -1426,6 +1486,9 @@ def build_parser() -> argparse.ArgumentParser:
                            help="只印角度不做超標判定，用來收集原始資料")
             p.add_argument("--snapshot-every", type=float, default=10.0,
                            help="存畫面的間隔秒數。study 一定會存，live 要搭配 --snapshots")
+            p.add_argument("--snapshot-raw", action="store_true",
+                           help="快照另存一份不疊骨架與點名的原圖（快照資料夾的 raw/），"
+                                "給 rating-pack 做外部評分者的盲評包。預設不存")
         if name in ("live", "baseline", "study", "monitor"):
             p.add_argument("--overwrite", action="store_true",
                            help="允許覆蓋既有的基準檔或記錄檔")
@@ -1489,8 +1552,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
-    if args.mode in ("analyse", "cohort"):
-        (_run_cohort if args.mode == "cohort" else _run_analyse)(args)
+    offline = {"analyse": _run_analyse, "cohort": _run_cohort,
+               "rating-pack": _run_rating_pack, "ratings": _run_ratings}
+    if args.mode in offline:
+        offline[args.mode](args)
         return
     if not args.calibration.is_file():
         raise SystemExit(

@@ -17,3 +17,13 @@ third_party/
 # 而這個 repo 是 public；從 Jetson 拷回來的檔案不能跟著進版控。
 data/sessions/
 data/baselines/
+
+# 外部評分者盲評（rating-pack／ratings）。盲評包有受試者的臉，key 檔對得回受試者
+# 與系統判定，評分表是評分者的資料，三者都不能進這個 public repo。
+# 預設放 data/rating_packs/ 與 data/ratings/；放到別處時檔名規則也擋得住。
+data/rating_packs/
+data/ratings/
+key.csv
+rating_sheet*.csv
+rating_segments.csv
+**/raters/*/images/
