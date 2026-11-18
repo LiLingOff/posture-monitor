@@ -78,20 +78,43 @@ def read_key(path: Path) -> dict[str, KeyRow]:
     if not rows or missing:
         raise ValueError(f"{path} 不是盲評包的 key 檔（缺欄：{', '.join(missing) or '沒有資料列'}）")
     key = {}
-    for row in rows:
-        key[row["blind_id"]] = KeyRow(**{c: row.get(c, "") or "" for c in KEY_COLUMNS})
+    problems = []
+    for line_no, row in enumerate(rows, start=2):
+        blind = (row.get("blind_id") or "").strip()
+        if not blind:
+            problems.append(f"第 {line_no} 筆資料 blind_id 是空的")
+        elif blind in key:
+            # 後一筆蓋掉前一筆的話，評分會被歸到別人的段落，報告上完全看不出來。
+            problems.append(f"第 {line_no} 筆資料 blind_id {blind} 重複")
+        else:
+            key[blind] = KeyRow(**{c: (row.get(c) or "") for c in KEY_COLUMNS})
+    if problems:
+        raise ValueError(f"{path} 的 key 檔有問題：\n  " + "\n  ".join(problems))
     return key
 
 
+def _looks_like_sheet(path: Path) -> bool:
+    """標頭同時有 rater_id 與 blind_id 才算評分表。"""
+    for line in _data_lines(path)[:1]:
+        header = next(csv.reader([line]), [])
+        return "rater_id" in header and "blind_id" in header
+    return False
+
+
 def find_rating_files(paths: list[Path]) -> list[Path]:
-    """評分檔可以給檔案或資料夾。資料夾找底下所有 .csv（不含 key 檔）。"""
+    """評分檔可以給檔案或資料夾。
+
+    直接指定的檔案照收（格式不對會在匯入時報缺欄）。資料夾只收標頭有
+    rater_id 與 blind_id 的 CSV：同一個資料夾裡可能有上一次 `ratings --out`
+    寫出的 rating_segments.csv 或 key 檔，不該被當成評分表。
+    """
     files = []
     for path in paths:
         path = Path(path)
         if path.is_file():
             files.append(path)
         elif path.is_dir():
-            files.extend(p for p in sorted(path.rglob("*.csv")) if p.name != "key.csv")
+            files.extend(p for p in sorted(path.rglob("*.csv")) if _looks_like_sheet(p))
     return files
 
 

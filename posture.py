@@ -1302,7 +1302,7 @@ def _run_rating_pack(args) -> None:
     raters = [r.strip() for r in args.raters.split(",") if r.strip()]
     try:
         print(export_pack(args.paths, args.out, raters, args.config, args.seed,
-                          args.per_segment, args.allow_overlay))
+                          args.per_segment, args.allow_overlay, args.key_out))
     except (RatingPackError, RatingConfigError) as exc:
         raise SystemExit(str(exc))
 
@@ -1361,8 +1361,11 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("paths", type=Path, nargs="+",
                     help="受試者資料夾（data/sessions/<subject>）或整個 data/sessions")
     rp.add_argument("--out", type=Path, required=True,
-                    help="盲評包的資料夾，要不存在或是空的。底下 raters/ 給評分者，"
-                         "key/ 自己留著")
+                    help="盲評包的資料夾，要不存在或是空的。底下每位評分者一個資料夾，"
+                         "整包交出去也不帶 key")
+    rp.add_argument("--key-out", type=Path, default=None,
+                    help="key 檔的位置，不能在 --out 裡面。預設是 --out 旁邊的 "
+                         "<資料夾名>-key/key.csv")
     rp.add_argument("--raters", required=True,
                     help="評分者代號，逗號分隔，例如 R1,R2。每人一份，順序各自隨機")
     rp.add_argument("--config", type=Path, default=None,
@@ -1377,7 +1380,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rt = sub.add_parser("ratings", help="讀回評分，算評分者信度與有效警報，不需要相機")
     rt.add_argument("--key", type=Path, required=True,
-                    help="rating-pack 產生的 key/key.csv")
+                    help="rating-pack 產生的 key 檔（預設在盲評包旁邊的 <資料夾名>-key/key.csv）")
     rt.add_argument("--ratings", type=Path, nargs="*", default=[],
                     help="評分者交回的 CSV 或放它們的資料夾。沒有的話印「沒有評分檔」")
     rt.add_argument("--config", type=Path, required=True,

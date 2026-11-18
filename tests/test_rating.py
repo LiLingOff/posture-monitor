@@ -22,7 +22,7 @@ from geometry.rating_config import RatingConfigError, load_config, parse_config
 from geometry.rating_import import (RatingImportError, find_rating_files, read_key,
                                     read_ratings)
 from geometry.rating_pack import (RatingPackError, count_adjacent, find_items,
-                                  parse_snapshot_name, spaced_order, strip_jpeg,
+                                  parse_snapshot_name, spaced_order,
                                   strip_png, write_pack)
 from geometry.rating_report import NO_RATINGS
 from geometry.rating_stats import (TwoByTwo, cohen_kappa, fleiss_kappa, icc2,
@@ -41,6 +41,11 @@ CONFIG = {
                           {"name": "shoulder", "bad_values": ["1"], "good_values": ["0"]}],
                 "min_failed_items": 1},
 }
+
+
+def _key(out: Path) -> Path:
+    """key 檔的預設位置：盲評包旁邊的 <資料夾名>-key/key.csv。"""
+    return out.parent / f"{out.name}-key" / "key.csv"
 
 
 def _config_file(tmp_path, **overrides) -> Path:
@@ -190,7 +195,7 @@ def test_config_problems_are_listed_together():
 
 # ---- 盲評包 -----------------------------------------------------------------
 
-_NAME = re.compile(r"^\d{4}_[a-z2-9]{8}\.(png|jpg)$")
+_NAME = re.compile(r"^\d{4}_[a-z2-9]{8}\.png$")
 
 
 def _two_subjects(root):
@@ -204,11 +209,11 @@ def test_pack_file_names_say_nothing_about_the_verdict_or_angle(tmp_path):
     _two_subjects(root)
     out = tmp_path / "pack"
     export_pack([root], out, ["R1", "R2"], _config_file(tmp_path), seed=1)
-    files = [p for p in (out / "raters").rglob("*") if p.is_file()]
+    files = [p for p in out.rglob("*") if p.is_file() and p.name != ".gitignore"]
     images = [p for p in files if p.parent.name == "images"]
     assert images and all(_NAME.match(p.name) for p in images)
     for path in files:
-        rel = str(path.relative_to(out / "raters"))
+        rel = str(path.relative_to(out))
         # blind_id 的字母表沒有大寫、沒有 i、沒有標點，這些片段不可能碰巧出現。
         for leak in ("S0", "upright", "head-", "_over", "_ok", "超標", "正常", "18.5", "ca+"):
             assert leak not in rel
@@ -220,16 +225,17 @@ def test_pack_images_carry_only_pixels(tmp_path):
     _two_subjects(root)
     out = tmp_path / "pack"
     export_pack([root], out, ["R1"], seed=2)
-    key = read_key(out / "key" / "key.csv")
-    for image in (out / "raters" / "R1" / "images").iterdir():
+    key = read_key(_key(out))
+    for image in (out / "R1" / "images").iterdir():
         data = image.read_bytes()
         # 用整段文字比對，短的片段可能碰巧出現在壓縮後的像素資料裡。
         for leak in (b"Comment", b"S01 head-forward", b"S02 upright", "超標 18.5".encode(),
                      b"GPS 25.0N"):
             assert leak not in data
         row = key[image.stem.split("_", 1)[1]]
-        if image.suffix == ".png":
-            assert set(_png_kinds(data)) <= {b"IHDR", b"IDAT", b"IEND"}
+        assert image.suffix == ".png"
+        assert set(_png_kinds(data)) <= {b"IHDR", b"IDAT", b"IEND"}
+        if row.kind == "snapshot":
             assert _png_idat(data) == _png_idat(Path(row.source).read_bytes())
             assert Path(row.source).parent.name == "raw", "只收原圖"
         else:
@@ -242,11 +248,11 @@ def test_blind_ids_match_the_key_and_the_sheets(tmp_path):
     _two_subjects(root)
     out = tmp_path / "pack"
     export_pack([root], out, ["R1", "R2"], _config_file(tmp_path), seed=3)
-    key = read_key(out / "key" / "key.csv")
+    key = read_key(_key(out))
     assert len(key) == 3 * (3 + 3 + 1)
     for rater in ("R1", "R2"):
-        images = {p.stem.split("_", 1)[1] for p in (out / "raters" / rater / "images").iterdir()}
-        with (out / "raters" / rater / "rating_sheet.csv").open(encoding="utf-8") as f:
+        images = {p.stem.split("_", 1)[1] for p in (out / rater / "images").iterdir()}
+        with (out / rater / "rating_sheet.csv").open(encoding="utf-8") as f:
             sheet = list(csv.DictReader(f))
         assert images == set(key) == {r["blind_id"] for r in sheet}
         assert {r["rater_id"] for r in sheet} == {rater}
@@ -254,7 +260,7 @@ def test_blind_ids_match_the_key_and_the_sheets(tmp_path):
     row = next(r for r in key.values() if r.condition == "head-forward" and r.kind == "snapshot")
     assert row.system_posture == "超標" and float(row.theta_ca_deg) == 18.5
     assert row.trip_id == "t1" and row.subject.startswith("S0")
-    assert not list((out / "raters").rglob("key*")), "key 檔不在給評分者的資料夾裡"
+    assert not list(out.rglob("key*")), "key 檔不在盲評包裡"
 
 
 def test_each_rater_gets_an_own_order_without_same_subject_neighbours(tmp_path):
@@ -262,10 +268,10 @@ def test_each_rater_gets_an_own_order_without_same_subject_neighbours(tmp_path):
     _two_subjects(root)
     out = tmp_path / "pack"
     export_pack([root], out, ["R1", "R2"], seed=4)
-    key = read_key(out / "key" / "key.csv")
+    key = read_key(_key(out))
     orders = {}
     for rater in ("R1", "R2"):
-        names = sorted(p.name for p in (out / "raters" / rater / "images").iterdir())
+        names = sorted(p.name for p in (out / rater / "images").iterdir())
         ids = [n.split("_", 1)[1].split(".")[0] for n in names]
         subjects = [key[i].subject for i in ids]
         assert all(a != b for a, b in zip(subjects, subjects[1:]))
@@ -330,8 +336,6 @@ def test_snapshot_names_parse_back():
 def test_strippers_reject_other_formats():
     with pytest.raises(RatingPackError):
         strip_png(b"GIF89a")
-    with pytest.raises(RatingPackError):
-        strip_jpeg(b"\x89PNG")
 
 
 # ---- 統計：已知答案 ---------------------------------------------------------
@@ -426,7 +430,7 @@ def pack(tmp_path):
     _two_subjects(root)
     out = tmp_path / "pack"
     export_pack([root], out, ["R1", "R2"], _config_file(tmp_path), seed=7)
-    return out, read_key(out / "key" / "key.csv"), load_config(tmp_path / "rating_config.json")
+    return out, read_key(_key(out)), load_config(tmp_path / "rating_config.json")
 
 
 def test_import_reports_every_problem_at_once(tmp_path, pack):
@@ -459,7 +463,7 @@ def test_a_missing_column_is_named(tmp_path, pack):
 
 def test_blank_rows_count_as_not_yet_rated(pack):
     out, key, config = pack
-    sheet = out / "raters" / "R1" / "rating_sheet.csv"
+    sheet = out / "R1" / "rating_sheet.csv"
     rows = list(csv.DictReader(sheet.open(encoding="utf-8")))
     for row in rows[:5]:
         row.update(score_posture=4, score_comfort=4, kendall_head="0", kendall_shoulder="1")
@@ -495,7 +499,7 @@ def _scenario(tmp_path):
     out = tmp_path / "pack"
     config_path = _config_file(tmp_path)
     export_pack([root], out, ["R1", "R2"], config_path, seed=8)
-    key = read_key(out / "key" / "key.csv")
+    key = read_key(_key(out))
     for rater, offset in (("R1", 0), ("R2", 0.5)):
         rows = [_row(rater, b, posture=plan[r.condition][2] + offset,
                      head=plan[r.condition][3]) for b, r in key.items()]
@@ -555,7 +559,7 @@ def test_a_trip_without_upright_ratings_is_explained(tmp_path):
     out = tmp_path / "pack"
     config_path = _config_file(tmp_path)
     export_pack([root], out, ["R1"], config_path, seed=9)
-    key = read_key(out / "key" / "key.csv")
+    key = read_key(_key(out))
     _write_sheet(tmp_path / "R1.csv", [_row("R1", b) for b in key])
     config = load_config(config_path)
     ratings = read_ratings([tmp_path / "R1.csv"], config, key)
@@ -566,7 +570,7 @@ def test_a_trip_without_upright_ratings_is_explained(tmp_path):
 
 def test_the_full_report_states_unit_and_dependence(tmp_path):
     _, out, _, _, config_path = _scenario(tmp_path)
-    report = analyse_ratings(out / "key" / "key.csv", [tmp_path / "R1.csv", tmp_path / "R2.csv"],
+    report = analyse_ratings(_key(out), [tmp_path / "R1.csv", tmp_path / "R2.csv"],
                              config_path, out_dir=tmp_path / "result", reps=200)
     assert "統計單位：段落" in report and "不獨立" in report
     assert "Cohen's kappa" in report and "ICC(2,1)" in report and "ICC(2,k)" in report
@@ -578,7 +582,7 @@ def test_three_raters_use_fleiss(tmp_path):
     _, out, key, _, config_path = _scenario(tmp_path)
     rows = [_row("R3", b, posture=4) for b in key]
     _write_sheet(tmp_path / "R3.csv", rows)
-    report = analyse_ratings(out / "key" / "key.csv",
+    report = analyse_ratings(_key(out),
                              [tmp_path / f"R{i}.csv" for i in (1, 2, 3)],
                              config_path, reps=100)
     assert "Fleiss' kappa" in report
@@ -590,7 +594,7 @@ def test_no_rating_files_is_said_plainly_and_does_not_crash(tmp_path, pack):
     out, _, _ = pack
     empty = tmp_path / "nothing"
     empty.mkdir()
-    report = analyse_ratings(out / "key" / "key.csv", [empty], tmp_path / "rating_config.json")
+    report = analyse_ratings(_key(out), [empty], tmp_path / "rating_config.json")
     assert report.startswith(NO_RATINGS)
 
 
@@ -598,7 +602,7 @@ def test_the_ratings_command_without_files_exits_normally(tmp_path, pack, capsys
     out, _, _ = pack
     module = load_posture_module()
     args = module.build_parser().parse_args(
-        ["ratings", "--key", str(out / "key" / "key.csv"),
+        ["ratings", "--key", str(_key(out)),
          "--config", str(tmp_path / "rating_config.json")])
     module._run_ratings(args)
     assert NO_RATINGS in capsys.readouterr().out
@@ -610,3 +614,120 @@ def test_existing_commands_parse_as_before():
     assert args.mode == "analyse" and args.window == 30
     args = parser.parse_args(["cohort", "data/sessions"])
     assert args.baseline_condition == "upright"
+
+
+# ---- 審查後補的情境 ---------------------------------------------------------
+
+def test_the_key_lives_outside_the_pack_and_both_are_git_ignored(tmp_path):
+    """整包交給評分者時不能帶到 key。"""
+    root = tmp_path / "sessions"
+    _two_subjects(root)
+    out = tmp_path / "pack"
+    export_pack([root], out, ["R1"], seed=10)
+    assert _key(out).is_file()
+    assert out not in _key(out).parents
+    assert (out / ".gitignore").read_text() == "*\n"
+    assert (_key(out).parent / ".gitignore").read_text() == "*\n"
+
+
+def test_a_key_inside_the_pack_or_over_an_old_key_is_refused(tmp_path):
+    root = tmp_path / "sessions"
+    _two_subjects(root)
+    items, _, _ = find_items([root])
+    with pytest.raises(RatingPackError, match="不能放在盲評包"):
+        write_pack(items, tmp_path / "pack", ["R1"], key_path=tmp_path / "pack" / "k.csv")
+    old = tmp_path / "old-key.csv"
+    old.write_text("x")
+    with pytest.raises(RatingPackError, match="已經存在"):
+        write_pack(items, tmp_path / "pack2", ["R1"], key_path=old)
+
+
+def test_a_quoted_boolean_does_not_flip_the_scale():
+    """bool("false") 是 True，用 bool() 轉的話量表方向會被默默反過來。"""
+    data = json.loads(json.dumps(CONFIG))
+    data["score"]["items"][0]["higher_is_better"] = "false"
+    with pytest.raises(RatingConfigError, match="higher_is_better"):
+        parse_config(data)
+
+
+def test_wrongly_shaped_config_is_reported_not_crashed():
+    with pytest.raises(RatingConfigError) as err:
+        parse_config({"score": [], "kendall": {"items": ["head"]}, "agreement": 3})
+    text = str(err.value)
+    assert "score 要是一個物件" in text and "kendall.items[0]" in text and "agreement" in text
+
+
+def test_a_duplicated_blind_id_in_the_key_is_refused(tmp_path, pack):
+    out, _, _ = pack
+    lines = _key(out).read_text(encoding="utf-8").splitlines()
+    _key(out).write_text("\n".join(lines + [lines[-1]]) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="重複"):
+        read_key(_key(out))
+
+
+def test_a_partial_raw_folder_is_not_silently_trimmed(tmp_path):
+    root = tmp_path / "sessions"
+    _segment(root, "S01", "upright", 1, shots=3)
+    raw = root / "S01" / "upright-1-shots" / "raw"
+    sorted(raw.iterdir())[0].unlink()
+    with pytest.raises(RatingPackError, match="1 張沒有原圖"):
+        find_items([root])
+    items, _, overlay = find_items([root], allow_overlay=True)
+    assert len(items) == 3 and overlay == ["S01/upright-1.csv"]
+    assert sum(1 for i in items if i.source.parent.name == "raw") == 2
+
+
+def _exif_orientation(value: int) -> bytes:
+    """最小的 EXIF：一個 IFD、一個方向標記（0x0112，SHORT）。"""
+    ifd = (b"MM\x00*" + struct.pack(">I", 8) + struct.pack(">H", 1)
+           + struct.pack(">HHIHH", 0x0112, 3, 1, value, 0) + struct.pack(">I", 0))
+    payload = b"Exif\x00\x00" + ifd
+    return b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+
+
+def test_jpeg_photos_are_turned_upright_before_the_exif_is_dropped(tmp_path):
+    """手機直拍：像素是橫的，靠 EXIF 方向標記轉正。拿掉 EXIF 前要先轉。"""
+    root = tmp_path / "sessions"
+    _segment(root, "S01", "upright", 1, shots=0)
+    image = np.zeros((8, 16, 3), dtype=np.uint8)
+    data = cv2.imencode(".jpg", image)[1].tobytes()
+    photo = root / "S01" / "upright-1-kendall" / "side.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.write_bytes(data[:2] + _exif_orientation(6) + data[2:])
+    out = tmp_path / "pack"
+    export_pack([root], out, ["R1"], seed=11)
+    [exported] = list((out / "R1" / "images").iterdir())
+    decoded = cv2.imdecode(np.frombuffer(exported.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    assert decoded.shape[:2] == (16, 8), "轉正後變成直的"
+    assert b"Exif" not in exported.read_bytes()
+
+
+def test_output_files_in_the_ratings_folder_are_not_read_as_sheets(tmp_path, pack):
+    _, key, _ = pack
+    folder = tmp_path / "ratings"
+    folder.mkdir()
+    _write_sheet(folder / "R1.csv", [_row("R1", b) for b in key])
+    (folder / "rating_segments.csv").write_text("segment,subject\nx,y\n", encoding="utf-8")
+    assert find_rating_files([folder]) == [folder / "R1.csv"]
+
+
+def test_the_drop_uses_only_raters_who_scored_both(tmp_path):
+    """端正坐只有給分偏高的 R1 評、前傾只有給分偏低的 R2 評：沒有共同評分者，不分類。"""
+    root = tmp_path / "sessions"
+    _segment(root, "S01", "upright", 1, posture="正常", ca=1.0)
+    _segment(root, "S01", "head-forward", 1, posture="超標", ca=20.0)
+    out = tmp_path / "pack"
+    config_path = _config_file(tmp_path)
+    export_pack([root], out, ["R1", "R2"], config_path, seed=12)
+    key = read_key(_key(out))
+    config = load_config(config_path)
+    rows = [_row("R1", b, posture=7) for b, r in key.items() if r.condition == "upright"]
+    rows += [_row("R2", b, posture=4, head="1") for b, r in key.items()
+             if r.condition == "head-forward"]
+    _write_sheet(tmp_path / "all.csv", rows)
+    ratings = read_ratings([tmp_path / "all.csv"], config, key)
+    results = {r.condition: r for r in segment_results(ratings, key, config)}
+    forward = results["head-forward"]
+    assert forward.drop(config) is None
+    assert forward.outcome("relative", config) is None
+    assert "沒有評分者同時評過" in forward.note

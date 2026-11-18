@@ -105,7 +105,8 @@ def icc2(matrix) -> ICC:
     ss_rows = k * ((y.mean(axis=1) - grand) ** 2).sum()
     ss_cols = n * ((y.mean(axis=0) - grand) ** 2).sum()
     ss_total = ((y - grand) ** 2).sum()
-    ss_error = ss_total - ss_rows - ss_cols
+    # 數學上不會是負的；完全加成的資料相減會剩 -1e-14 這種浮點誤差。
+    ss_error = max(ss_total - ss_rows - ss_cols, 0.0)
     msr = ss_rows / (n - 1)
     msc = ss_cols / (k - 1)
     mse = ss_error / ((n - 1) * (k - 1))

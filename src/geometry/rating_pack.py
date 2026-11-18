@@ -5,16 +5,17 @@
 所以不能把快照資料夾直接交出去。這裡做的事：
 
 1. 從 `data/sessions/<subject>/` 找出每一段的快照與 Kendall 檢核照片。
-2. 每一張給一個隨機的 blind_id，複製成 `<順序>_<blind_id>.<副檔名>`。
+2. 每一張給一個隨機的 blind_id，複製成 `<順序>_<blind_id>.png`。
    blind_id 是亂數，不是從任何欄位雜湊出來的，所以猜不回原檔。
 3. 圖片本身只留像素：PNG 只保留 IHDR、PLTE、tRNS、IDAT、IEND，文字、時間
-   等附屬區塊全部拿掉；JPEG 拿掉 EXIF、XMP、註解等 APP 與 COM 區段（手機拍的
-   Kendall 照片會有拍攝時間、機型、GPS）。
+   等附屬區塊全部拿掉；JPEG（手機拍的 Kendall 照片會有拍攝時間、機型、GPS）
+   依 EXIF 方向轉正後存成同樣只留像素的 PNG。
 4. 快照預設只收 `raw/` 底下不疊加資訊的原圖。疊加版畫著系統偵測到的骨架與
    點名，雖然沒有判定文字，但評分者看得到系統把耳朵、肩膀認在哪裡，會被帶著
    走。沒有原圖的段落預設拒絕匯出，要明知道這一點才用 `allow_overlay`。
-5. 另寫一份 key 檔（blind_id 對應受試者、趟次、條件、第幾次、時間、系統判定），
-   放在 `key/`，與給評分者的 `raters/` 分開，**key 不給評分者**。
+5. 另寫一份 key 檔（blind_id 對應受試者、趟次、條件、第幾次、時間、系統判定）。
+   key 放在盲評包資料夾**之外**（預設是旁邊的 `<資料夾>-key/key.csv`）：放在裡面
+   的話，把整包壓縮傳給評分者就連 key 一起送出去了。
 6. 每位評分者的順序各自隨機，並且盡量讓同一位受試者的照片不連續出現。
    做不到時（例如某位受試者的照片超過一半）照樣匯出，但回報還剩幾處相鄰。
 
@@ -73,10 +74,11 @@ class PackResult:
     out_dir: Path
     items: int
     raters: list[str]
+    key_path: Path | None = None
     adjacent_same_subject: dict[str, int] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
     used_overlay: list[str] = field(default_factory=list)
-    stripped_jpeg_orientation: int = 0
+    reencoded_jpeg: int = 0
 
 
 def read_meta(path: Path) -> dict[str, str]:
@@ -103,6 +105,13 @@ def parse_snapshot_name(name: str) -> dict | None:
         "theta_ca_deg": "" if ca == "na" else str(float(ca)),
         "system_posture": _VERDICT.get(match["v"], match["v"]),
     }
+
+
+def _snapshot_names(folder: Path) -> set[str]:
+    """資料夾裡檔名符合快照格式的 png。資料夾不存在就是空集合。"""
+    if not folder.is_dir():
+        return set()
+    return {p.name for p in folder.glob("*.png") if parse_snapshot_name(p.name)}
 
 
 def _evenly(items: list, limit: int) -> list:
@@ -138,24 +147,23 @@ def find_items(paths: list[Path], per_segment: int = 0,
                     segment=segment, segment_csv=csv_path.resolve())
         shots = csv_path.with_name(f"{csv_path.stem}-shots")
         raw = shots / Snapshots.RAW_DIR
+        # 逐張比對：raw/ 只存了一部分（例如量到一半才加 --snapshot-raw）時，
+        # 只看 raw/ 有沒有檔案的話，缺原圖的那幾張會被靜默漏掉。
+        raw_names = _snapshot_names(raw)
+        overlay_only = _snapshot_names(shots) - raw_names
+        if overlay_only and not allow_overlay:
+            missing_raw.append(f"{segment}（{len(overlay_only)} 張沒有原圖）")
+            overlay_only = set()
+        elif overlay_only:
+            overlay.append(segment)
         found = []
-        source_dir = None
-        if raw.is_dir() and any(raw.glob("*.png")):
-            source_dir = raw
-        elif shots.is_dir() and any(shots.glob("*.png")):
-            if allow_overlay:
-                source_dir = shots
-                overlay.append(segment)
-            else:
-                missing_raw.append(segment)
-        if source_dir is not None:
-            for image in sorted(source_dir.glob("*.png")):
-                parsed = parse_snapshot_name(image.name)
-                if parsed is not None:
-                    found.append((int(parsed["frame"]), image, parsed))
-            found.sort(key=lambda f: f[0])
-            for _, image, parsed in _evenly(found, per_segment):
-                items.append(PackItem(source=image, kind="snapshot", **base, **parsed))
+        for name in raw_names | overlay_only:
+            parsed = parse_snapshot_name(name)
+            image = (raw if name in raw_names else shots) / name
+            found.append((int(parsed["frame"]), image, parsed))
+        found.sort(key=lambda f: f[0])
+        for _, image, parsed in _evenly(found, per_segment):
+            items.append(PackItem(source=image, kind="snapshot", **base, **parsed))
         kendall = csv_path.with_name(f"{csv_path.stem}-kendall")
         photos = []
         if kendall.is_dir():
@@ -163,11 +171,11 @@ def find_items(paths: list[Path], per_segment: int = 0,
                             if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES)
             for photo in photos:
                 items.append(PackItem(source=photo, kind="kendall", **base))
-        if not found and not photos and segment not in missing_raw:
+        if not found and not photos and not any(m.startswith(segment) for m in missing_raw):
             skipped.append(f"{segment}：沒有快照也沒有 Kendall 照片")
     if missing_raw:
         raise RatingPackError(
-            "這些段落只有疊加骨架的快照，沒有原圖（量測時沒加 --snapshot-raw）：\n  "
+            "這些段落有疊加骨架的快照卻沒有對應的原圖（量測時沒加 --snapshot-raw）：\n  "
             + "\n  ".join(missing_raw)
             + "\n疊加版沒有判定文字，但評分者看得到系統的骨架，會被帶著走。"
               "要用的話明確加上 --allow-overlay")
@@ -246,54 +254,33 @@ def strip_png(data: bytes) -> bytes:
     return b"".join(out)
 
 
-def strip_jpeg(data: bytes) -> tuple[bytes, bool]:
-    """拿掉 APP1～APP13、APP15 與 COM（EXIF、XMP、IPTC、註解）。
+def jpeg_to_png(data: bytes) -> bytes:
+    """把 JPEG 解碼再存成 PNG，只留像素。
 
-    留 APP0（JFIF）與 APP14（Adobe 色彩轉換，拿掉的話部分 CMYK 檔顏色會錯）。
-    回傳 (新的位元組, 原檔是否帶 EXIF)：EXIF 的方向標記跟著拿掉，手機直拍的
-    照片可能變成橫的，要在匯出前先轉正，文件 10 有寫。
+    手機直拍的照片常常是橫的像素加上 EXIF 方向標記。只拿掉 EXIF 的話照片會
+    轉九十度，評分者看到的是躺著的人；OpenCV 解碼時會照方向標記轉正，所以
+    先解碼、轉正，再存成不帶任何中繼資料的 PNG（EXIF、XMP、註解、GPS 都不留）。
+    存 PNG 不存 JPEG，免得再壓縮一次又掉畫質。
     """
-    if not data.startswith(b"\xff\xd8"):
-        raise RatingPackError("不是 JPEG 檔")
-    out = [b"\xff\xd8"]
-    pos = 2
-    had_exif = False
-    while pos < len(data):
-        if data[pos] != 0xFF:
-            raise RatingPackError("JPEG 區段格式不對")
-        marker = data[pos + 1]
-        if marker == 0xFF:          # 填充位元組
-            pos += 1
-            continue
-        if marker == 0xD9:          # EOI
-            out.append(data[pos:pos + 2])
-            break
-        if 0xD0 <= marker <= 0xD7 or marker == 0x01:
-            out.append(data[pos:pos + 2])
-            pos += 2
-            continue
-        (length,) = struct.unpack(">H", data[pos + 2:pos + 4])
-        end = pos + 2 + length
-        if marker == 0xDA:          # SOS 之後是壓縮資料，原樣接到結尾
-            out.append(data[pos:])
-            break
-        drop = (0xE1 <= marker <= 0xEF and marker != 0xEE) or marker == 0xFE
-        if marker == 0xE1 and data[pos + 4:pos + 10] == b"Exif\x00\x00":
-            had_exif = True
-        if not drop:
-            out.append(data[pos:end])
-        pos = end
-    return b"".join(out), had_exif
+    import cv2
+    import numpy as np
+
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise RatingPackError("JPEG 檔解不開，可能被截斷")
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise RatingPackError("JPEG 轉存 PNG 失敗")
+    return strip_png(encoded.tobytes())
 
 
-def clean_image(path: Path) -> tuple[bytes, str, bool]:
-    """回傳 (去掉中繼資料的位元組, 副檔名, 原檔是否帶 EXIF)。"""
+def clean_image(path: Path) -> tuple[bytes, bool]:
+    """回傳 (只留像素的 PNG 位元組, 原檔是否為 JPEG)。"""
     data = Path(path).read_bytes()
     if data.startswith(_PNG_SIGNATURE):
-        return strip_png(data), ".png", False
-    if data.startswith(b"\xff\xd8"):
-        cleaned, had_exif = strip_jpeg(data)
-        return cleaned, ".jpg", had_exif
+        return strip_png(data), False
+    if data.startswith(bytes((0xFF, 0xD8))):
+        return jpeg_to_png(data), True
     raise RatingPackError(f"{path} 不是 PNG 或 JPEG，盲評包只收這兩種")
 
 
@@ -316,10 +303,19 @@ _KEY_WARNING = (
 )
 
 
+def default_key_path(out_dir: Path) -> Path:
+    """key 檔的預設位置：盲評包資料夾旁邊的 `<資料夾名>-key/key.csv`。"""
+    out_dir = Path(out_dir)
+    return out_dir.parent / f"{out_dir.name}-key" / "key.csv"
+
+
 def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
                sheet_columns: list[str] | None = None,
-               seed: int | None = None) -> PackResult:
+               seed: int | None = None, key_path: Path | None = None) -> PackResult:
     """寫出盲評包。out_dir 必須不存在或是空的，免得新舊兩批混在一起。
+
+    out_dir 底下只有每位評分者一個資料夾，整包交出去也不會帶到 key；
+    key_path 不能落在 out_dir 裡面，也不能覆蓋既有的 key。
 
     sheet_columns 是評分表的欄位（從設定檔來）；沒給就只有 rater_id、blind_id、
     order、note，評分欄等量表定案後再補。
@@ -334,6 +330,12 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
         raise RatingPackError(f"評分者代號只能用英數、底線、連字號且不能重複：{raters}")
     if out_dir.exists() and any(out_dir.iterdir()):
         raise RatingPackError(f"{out_dir} 已經有東西。換一個空的資料夾，新舊兩批混在一起會對錯 key")
+    key_path = Path(key_path) if key_path is not None else default_key_path(out_dir)
+    if out_dir.resolve() in key_path.resolve().parents:
+        raise RatingPackError(f"key 檔 {key_path} 不能放在盲評包 {out_dir} 裡面，"
+                              f"整包交給評分者時會連 key 一起送出去")
+    if key_path.exists():
+        raise RatingPackError(f"{key_path} 已經存在。換一個位置，蓋掉舊的 key 就對不回舊的評分")
 
     base_rng = random.Random(seed) if seed is not None else random.SystemRandom()
     ids = new_blind_ids(len(items), base_rng)
@@ -342,15 +344,19 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
     base_rng.shuffle(key_order)
 
     cleaned: dict[int, tuple[bytes, str]] = {}
-    orientation_lost = 0
+    reencoded = 0
     for index, item in enumerate(items):
-        data, suffix, had_exif = clean_image(item.source)
-        cleaned[index] = (data, suffix)
-        orientation_lost += int(had_exif)
+        data, was_jpeg = clean_image(item.source)
+        cleaned[index] = (data, ".png")
+        reencoded += int(was_jpeg)
 
-    key_dir = out_dir / "key"
-    key_dir.mkdir(parents=True, exist_ok=True)
-    with (key_dir / "key.csv").open("w", newline="", encoding="utf-8") as handle:
+    # 兩個資料夾各放一個忽略全部的 .gitignore：放到 data/ 以外也不會被 git 收進
+    # 這個 public repo（盲評包有受試者的臉，key 對得回受試者）。
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    (key_path.parent / ".gitignore").write_text("*\n", encoding="utf-8")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / ".gitignore").write_text("*\n", encoding="utf-8")
+    with key_path.open("w", newline="", encoding="utf-8") as handle:
         handle.write(_KEY_WARNING + "\n")
         writer = csv.writer(handle)
         writer.writerow(KEY_COLUMNS)
@@ -374,7 +380,7 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
                else random.SystemRandom())
         order = spaced_order(groups, rng)
         adjacent[rater] = count_adjacent(order, groups)
-        folder = out_dir / "raters" / rater
+        folder = out_dir / rater
         images = folder / "images"
         images.mkdir(parents=True, exist_ok=True)
         width = max(4, len(str(len(order))))
@@ -391,6 +397,6 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
             writer.writerows(rows)
         (folder / "README.txt").write_text(_RATER_README, encoding="utf-8")
 
-    return PackResult(out_dir=out_dir, items=len(items), raters=list(raters),
+    return PackResult(out_dir=out_dir, items=len(items), raters=list(raters), key_path=key_path,
                       adjacent_same_subject=adjacent,
-                      stripped_jpeg_orientation=orientation_lost)
+                      reencoded_jpeg=reencoded)

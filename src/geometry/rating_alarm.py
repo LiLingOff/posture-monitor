@@ -15,7 +15,11 @@ p 值只能當描述，報告會註明；受試者層級另列每人貢獻幾段
     角度絕對值超過門檻，這一幀就算超標；超標幀佔有值幀的比例 ≥ alarm_share。
 - 評分判不良：該段的主觀評分（評分者平均）比同趟端正坐低 ≥ rating_drop_threshold
   （預設 2 分）。「低」依量表方向：higher_is_better 為 false 時分數變高才是變差。
-  段落分數 = 各照片的評分者平均再對照片平均。同趟端正坐有好幾段時取平均。
+  段落分數 = 各照片的評分者平均再對照片平均。下降量先在每位評分者自己身上
+  算（該評分者的端正坐平均減該段平均），再對「兩段都評過」的評分者平均：
+  有人缺評時，若一段只有給分偏高的人評、另一段只有給分偏低的人評，直接拿
+  兩個平均相減會把評分者的偏移當成姿勢變差。沒有共同評分者的段落不分類。
+  評分齊全時兩種算法結果相同。同趟端正坐有好幾段時取平均。
   沒有 trip_id 的舊資料以受試者為一趟。
 - Kendall 判不良：一位評分者對一張照片，不良項目數 ≥ min_failed_items 就是不良；
   一段之中不良的（評分者 × 照片）比例 ≥ agreement.min_bad_share（預設 0.5）。
@@ -164,12 +168,19 @@ class SegmentResult:
     kendall_share: float | None
     reference_score: float | None = None
     calls: dict = field(default_factory=dict)       # 方法 → SystemCall
+    rater_scores: dict = field(default_factory=dict)        # 評分者 → 這一段的平均
+    reference_rater_scores: dict = field(default_factory=dict)  # 評分者 → 同趟端正坐的平均
     note: str = ""
 
+    def common_raters(self) -> list[str]:
+        return sorted(set(self.rater_scores) & set(self.reference_rater_scores))
+
     def drop(self, config: RatingConfig) -> float | None:
-        if self.score is None or self.reference_score is None:
+        common = self.common_raters()
+        if not common:
             return None
-        diff = self.reference_score - self.score
+        diff = float(np.mean([self.reference_rater_scores[r] - self.rater_scores[r]
+                              for r in common]))
         return diff if config.primary_item.higher_is_better else -diff
 
     def rating_bad(self, config: RatingConfig) -> bool | None:
@@ -212,11 +223,14 @@ def segment_results(ratings: RatingSet, key: dict[str, KeyRow], config: RatingCo
     for segment, rows in sorted(segments.items()):
         first = rows[0]
         photo_scores, kendall_flags = [], []
+        by_rater: dict[str, list[float]] = {}
         for row in rows:
             got = per_photo.get(row.blind_id, [])
             if not got:
                 continue
             photo_scores.append(float(np.mean([r.scores[config.primary] for r in got])))
+            for r in got:
+                by_rater.setdefault(r.rater, []).append(r.scores[config.primary])
             kendall_flags.extend(config.kendall_photo_bad(list(r.kendall.values()))
                                  for r in got)
         result = SegmentResult(
@@ -224,6 +238,7 @@ def segment_results(ratings: RatingSet, key: dict[str, KeyRow], config: RatingCo
             condition=first.condition, trial=first.trial, photos=len(photo_scores),
             score=float(np.mean(photo_scores)) if photo_scores else None,
             kendall_share=(sum(kendall_flags) / len(kendall_flags)) if kendall_flags else None,
+            rater_scores={k: float(np.mean(v)) for k, v in by_rater.items()},
         )
         csv_path = (Path(sessions_root) / segment if sessions_root is not None
                     else Path(first.segment_csv))
@@ -240,13 +255,23 @@ def segment_results(ratings: RatingSet, key: dict[str, KeyRow], config: RatingCo
 
     # 同趟端正坐的評分（評分者平均），同一趟有好幾段端正坐時取平均。
     reference: dict[tuple[str, str], list[float]] = {}
+    reference_by_rater: dict[tuple[str, str], dict[str, list[float]]] = {}
     for result in results:
         if result.condition == config.reference_condition and result.score is not None:
-            reference.setdefault((result.subject, result.trip_id), []).append(result.score)
+            trip = (result.subject, result.trip_id)
+            reference.setdefault(trip, []).append(result.score)
+            for rater, value in result.rater_scores.items():
+                reference_by_rater.setdefault(trip, {}).setdefault(rater, []).append(value)
     for result in results:
-        scores = reference.get((result.subject, result.trip_id))
+        trip = (result.subject, result.trip_id)
+        scores = reference.get(trip)
         if scores:
             result.reference_score = float(np.mean(scores))
+            result.reference_rater_scores = {
+                k: float(np.mean(v)) for k, v in reference_by_rater[trip].items()}
+            if result.score is not None and not result.common_raters():
+                result.note = (result.note + "；" if result.note else "") + \
+                    f"沒有評分者同時評過這一段與同趟 {config.reference_condition}"
         elif result.score is not None:
             result.note = (result.note + "；" if result.note else "") + \
                 f"同趟沒有 {config.reference_condition} 的評分"

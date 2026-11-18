@@ -20,10 +20,10 @@ data/baselines/
 
 # 外部評分者盲評（rating-pack／ratings）。盲評包有受試者的臉，key 檔對得回受試者
 # 與系統判定，評分表是評分者的資料，三者都不能進這個 public repo。
-# 預設放 data/rating_packs/ 與 data/ratings/；放到別處時檔名規則也擋得住。
+# 預設放 data/rating_packs/ 與 data/ratings/。盲評包與 key 的資料夾裡各自另有
+# 一個忽略全部的 .gitignore，放到別處也不會被收進來。
 data/rating_packs/
 data/ratings/
 key.csv
 rating_sheet*.csv
 rating_segments.csv
-**/raters/*/images/

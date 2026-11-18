@@ -133,10 +133,29 @@ def parse_config(data: dict) -> RatingConfig:
     if not isinstance(data, dict):
         raise RatingConfigError("設定檔最外層要是一個物件")
 
-    score = data.get("score") or {}
+    def _object(value, where):
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            problems.append(f"{where} 要是一個物件")
+            return {}
+        return value
+
+    def _list(value, where):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            problems.append(f"{where} 要是清單")
+            return []
+        return value
+
+    score = _object(data.get("score"), "score")
     score_items = []
-    for n, raw in enumerate(score.get("items") or []):
+    for n, raw in enumerate(_list(score.get("items"), "score.items")):
         where = f"score.items[{n}]"
+        if not isinstance(raw, dict):
+            problems.append(f"{where} 要是一個物件")
+            continue
         name = str(raw.get("name", "")).strip()
         if not _NAME.match(name):
             problems.append(f"{where}.name 只能用英數、底線、連字號，收到 {name!r}")
@@ -149,18 +168,25 @@ def parse_config(data: dict) -> RatingConfig:
         if not low < high:
             problems.append(f"{where} 的 min 要小於 max")
             continue
-        score_items.append(ScoreItem(name, low, high,
-                                     bool(raw.get("higher_is_better", True))))
+        # 不用 bool() 轉：bool("false") 是 True，量表方向會被默默反過來。
+        higher = raw.get("higher_is_better", True)
+        if not isinstance(higher, bool):
+            problems.append(f"{where}.higher_is_better 要是 true 或 false（不加引號）")
+            continue
+        score_items.append(ScoreItem(name, low, high, higher))
     if not score_items:
         problems.append("score.items 至少要有一個評分項目")
     primary = str(score.get("primary", score_items[0].name if score_items else ""))
     if score_items and primary not in {i.name for i in score_items}:
         problems.append(f"score.primary {primary!r} 不在 score.items 裡")
 
-    kendall = data.get("kendall") or {}
+    kendall = _object(data.get("kendall"), "kendall")
     kendall_items = []
-    for n, raw in enumerate(kendall.get("items") or []):
+    for n, raw in enumerate(_list(kendall.get("items"), "kendall.items")):
         where = f"kendall.items[{n}]"
+        if not isinstance(raw, dict):
+            problems.append(f"{where} 要是一個物件")
+            continue
         name = str(raw.get("name", "")).strip()
         if not _NAME.match(name):
             problems.append(f"{where}.name 只能用英數、底線、連字號，收到 {name!r}")
@@ -173,7 +199,7 @@ def parse_config(data: dict) -> RatingConfig:
     if not kendall_items:
         problems.append("kendall.items 至少要有一個檢核項目")
     min_failed = kendall.get("min_failed_items", 1)
-    if not isinstance(min_failed, int) or not 1 <= min_failed <= max(1, len(kendall_items)):
+    if isinstance(min_failed, bool) or not isinstance(min_failed, int) or not 1 <= min_failed <= max(1, len(kendall_items)):
         problems.append("kendall.min_failed_items 要是 1 到檢核項目數之間的整數")
 
     names = [i.column for i in score_items] + [i.column for i in kendall_items]
@@ -190,7 +216,7 @@ def parse_config(data: dict) -> RatingConfig:
             problems.append(f"{where} 要在 0 到 1 之間（不含 0）")
         return value
 
-    agreement = data.get("agreement") or {}
+    agreement = _object(data.get("agreement"), "agreement")
     bad_share = _share(agreement.get("min_bad_share", DEFAULT_KENDALL_BAD_SHARE),
                        "agreement.min_bad_share")
     alarm_share = _share(data.get("alarm_share", DEFAULT_ALARM_SHARE), "alarm_share")

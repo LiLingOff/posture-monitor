@@ -18,11 +18,12 @@ from .rating_stats import BOOTSTRAP_REPS
 
 def export_pack(paths: list[Path], out_dir: Path, raters: list[str],
                 config_path: Path | None = None, seed: int | None = None,
-                per_segment: int = 0, allow_overlay: bool = False) -> str:
+                per_segment: int = 0, allow_overlay: bool = False,
+                key_path: Path | None = None) -> str:
     """找圖、寫盲評包，回傳摘要。出錯時丟 RatingPackError／RatingConfigError。"""
     columns = load_config(config_path).columns if config_path is not None else None
     items, skipped, overlay = find_items(paths, per_segment, allow_overlay)
-    result = write_pack(items, out_dir, raters, columns, seed)
+    result = write_pack(items, out_dir, raters, columns, seed, key_path)
     kinds = {k: sum(1 for i in items if i.kind == k) for k in ("snapshot", "kendall")}
     segments = len({i.segment for i in items})
     subjects = len({i.subject for i in items})
@@ -30,8 +31,8 @@ def export_pack(paths: list[Path], out_dir: Path, raters: list[str],
         f"盲評包寫到 {out_dir}",
         f"  {result.items} 張（快照 {kinds['snapshot']}、Kendall 照片 {kinds['kendall']}），"
         f"{segments} 段、{subjects} 位受試者",
-        f"  給評分者：{out_dir / 'raters'}/<評分者>/（各自一份，順序各自隨機）",
-        f"  key 檔：{out_dir / 'key' / 'key.csv'}，不要給評分者",
+        f"  給評分者：{out_dir}/<評分者>/（各自一份，順序各自隨機）",
+        f"  key 檔：{result.key_path}（在盲評包外面），不要給評分者",
     ]
     if columns is None:
         lines.append("  沒有給 --config，評分表只有 rater_id、blind_id、order、note，"
@@ -40,9 +41,8 @@ def export_pack(paths: list[Path], out_dir: Path, raters: list[str],
         if count:
             lines.append(f"  注意：{rater} 的順序裡還有 {count} 處同一位受試者相鄰"
                          f"（某位受試者的照片超過一半，排不開）")
-    if result.stripped_jpeg_orientation:
-        lines.append(f"  注意：{result.stripped_jpeg_orientation} 張 JPEG 帶 EXIF，已拿掉；"
-                     f"方向標記也一起拿掉了，直拍的照片要先轉正再匯出")
+    if result.reencoded_jpeg:
+        lines.append(f"  {result.reencoded_jpeg} 張 JPEG 已依 EXIF 方向轉正後存成不帶中繼資料的 PNG")
     if overlay:
         lines.append("  用了疊加骨架的快照（--allow-overlay）：" + "、".join(overlay))
     for note in skipped:
