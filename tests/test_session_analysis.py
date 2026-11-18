@@ -414,10 +414,13 @@ def test_other_angles_are_never_marked_sparse(tmp_path):
     assert not AngleSummary("x", np.array([1.0, 2.0])).is_sparse
 
 
-def _baseline_session(tmp_path, name, baseline, subject="A", azimuth=None):
+def _baseline_session(tmp_path, name, baseline, subject="A", azimuth=None, error=None,
+                      frames=140):
     path = tmp_path / f"{name}.csv"
     rows = [_usable_row(i + 1, 8.0) for i in range(5)]
     extra = [] if azimuth is None else [f"# baseline_azimuth_deg={azimuth}"]
+    if error is not None:
+        extra += [f"# baseline_theta_ca_error_deg={error}", f"# baseline_frames={frames}"]
     path.write_text("\n".join([f"# subject={subject}", f"# baseline_theta_ca_deg={baseline}"]
                               + extra + [_HEADER] + rows) + "\n", encoding="utf-8")
     return path
@@ -465,3 +468,36 @@ def test_a_baseline_from_before_the_azimuth_header_says_it_was_not_recorded(tmp_
     text = baseline_warning([s1, s2])
     assert "基準 +6.54°（方位角沒記）：upright-1" in text
     assert "（方位角 40°）" in text
+
+
+def test_a_single_noisy_baseline_is_flagged_even_when_baselines_agree(tmp_path):
+    """實機 a411127：兩份基準只差 4.6°（值差警告不響），第二份誤差 ±4.7°、98 幀。"""
+    from geometry.session_report import baseline_warning
+    s1 = analyse_session(_baseline_session(tmp_path, "upright-1", 4.43, error=1.39, frames=132))
+    s2 = analyse_session(_baseline_session(tmp_path, "upright-2", -0.19, error=4.68, frames=98))
+    text = baseline_warning([s1, s2])
+    assert "1 份基準的誤差偏大" in text
+    assert "基準 -0.19° ±4.7°，98 幀：upright-2" in text
+    assert "upright-1" not in text, "誤差在容許內的那份不該被點名"
+    assert "不同的基準" not in text, "值只差 4.6°，不該同時報值差"
+
+
+def test_a_noisy_baseline_is_flagged_with_only_one_baseline(tmp_path):
+    from geometry.session_report import baseline_warning
+    s = analyse_session(_baseline_session(tmp_path, "upright-1", 3.0, error=3.1))
+    assert "誤差偏大" in baseline_warning([s])
+
+
+def test_quiet_baselines_and_files_without_the_error_header_do_not_trigger_it(tmp_path):
+    from geometry.session_report import baseline_warning
+    quiet = analyse_session(_baseline_session(tmp_path, "a", 3.0, error=0.8))
+    old = analyse_session(_baseline_session(tmp_path, "b", 3.0))
+    assert baseline_warning([quiet, old]) == ""
+
+
+def test_both_warnings_can_appear_together(tmp_path):
+    from geometry.session_report import baseline_warning
+    s1 = analyse_session(_baseline_session(tmp_path, "upright-1", 6.54, error=1.8))
+    s2 = analyse_session(_baseline_session(tmp_path, "upright-2", 17.676, error=2.7))
+    text = baseline_warning([s1, s2])
+    assert "2 份不同的基準" in text and "1 份基準的誤差偏大" in text

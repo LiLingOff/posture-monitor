@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from .baseline import _BASELINE_ERROR_WARNING_DEG
 from .session_analysis import (SessionSummary, compare, correlation,
                                legacy_2d_by_azimuth)
 from .terminal import cell, display_width, with_error
@@ -278,6 +279,9 @@ def format_comparison(summaries: list[SessionSummary]) -> str:
 # 同一位受試者的基準 θ_CA 相差超過這麼多度就警告。θ_CA 的判定門檻是 ±10°，
 # 基準差 5° 就等於門檻少了一半；5° 是設計值，沒有實機依據。
 BASELINE_SPREAD_WARN_DEG = 5.0
+# 單一份基準的誤差超過這個值，取基準時與載入時已經警告過；analyse 再提一次，
+# 因為事後看報告的人沒看過那個警告。與 baseline.py 用同一個值，只留一個來源。
+BASELINE_ERROR_WARN_DEG = _BASELINE_ERROR_WARNING_DEG
 
 
 def baseline_warning(summaries: list[SessionSummary]) -> str:
@@ -288,6 +292,7 @@ def baseline_warning(summaries: list[SessionSummary]) -> str:
     """
     by_subject: dict[str, dict[float, list[str]]] = {}
     azimuths: dict[tuple[str, float], float] = {}
+    qualities: dict[tuple[str, float], tuple[float, int | None]] = {}
     for s in summaries:
         raw = s.meta.get("baseline_theta_ca_deg")
         try:
@@ -302,19 +307,39 @@ def baseline_warning(summaries: list[SessionSummary]) -> str:
                                 float(s.meta["baseline_azimuth_deg"]))
         except (KeyError, TypeError, ValueError):
             pass
+        # 基準自己的誤差與幀數。兩份基準只差 4.6° 時值差警告不會響，
+        # 但其中一份誤差 ±4.7° 就是不可靠（實機 a411127）。
+        try:
+            frames = s.meta.get("baseline_frames")
+            qualities.setdefault((s.subject_key, round(value, 3)), (
+                float(s.meta["baseline_theta_ca_error_deg"]),
+                int(frames) if frames else None))
+        except (KeyError, TypeError, ValueError):
+            pass
     lines: list[str] = []
     for subject, groups in by_subject.items():
         values = sorted(groups)
-        if len(values) < 2 or values[-1] - values[0] <= BASELINE_SPREAD_WARN_DEG:
-            continue
-        lines.append(f"注意：受試者 {subject} 用了 {len(values)} 份不同的基準，"
-                     f"θ_CA 相差 {values[-1] - values[0]:.1f}°"
-                     f"（超過 {BASELINE_SPREAD_WARN_DEG:.0f}°）")
-        for v in values:
-            azimuth = azimuths.get((subject, v))
-            where = "方位角沒記" if azimuth is None else f"方位角 {azimuth:.0f}°"
-            lines.append(f"  基準 {v:+.2f}°（{where}）：{'、'.join(groups[v])}")
-        lines.append("  不同基準扣出來的角度不能直接比；看原始值，或用同一份基準重算")
+        spread = values[-1] - values[0] if len(values) >= 2 else 0.0
+        if spread > BASELINE_SPREAD_WARN_DEG:
+            lines.append(f"注意：受試者 {subject} 用了 {len(values)} 份不同的基準，"
+                         f"θ_CA 相差 {spread:.1f}°"
+                         f"（超過 {BASELINE_SPREAD_WARN_DEG:.0f}°）")
+            for v in values:
+                azimuth = azimuths.get((subject, v))
+                where = "方位角沒記" if azimuth is None else f"方位角 {azimuth:.0f}°"
+                lines.append(f"  基準 {v:+.2f}°（{where}）：{'、'.join(groups[v])}")
+            lines.append("  不同基準扣出來的角度不能直接比；看原始值，或用同一份基準重算")
+        noisy = [(v, qualities[(subject, v)]) for v in values
+                 if (subject, v) in qualities
+                 and qualities[(subject, v)][0] > BASELINE_ERROR_WARN_DEG]
+        if noisy:
+            lines.append(f"注意：受試者 {subject} 有 {len(noisy)} 份基準的誤差偏大"
+                         f"（超過 ±{BASELINE_ERROR_WARN_DEG:.0f}°）")
+            for v, (error, frames) in noisy:
+                taken = "" if frames is None else f"，{frames} 幀"
+                lines.append(f"  基準 {v:+.2f}° ±{error:.1f}°{taken}：{'、'.join(groups[v])}")
+            lines.append("  這個偏移會留在用它扣的每一段裡；誤差低也不代表基準可靠，"
+                         "仍要對照它之後那段直立的原始值")
     return "\n".join(lines)
 
 
