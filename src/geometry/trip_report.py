@@ -10,7 +10,8 @@ from io import StringIO
 
 from .terminal import cell, display_width, with_error
 from .trips import (AXIS_LIMITS, FORWARD_QUANTITIES, NATURAL_QUANTITIES,
-                    SENSITIVITY_LIMITS, UNPAIRED, VOID, PairedRow, is_natural,
+                    SENSITIVITY_LIMITS, TILT_DRIFT_WARN_DEG, UNPAIRED, VOID,
+                    PairedRow, is_natural,
                     paired_differences, ratio_by_group, ratio_rows, sensitivity,
                     tilt_by_angle, tilt_rows, tilt_symmetry)
 
@@ -148,8 +149,9 @@ def paired_csv(rows: list[PairedRow], quantities) -> str:
 def tilt_text(rows) -> str:
     if not rows:
         return ""
-    header = [("受試者", 12), ("段", 14), ("目標", 7), ("量角器", 8), ("θ_sym", 20),
-              ("來源", 14), ("誤差", 10), ("符號", 6), ("略過", 10)]
+    header = [("受試者", 12), ("段", 14), ("目標", 7), ("量角器起", 9), ("量角器末", 9),
+              ("滑動", 7), ("θ_sym", 20), ("來源", 14), ("誤差", 10), ("符號", 6),
+              ("略過", 10)]
     body = []
     for row in rows:
         s = row.summary
@@ -158,6 +160,8 @@ def tilt_text(rows) -> str:
             s.subject_key, f"{s.condition}#{s.trial or '—'}",
             _fmt(row.target_deg, 0, "°", signed=False),
             _fmt(row.measured_deg, 1, "°", signed=False),
+            _fmt(row.measured_end_deg, 1, "°", signed=False),
+            _fmt(row.drift_deg, 1, "°"),
             with_error(row.theta_sym_deg, row.theta_sym_error_deg),
             row.source, _fmt(row.error_deg), sign,
             _pct(row.rate) + ("" if row.status == "納入" else f" {row.status}"),
@@ -165,10 +169,22 @@ def tilt_text(rows) -> str:
     out = ["θ_sym 與量角器實測值（誤差 = θ_sym − 帶號實測值）", ""]
     out += _table(header, body)
     out += ["", "  符號慣例：θ_sym 右肩較高為正。往左側彎時右肩較高，預期為正；往右側彎預期為負。",
-            "  量角器量的是上身傾斜角，θ_sym 量的是肩線傾斜角，兩者本來就有小差異。"]
+            "  量角器量的是上身傾斜角，θ_sym 量的是肩線傾斜角，兩者本來就有小差異。",
+            "  有量角器結束值的段落，誤差拿開始與結束的平均來比（θ_sym 是整段的平均）；"
+            "「滑動」是結束值減開始值，沒記結束值就看不出來，不是 0。"]
     missing = sum(1 for r in rows if r.measured_deg is None)
     if missing:
         out.append(f"  {missing} 段沒有量角器實測值（measured_angle_deg），算不出誤差。")
+    no_end = sum(1 for r in rows if r.measured_deg is not None and r.measured_end_deg is None)
+    if no_end:
+        out.append(f"  {no_end} 段只有開始值（沒有 measured_end_angle_deg），"
+                   "看不出上身有沒有在這一段裡滑掉。")
+    slid = [r for r in rows if r.drift_deg is not None and abs(r.drift_deg) >= TILT_DRIFT_WARN_DEG]
+    if slid:
+        out.append(f"  {len(slid)} 段上身滑動 ≥{TILT_DRIFT_WARN_DEG:g}°："
+                   + "、".join(f"{r.summary.subject_key} {r.summary.condition}#{r.summary.trial or '—'}"
+                               f"（{r.drift_deg:+.1f}°）" for r in slid)
+                   + "。這幾段的誤差含著滑動，要小心讀。")
 
     by_angle = tilt_by_angle(rows)
     if by_angle:
@@ -196,7 +212,8 @@ def tilt_text(rows) -> str:
 
 def tilt_csv(rows) -> str:
     fields = ["subject", "trip_id", "desk_level", "condition", "trial", "file",
-              "target_angle_deg", "measured_angle_deg", "expected_theta_sym_deg",
+              "target_angle_deg", "measured_angle_deg", "measured_end_angle_deg",
+              "angle_drift_deg", "reference_angle_deg", "expected_theta_sym_deg",
               "theta_sym_deg", "theta_sym_error_deg", "theta_sym_source",
               "error_deg", "magnitude_error_deg", "sign_ok",
               "theta_sym_rejection_rate", "inclusion", "turned_deg"]
@@ -214,6 +231,8 @@ def tilt_csv(rows) -> str:
             "desk_level": _meta(s, "desk_level"), "condition": s.condition,
             "trial": "" if s.trial is None else s.trial, "file": s.path.name,
             "target_angle_deg": r(row.target_deg), "measured_angle_deg": r(row.measured_deg),
+            "measured_end_angle_deg": r(row.measured_end_deg),
+            "angle_drift_deg": r(row.drift_deg), "reference_angle_deg": r(row.reference_deg),
             "expected_theta_sym_deg": r(row.expected_deg),
             "theta_sym_deg": r(row.theta_sym_deg),
             "theta_sym_error_deg": r(row.theta_sym_error_deg),

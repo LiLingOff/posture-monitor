@@ -335,6 +335,11 @@ def sensitivity(rows: list[PairedRow], label: str, desk_level: str | None = None
 # 正；往右側彎預期為負。這是從定義推出來的，第一批實機資料要核對一次。
 TILT_SIGN = {"tilt-left": +1.0, "tilt-right": -1.0}
 
+# 量角器開始值與結束值差這麼多度就在報告裡標出來（一段 60 秒內上身滑掉）。
+# 3° 是設計值，沒有文獻或實機資料：只是比前導資料裡 θ_sym 的單幀散佈（約 1°）
+# 大一些、又遠小於 20° 的目標角度，第一批實機資料之後要回頭檢查。
+TILT_DRIFT_WARN_DEG = 3.0
+
 
 @dataclass(frozen=True)
 class TiltRow:
@@ -347,16 +352,37 @@ class TiltRow:
     rate: float
     status: str
     turned_deg: float | None
+    # 量完那一段之後再讀一次量角器的值（標頭或檔尾的 measured_end_angle_deg）。
+    # 加在最後面並給預設值，沒記結束值的舊檔與舊測試照常可讀。
+    measured_end_deg: float | None = None
 
     @property
     def side(self) -> str:
         return "左" if self.summary.condition == "tilt-left" else "右"
 
     @property
-    def expected_deg(self) -> float | None:
+    def reference_deg(self) -> float | None:
+        """拿來比的量角器角度。有結束值就取開始與結束的平均，因為 θ_sym 是
+        整段 60 秒的平均，上身這段時間可能慢慢滑掉，只拿開始值比會把滑掉的
+        部分算進誤差。沒有結束值就是開始值。"""
         if self.measured_deg is None:
             return None
-        return TILT_SIGN[self.summary.condition] * self.measured_deg
+        if self.measured_end_deg is None:
+            return self.measured_deg
+        return (self.measured_deg + self.measured_end_deg) / 2.0
+
+    @property
+    def drift_deg(self) -> float | None:
+        """結束值減開始值。沒有結束值就看不出來（None），不是 0。"""
+        if self.measured_deg is None or self.measured_end_deg is None:
+            return None
+        return self.measured_end_deg - self.measured_deg
+
+    @property
+    def expected_deg(self) -> float | None:
+        if self.reference_deg is None:
+            return None
+        return TILT_SIGN[self.summary.condition] * self.reference_deg
 
     @property
     def error_deg(self) -> float | None:
@@ -368,9 +394,9 @@ class TiltRow:
     @property
     def magnitude_error_deg(self) -> float | None:
         """|θ_sym| − 實測值。比左右對不對稱時看這個，正負號已經拿掉。"""
-        if self.theta_sym_deg is None or self.measured_deg is None:
+        if self.theta_sym_deg is None or self.reference_deg is None:
             return None
-        return abs(self.theta_sym_deg) - self.measured_deg
+        return abs(self.theta_sym_deg) - self.reference_deg
 
     @property
     def sign_ok(self) -> bool | None:
@@ -415,6 +441,7 @@ def tilt_rows(summaries: list[SessionSummary]) -> list[TiltRow]:
             theta_sym_deg=value, theta_sym_error_deg=error, source=source,
             rate=rate, status=axis_status([rate], "θ_sym", is_turned(turn)),
             turned_deg=turn,
+            measured_end_deg=_meta_float(summary, "measured_end_angle_deg"),
         ))
     return out
 

@@ -66,7 +66,8 @@ from geometry.live_report import (elapsed_text, live_line,  # noqa: E402
 from geometry.scale_check import (check_scale,  # noqa: E402
                                  format_scale_check)
 from geometry.study import (baseline_path, build_trip_options,  # noqa: E402
-                            condition_brief, is_tilt, next_trial,
+                            condition_brief, end_angle_footer, end_angle_for,
+                            is_tilt, next_trial,
                             parse_conditions, parse_number_list,
                             parse_optional_conditions, review,
                             segment_metadata, session_paths)
@@ -993,6 +994,9 @@ def _trip_options(args, segments: list[str]):
                 getattr(args, "target_angle_deg", None), "--target-angle-deg"),
             measured_angles=parse_number_list(
                 getattr(args, "measured_angle_deg", None), "--measured-angle-deg"),
+            measured_end_angles=parse_number_list(
+                getattr(args, "measured_end_angle_deg", None),
+                "--measured-end-angle-deg"),
             azimuth_targets=parse_number_list(
                 getattr(args, "azimuth_target_deg", None), "--azimuth-target-deg"),
         )
@@ -1110,6 +1114,16 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
         # 任何位置的 `# key=value`；分析端靠它不拿殘缺的 upright 當同趟對照。
         with open(log.path, "a", encoding="utf-8") as handle:
             handle.write("# camera_lost=1\n")
+    elif tilt_index is not None and trip is not None:
+        # 側傾量完之後再讀一次量角器。60 秒內上身可能慢慢滑掉，只記開始值的話，
+        # 誤差裡分不出是 θ_sym 不準還是受試者沒撐住。掉線的那一段會被重量，不問。
+        end = end_angle_for(trip, tilt_index)
+        if end is None and not args.no_prompt:
+            end = _ask_angle("量完了，量角器現在量到的角度是幾度？"
+                             "（直接按 Enter 留空）")
+        if end is not None:
+            with open(log.path, "a", encoding="utf-8") as handle:
+                handle.write(end_angle_footer(end))
     # replace 而不是直接指派：回傳的 Recording 一建好就是完整的，不會有
     # 「要等 _study_one 跑完才算有效」的中間狀態。
     return replace(recording, condition=condition, trial=trial,
@@ -1572,6 +1586,10 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--measured-angle-deg", default=None,
                            help="側傾的量角器實測值，逗號分隔，依序對應側傾段落。"
                                 "不給的話每段開始前會問")
+            p.add_argument("--measured-end-angle-deg", default=None,
+                           help="側傾量完那一段之後，量角器再讀一次的值，逗號分隔，"
+                                "依序對應側傾段落。不給的話每段量完會問，"
+                                "留空就只有開始值。看一段 60 秒內上身滑掉多少")
             p.add_argument("--azimuth-target-deg", default=None,
                            help="表4 那一趟的目標方位角，一個值套用到每段，"
                                 "或逗號分隔依序每段一個。只是標記，"

@@ -248,11 +248,50 @@ def test_a_retake_keeps_its_own_angle(tmp_path, monkeypatch):
 def test_the_measured_angle_is_asked_when_not_given(tmp_path, monkeypatch):
     _patch(monkeypatch, _Events())
     monkeypatch.setattr(posture, "_prompt", lambda message, interactive=True: None)
-    answers = iter(["18.5"])
+    answers = iter(["18.5", "16"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     posture._run_study(_args(tmp_path, conditions="upright,tilt-right",
                              no_prompt=False, target_angle_deg="20"))
-    assert _meta(tmp_path / "s01" / "tilt-right-1.csv")["measured_angle_deg"] == "18.5"
+    meta = _meta(tmp_path / "s01" / "tilt-right-1.csv")
+    assert meta["measured_angle_deg"] == "18.5"
+    # 量完那一段之後再問一次，記在檔尾（read_rows 收任何位置的 # key=value）
+    assert meta["measured_end_angle_deg"] == "16"
+
+
+def test_a_blank_end_angle_leaves_only_the_start_value(tmp_path, monkeypatch):
+    _patch(monkeypatch, _Events())
+    monkeypatch.setattr(posture, "_prompt", lambda message, interactive=True: None)
+    answers = iter(["19", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    posture._run_study(_args(tmp_path, conditions="upright,tilt-left",
+                             no_prompt=False, target_angle_deg="20"))
+    meta = _meta(tmp_path / "s01" / "tilt-left-1.csv")
+    assert meta["measured_angle_deg"] == "19"
+    assert "measured_end_angle_deg" not in meta
+
+
+def test_the_end_angles_given_up_front_line_up_with_the_tilt_segments(tmp_path,
+                                                                       monkeypatch):
+    _patch(monkeypatch, _Events())
+    posture._run_study(_args(tmp_path, conditions="upright,tilt-left,tilt-left",
+                             target_angle_deg="20,10", measured_angle_deg="21,9.5",
+                             measured_end_angle_deg="18,9"))
+    folder = tmp_path / "s01"
+    assert _meta(folder / "tilt-left-1.csv")["measured_end_angle_deg"] == "18"
+    assert _meta(folder / "tilt-left-2.csv")["measured_end_angle_deg"] == "9"
+    assert "measured_end_angle_deg" not in _meta(folder / "upright-1.csv")
+
+
+def test_no_prompt_does_not_ask_for_the_end_angle(tmp_path, monkeypatch):
+    _patch(monkeypatch, _Events())
+
+    def boom(prompt=""):
+        raise AssertionError("no_prompt 不該問")
+
+    monkeypatch.setattr("builtins.input", boom)
+    posture._run_study(_args(tmp_path, conditions="upright,tilt-left",
+                             target_angle_deg="20", measured_angle_deg="20"))
+    assert "measured_end_angle_deg" not in _meta(tmp_path / "s01" / "tilt-left-1.csv")
 
 
 @pytest.mark.parametrize("overrides, message", [
@@ -260,6 +299,7 @@ def test_the_measured_angle_is_asked_when_not_given(tmp_path, monkeypatch):
     (dict(conditions="upright", desk_level="base", lift_cm=3.0), "base"),
     (dict(conditions="upright,forward", azimuth_target_deg="30,45,55"), "azimuth"),
     (dict(conditions="upright,tilt-left", measured_angle_deg="abc"), "不是數字"),
+    (dict(conditions="upright,tilt-left", measured_end_angle_deg="19,18"), "側傾"),
 ])
 def test_mismatched_options_stop_before_the_camera(tmp_path, monkeypatch, overrides,
                                                     message):

@@ -172,8 +172,9 @@ class TripOptions:
     trip_id 是同一趟共用的代號（study 開始的時間）。自然坐沒有基準，
     不能靠 baseline_captured_at 找對照，所以配對靠它。
 
-    target_angles、measured_angles 依序對應這一趟裡的側傾段落；
-    azimuth_targets 只有一個值時套用到每一段，否則依序對應每一段。
+    target_angles、measured_angles、measured_end_angles 依序對應這一趟裡的側傾段落
+    （measured_end_angles 是量完那一段之後再讀一次量角器的值，60 秒內上身可能
+    慢慢滑掉，只記開始值看不出來）；azimuth_targets 只有一個值時套用到每一段，否則依序對應每一段。
     """
 
     trip_id: str
@@ -183,13 +184,14 @@ class TripOptions:
     task: str | None = None
     target_angles: tuple = ()
     measured_angles: tuple = ()
+    measured_end_angles: tuple = ()
     azimuth_targets: tuple = ()
 
 
 def build_trip_options(trip_id: str, segments: list[str], *, desk_level=None,
                        lift_cm=None, desk_offset_cm=None, task=None,
                        target_angles=(), measured_angles=(),
-                       azimuth_targets=()) -> TripOptions:
+                       azimuth_targets=(), measured_end_angles=()) -> TripOptions:
     """檢查各選項與段落對不對得上，對不上就丟 ValueError（在開相機之前）。
 
     segments 是這一趟依序要量的所有段落（基準前的與基準後的接在一起）。
@@ -205,7 +207,8 @@ def build_trip_options(trip_id: str, segments: list[str], *, desk_level=None,
         raise ValueError("--lift-cm 是墊高幾公分，不能是負的")
     tilts = sum(1 for c in segments if is_tilt(c))
     for name, values in (("--target-angle-deg", target_angles),
-                         ("--measured-angle-deg", measured_angles)):
+                         ("--measured-angle-deg", measured_angles),
+                         ("--measured-end-angle-deg", measured_end_angles)):
         if values and len(values) != tilts:
             raise ValueError(f"{name} 給了 {len(values)} 個值，但這一趟有 {tilts} 段"
                              "側傾（tilt-left、tilt-right）。依序一段一個")
@@ -218,6 +221,7 @@ def build_trip_options(trip_id: str, segments: list[str], *, desk_level=None,
         trip_id=trip_id, desk_level=desk_level, lift_cm=lift_cm,
         desk_offset_cm=desk_offset_cm, task=task,
         target_angles=tuple(target_angles), measured_angles=tuple(measured_angles),
+        measured_end_angles=tuple(measured_end_angles),
         azimuth_targets=tuple(azimuth_targets),
     )
 
@@ -256,6 +260,23 @@ def segment_metadata(options: TripOptions, condition: str, segment_index: int,
                  else options.azimuth_targets[segment_index])
         meta["azimuth_target_deg"] = _g(value)
     return meta
+
+
+def end_angle_for(options: TripOptions, tilt_index: int | None) -> float | None:
+    """--measured-end-angle-deg 事先給的結束值；沒給或不是側傾段落就是 None。
+
+    量角器的結束值是量完那一段之後才讀得到，所以多半是當場問（posture.py），
+    這裡只管事先給的那一種。
+    """
+    if tilt_index is None or not options.measured_end_angles:
+        return None
+    return options.measured_end_angles[tilt_index]
+
+
+def end_angle_footer(value: float) -> str:
+    """寫在 CSV 檔尾的一列。標頭在開始時就寫完了，結束值是事後才知道的，
+    與 camera_lost 同一個做法：`read_rows` 收任何位置的 `# key=value`。"""
+    return f"# measured_end_angle_deg={_g(value)}\n"
 
 
 def condition_brief(condition: str) -> str:

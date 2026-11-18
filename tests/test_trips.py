@@ -252,6 +252,55 @@ def test_leaning_left_is_expected_positive_and_the_error_is_signed(tmp_path):
     assert tilt_symmetry(list(rows.values()))["s01"] == pytest.approx((-2.0, 1.0))
 
 
+def test_the_end_value_makes_the_reference_the_average_of_start_and_end(tmp_path):
+    """θ_sym 是整段 60 秒的平均，上身慢慢滑掉時拿開始值比會把滑掉的算進誤差。"""
+    folder = tmp_path / "s01"
+    _write(folder, "tilt-left-1.csv", condition="tilt-left", sym=17.0,
+           baseline=(0.0, 0.0, 40.0),
+           extra={"target_angle_deg": 20, "measured_angle_deg": 20,
+                  "measured_end_angle_deg": 14})
+    row = tilt_rows(_load(tmp_path))[0]
+    assert row.reference_deg == pytest.approx(17.0)
+    assert row.drift_deg == pytest.approx(-6.0)
+    assert row.expected_deg == pytest.approx(17.0)
+    assert row.error_deg == pytest.approx(0.0)
+    assert row.magnitude_error_deg == pytest.approx(0.0)
+
+
+def test_without_an_end_value_the_start_value_is_the_reference(tmp_path):
+    _tilt(tmp_path / "s01", "tilt-left-1.csv", "tilt-left", sym=18.0, measured=20,
+          target=20)
+    row = tilt_rows(_load(tmp_path))[0]
+    assert row.measured_end_deg is None
+    assert row.drift_deg is None          # 沒記結束值是看不出來，不是 0
+    assert row.reference_deg == 20
+    assert row.error_deg == pytest.approx(-2.0)
+
+
+def test_a_slid_segment_is_called_out_in_the_report(tmp_path):
+    folder = tmp_path / "s01"
+    _write(folder, "tilt-left-1.csv", condition="tilt-left", sym=17.0,
+           baseline=(0.0, 0.0, 40.0),
+           extra={"target_angle_deg": 20, "measured_angle_deg": 20,
+                  "measured_end_angle_deg": 14})
+    _tilt(folder, "tilt-right-1.csv", "tilt-right", sym=-20.0, measured=20, target=20)
+    text = dict(trip_sections(_load(tmp_path)))["側傾：θ_sym 對量角器"]
+    assert "上身滑動" in text and "-6.0°" in text
+    assert "只有開始值" in text           # tilt-right 沒記結束值
+
+
+def test_the_tilt_csv_carries_the_end_value_and_the_drift(tmp_path):
+    folder = tmp_path / "s01"
+    _write(folder, "tilt-left-1.csv", condition="tilt-left", sym=17.0,
+           baseline=(0.0, 0.0, 40.0),
+           extra={"target_angle_deg": 20, "measured_angle_deg": 20,
+                  "measured_end_angle_deg": 14})
+    row = list(csv.DictReader(trip_csvs(_load(tmp_path))["tilt.csv"].splitlines()))[0]
+    assert float(row["measured_end_angle_deg"]) == pytest.approx(14.0)
+    assert float(row["angle_drift_deg"]) == pytest.approx(-6.0)
+    assert float(row["reference_angle_deg"]) == pytest.approx(17.0)
+
+
 def test_a_wrong_sign_is_called_out(tmp_path):
     _tilt(tmp_path / "s01", "tilt-left-1.csv", "tilt-left", sym=-18.0, measured=20,
           target=20)
