@@ -27,3 +27,7 @@ data/ratings/
 key.csv
 rating_sheet*.csv
 rating_segments.csv
+
+# 尺度檢查用的左右眼原始畫面（data/check620 等）。畫面裡拍得到人臉，
+# 而這個 repo 是 public，不能進版控。
+data/check*/
