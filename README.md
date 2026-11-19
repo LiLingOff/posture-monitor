@@ -57,7 +57,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-856 個測試（2026-11-18），全部使用合成資料，不需要相機或 GPU。
+897 個測試（2026-11-19），全部使用合成資料，不需要相機或 GPU。
 
 標定準確度的驗證方式如下：給定一組已知的相機內參與基線長度，用單應變換把正面棋盤格圖合成為該相機在特定姿態下拍到的畫面，輸入標定演算法，再檢查還原出來的參數與真值相差多少。這在數學上是嚴格等價而非近似：標定板是平面，`Z=0` 讓投影方程式退化成單應變換。三角測量的測試改用 `cv2.projectPoints` 直接投影已知3D點（單應變換的前提是共平面，而三角測量要驗證的正是非共平面的點），合成資料下還原誤差 0.000mm。
 
@@ -273,6 +273,7 @@ fp32 的網路是全卷積的，同一個模型吃任何尺寸。fp16 的 Tensor
 | 整套實驗流程：取基準，再逐一量各種姿勢 | `python posture.py study --subject demo --conditions upright,forward --display` |
 | 分析一份逐幀記錄（不開相機） | `python posture.py analyse data/sessions/0924-upright.csv` |
 | 彙整一整個資料夾（不開相機） | `python posture.py cohort data/sessions` |
+| 手機正側 90° 影片的 θ_CA 參考值（不開雙目相機） | `python posture.py profile-ref side.mp4 --windows a=5:35` |
 | 面板改成中文 | 加上 `--display-lang zh`（預設 `en`；要有中日韓字型，找不到會退回英文，量測照常） |
 | 驗證三角測量的尺度 | `python posture.py scale --square-size-mm 25.0` |
 

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import shutil
 import sys
 import time
@@ -50,6 +51,11 @@ from geometry.pipeline import (PersonMatch,  # noqa: E402
 from geometry.recording import (CameraRetry, Recording,  # noqa: E402
                                 Session, Snapshots, StuckWatcher,
                                 forget_if_stale, write_frame)
+from geometry.profile_reference import (compare as compare_profile,  # noqa: E402
+                                        parse_plumb, parse_windows, pick_person,
+                                        profile_angle_deg, report_lines,
+                                        sample_from_person, stereo_segment,
+                                        summarize_window)
 from geometry.rating_config import RatingConfigError  # noqa: E402
 from geometry.rating_import import RatingImportError  # noqa: E402
 from geometry.rating_pack import RatingPackError  # noqa: E402
@@ -1335,6 +1341,113 @@ def _run_ratings(args) -> None:
         raise SystemExit(str(exc))
 
 
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
+
+
+def _profile_frames(source: Path, sample_fps: float):
+    """產生 (秒, BGR 畫面) 與總長度。影片依 sample_fps 抽樣；資料夾依檔名排序，
+    每張當作 1/sample_fps 秒。讀不出來的畫面略過，不當掉。
+    """
+    if source.is_dir():
+        files = sorted(p for p in source.iterdir() if p.suffix.lower() in _IMAGE_SUFFIXES)
+        if not files:
+            raise SystemExit(f"{source} 裡沒有 jpg 或 png 圖片")
+
+        def images():
+            for i, path in enumerate(files):
+                frame = cv2.imread(str(path))
+                if frame is not None:
+                    yield i / sample_fps, frame
+
+        return images(), len(files) / sample_fps
+    if not source.is_file():
+        raise SystemExit(f"找不到 {source}")
+    cap = cv2.VideoCapture(str(source))
+    if not cap.isOpened():
+        raise SystemExit(f"開不了影片 {source}")
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    step = max(1, int(round(video_fps / sample_fps)))
+
+    def video():
+        index = 0
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    return
+                if index % step == 0:
+                    yield index / video_fps, frame
+                index += 1
+        finally:
+            cap.release()
+
+    return video(), (total / video_fps if total and total > 0 else None)
+
+
+def _run_profile_ref(args) -> None:
+    """手機在正側 90° 拍的影片或圖片，算每個時間窗的 θ_CA 參考值。不碰雙目相機。
+
+    要載入姿態模型，所以在 Jetson 上跑。可選的 --stereo-csv 把雙目同一段的 3D θ_CA
+    拿來相減。
+    """
+    try:
+        up = parse_plumb(args.plumb)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    facing = {"right": 1.0, "left": -1.0}.get(args.facing)
+    frames, duration = _profile_frames(args.source, args.fps)
+    try:
+        windows = parse_windows(args.windows, duration)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    stereo_paths = {}
+    for item in args.stereo_csv:
+        name, sep, path = item.partition("=")
+        if not sep or name not in {w[0] for w in windows}:
+            raise SystemExit(f"--stereo-csv 要寫成 時間窗名稱=CSV路徑，名稱要在 --windows 裡，收到 {item!r}")
+        stereo_paths[name] = Path(path)
+
+    engine = _build_engine(args)
+    samples = []
+    for t_s, frame in frames:
+        person = pick_person(engine.infer(frame), args.side, args.min_confidence)
+        samples.append(sample_from_person(t_s, person, args.side))
+        if len(samples) % 50 == 0:
+            print(f"  已處理 {len(samples)} 幀（{t_s:.0f} 秒）", flush=True)
+
+    summaries = [summarize_window(name, samples, start, end, up, facing)
+                 for name, start, end in windows]
+    comparisons = [compare_profile(s, stereo_segment(stereo_paths[s.name]))
+                   for s in summaries if s.name in stereo_paths]
+    lines = report_lines(summaries, comparisons)
+    print("\n".join(lines))
+
+    if args.out is not None:
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "profile_report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        by_window = {s.name: s for s in summaries}
+        with open(args.out / "profile_frames.csv", "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["t_s", "window", "ear_x", "ear_y", "shoulder_x", "shoulder_y",
+                             "nose_x", "nose_y", "angle_deg", "reason"])
+            for s in samples:
+                owner = next((n for n, a, b in windows if a <= s.t_s < b), "")
+                sign = by_window[owner].facing if owner else None
+                angle = (profile_angle_deg(s.ear, s.shoulder, sign, up)
+                         if sign is not None else None)
+
+                def cell_(point, i):
+                    return "" if point is None else f"{point[i]:.2f}"
+
+                writer.writerow([f"{s.t_s:.3f}", owner,
+                                 cell_(s.ear, 0), cell_(s.ear, 1),
+                                 cell_(s.shoulder, 0), cell_(s.shoulder, 1),
+                                 cell_(s.nose, 0), cell_(s.nose, 1),
+                                 "" if angle is None else f"{angle:.3f}", s.reason])
+        print(f"\n逐幀與報告寫到 {args.out}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """建整套 CLI。
 
@@ -1410,6 +1523,41 @@ def build_parser() -> argparse.ArgumentParser:
                     help="把報告與逐段 CSV 寫到這個資料夾")
     rt.add_argument("--bootstrap", type=int, default=2000,
                     help="信賴區間的 bootstrap 次數")
+
+    # 正側面參考：手機的影片或圖片，要載入姿態模型但不開雙目相機。
+    pr = sub.add_parser("profile-ref",
+                        help="手機正側 90° 的影片或圖片，算 θ_CA 的獨立參考值，不需要雙目相機")
+    pr.add_argument("source", type=Path,
+                    help="影片檔，或放圖片（jpg、png）的資料夾，圖片依檔名排序")
+    pr.add_argument("--side", choices=["right", "left"], default="right",
+                    help="近側。要與雙目那邊用的一側一致")
+    pr.add_argument("--windows", default=None,
+                    help="時間窗，名稱=起:訖（秒），逗號分隔，例如 upright-8=5:35,"
+                         "head-forward-2=50:80。不給就是整段一個時間窗 all")
+    pr.add_argument("--stereo-csv", nargs="*", default=[], metavar="NAME=CSV",
+                    help="時間窗名稱=雙目那一段的逐幀 CSV，給了就印 3D 減參考")
+    pr.add_argument("--plumb", default=None,
+                    help="畫面裡鉛垂線的兩個點，x1,y1,x2,y2（上面的點在前，像素）。"
+                         "不給就假設手機沒有翻滾")
+    pr.add_argument("--facing", choices=["right", "left"], default=None,
+                    help="受試者在畫面裡面向哪一邊。不給就由鼻子相對耳朵判斷")
+    pr.add_argument("--fps", type=float, default=5.0,
+                    help="每秒取樣幾幀。影片會依它抽樣；圖片資料夾每張當作 1/fps 秒")
+    pr.add_argument("--out", type=Path, default=None,
+                    help="把報告與逐幀 CSV 寫到這個資料夾")
+    pr.add_argument("--precision", choices=["fp32", "fp16"], default="fp32")
+    pr.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    pr.add_argument("--checkpoint", type=Path,
+                    default=Path("data/pose_models/checkpoint_iter_370000.pth"))
+    pr.add_argument("--engine-cache", type=Path,
+                    default=Path("data/pose_models/lightweight_openpose_fp16.pth"))
+    pr.add_argument("--repo-dir", type=Path,
+                    default=Path("third_party/lightweight-human-pose-estimation.pytorch"))
+    pr.add_argument("--min-confidence", type=float, default=0.0,
+                    help="低於這個信心度的耳或肩不用")
+    pr.add_argument("--input-height", type=int, default=256,
+                    help="網路輸入高度。要與雙目量測時一致，才不會把模型設定的差異當成誤差")
+    pr.add_argument("--no-subpixel", action="store_true")
 
     modes = (
         ("once", "量測一次並印出完整診斷"),
@@ -1615,7 +1763,8 @@ def main() -> None:
     args = build_parser().parse_args()
     # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
     offline = {"analyse": _run_analyse, "cohort": _run_cohort,
-               "rating-pack": _run_rating_pack, "ratings": _run_ratings}
+               "rating-pack": _run_rating_pack, "ratings": _run_ratings,
+               "profile-ref": _run_profile_ref}
     if args.mode in offline:
         offline[args.mode](args)
         return
