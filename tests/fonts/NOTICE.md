@@ -7,8 +7,9 @@
   版權 © 2014-2021 Adobe (http://www.adobe.com/)，with Reserved Font Name 'Source'。
 - 授權：SIL Open Font License, Version 1.1，<https://openfontlicense.org>
   （字型檔內的授權欄位也寫著同樣的聲明與網址）。
-- 本資料夾沒有附 OFL 全文。散布時若要完整合規，請從官方 Noto 字型倉庫取得
-  `OFL.txt` 放在這裡。
+- 授權全文見同資料夾的 `OFL.txt`，取自
+  <https://github.com/google/fonts/blob/main/ofl/notosanstc/OFL.txt>
+  （2026-11-22 下載，4388 bytes，首行版權與字型檔內一致）。
 - 修改：用 fontTools 把可變字型各取字重 400（Regular）與 700（Bold）的實例，
   再瘦身成只含 ASCII、θ ± ° 等符號，以及 `src/view`、判定理由與視窗測試裡出現過的
   中文字（約 800 字），去掉 hinting，其餘未改。字型名稱維持 "Noto Sans TC"，
