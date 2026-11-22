@@ -250,8 +250,20 @@ class _Studio:
                          azimuths=[40.0] * 98)
 
 
-def _patch(monkeypatch, studio, answers):
-    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, studio.cap))
+def _patch(monkeypatch, studio, answers, probes=None):
+    """`probes` 是預檢每一輪回傳的項目清單（照順序用，用完重複最後一份）。
+    不給就是一切正常。"""
+    calib = SimpleNamespace(baseline_mm=60.14)
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (calib, None, studio.cap))
+    monkeypatch.setattr(posture, "_git_state", lambda: ("a" * 40, "a" * 40, False))
+    rounds = list(probes) if probes else [[]]
+    studio.preflight_rounds = 0
+
+    def fake_probe(engine, calib, cap, args, frames, warmup):
+        studio.preflight_rounds += 1
+        return rounds.pop(0) if len(rounds) > 1 else rounds[0]
+
+    monkeypatch.setattr(posture, "_probe_items", fake_probe)
     monkeypatch.setattr(posture, "_collect_baseline", studio.collect)
     monkeypatch.setattr(posture, "_record", studio.record)
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
@@ -265,13 +277,14 @@ def _patch(monkeypatch, studio, answers):
 
     def fake_input(prompt=""):
         asked.append(prompt)
-        if "按 Enter" in prompt:
-            return ""
+        # 先比對準備好的回答：「重新檢查」那句也含「按 Enter」，不能被吃掉。
         for key, replies in answers.items():
             if key in prompt:
                 if not replies:
                     raise AssertionError(f"沒有準備「{prompt}」的回答")
                 return replies.pop(0)
+        if "按 Enter" in prompt:
+            return ""
         raise AssertionError(f"沒料到的問題：{prompt}")
 
     monkeypatch.setattr("builtins.input", fake_input)
@@ -673,3 +686,93 @@ def test_preflight_tells_a_camera_read_failure_apart_from_nobody_there(monkeypat
     assert "[沒過] 相機：讀不到畫面" in out
     assert "偵測到受試者" not in out
     assert cap.released == 1
+
+
+# ---- 一行指令：內建預檢、畫面紀錄、預設計畫 ------------------------------
+
+def _bad_item():
+    from geometry.preflight import Item
+    return Item(False, "受試者距離", "780mm（要 550～700mm）", "受試者離相機太遠")
+
+
+def test_run_plan_checks_the_setup_before_asking_anything_else(tmp_path, monkeypatch, capsys):
+    """操作者只打一行指令，預檢要在量之前自己跑，而且排在問桌高之前（量桌高要人坐著）。"""
+    studio = _Studio()
+    answers = {"桌面高減手肘高": ["0"], "對嗎": ["y"], "要做嗎": ["n"]}
+    asked, _ = _patch(monkeypatch, studio, answers)
+    posture._run_plan(_plan_args(tmp_path))
+    out = capsys.readouterr().out
+    assert "上機前檢查" in out and "結論：可以開始" in out
+    assert out.index("結論：可以開始") < out.index("當場檢查")
+    assert studio.preflight_rounds == 1
+    assert [q for q in asked if "桌面高減手肘高" in q]
+
+
+def test_a_failed_setup_blocks_until_it_is_fixed(tmp_path, monkeypatch, capsys):
+    """第一輪距離太遠、操作者調整後按 Enter 重測，第二輪通過才開始量。"""
+    studio = _Studio()
+    answers = {"桌面高減手肘高": ["0"], "對嗎": ["y"], "要做嗎": ["n"]}
+    _patch(monkeypatch, studio, answers, probes=[[_bad_item()], []])
+    posture._run_plan(_plan_args(tmp_path))
+    out = capsys.readouterr().out
+    assert studio.preflight_rounds == 2
+    assert "[沒過] 受試者距離" in out and "結論：還不能開始" in out
+    assert "結論：可以開始" in out
+    assert studio.records
+
+
+def test_the_operator_can_quit_from_a_failed_setup(tmp_path, monkeypatch):
+    studio = _Studio()
+    answers = {"重新檢查": ["q"]}
+    _patch(monkeypatch, studio, answers, probes=[[_bad_item()]])
+    with pytest.raises(SystemExit, match="沒有量任何資料"):
+        posture._run_plan(_plan_args(tmp_path))
+    assert studio.records == [] and studio.baselines == 0
+
+
+def test_the_screen_is_recorded_for_remote_watchers(tmp_path, monkeypatch):
+    """遠端的人 tail -f data/logs/<代號>.log 看得到組員的畫面，含程式問的問題。"""
+    studio = _Studio()
+    answers = {"桌面高減手肘高": ["0"], "對嗎": ["y"], "要做嗎": ["n"]}
+    _patch(monkeypatch, studio, answers)
+
+    inner = __import__("builtins").input
+
+    def writing_input(prompt=""):
+        # 真的 input() 發現 stdout 沒有 fileno 時，會把提示寫進 sys.stdout。
+        import sys
+        sys.stdout.write(prompt)
+        return inner(prompt)
+
+    monkeypatch.setattr("builtins.input", writing_input)
+    posture._run_plan(_plan_args(tmp_path))
+    log = (tmp_path / "logs" / "S02.log").read_text(encoding="utf-8")
+    assert "上機前檢查" in log
+    assert "桌面高減手肘高是幾公分" in log
+    assert "當場檢查：通過" in log
+    assert "AI 會自己用 ssh 拉資料" in log
+
+
+def test_running_again_with_the_same_code_appends_to_the_log(tmp_path):
+    path = tmp_path / "logs" / "S02.log"
+    for text in ("first", "second"):
+        with posture._tee_stdout(path):
+            print(text)
+    log = path.read_text(encoding="utf-8")
+    assert "first" in log and "second" in log and log.count("=====") >= 4
+
+
+def test_stdout_is_restored_after_the_recording(tmp_path):
+    import sys
+    before = sys.stdout
+    with posture._tee_stdout(tmp_path / "x.log"):
+        assert sys.stdout is not before
+        # 沒有 fileno，input() 才會把提示寫進紀錄而不是直接寫到終端機。
+        with pytest.raises(OSError):
+            sys.stdout.fileno()
+    assert sys.stdout is before
+
+
+def test_the_plan_defaults_to_the_selftest_file():
+    args = posture.build_parser().parse_args(["run-plan", "--subject", "S03"])
+    assert args.plan == Path("plans/selftest.json")

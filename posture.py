@@ -1565,6 +1565,74 @@ def _run_profile_ref(args) -> None:
 # 受試者、輸出資料夾）原樣抄過去，所以 --display、--camera 這些照常生效。
 _PLAN_ONLY = frozenset({"mode", "plan", "dry_run"})
 
+# run-plan 開始前自動預檢時試拍的幀數。
+_PLAN_PREFLIGHT_FRAMES = 5
+
+
+class _Tee:
+    """stdout 同時寫進紀錄檔，遠端的人用 tail -f 就能旁觀組員的畫面。
+
+    故意沒有 fileno：input() 發現 stdout 不是真的終端機，會把提示文字寫進
+    sys.stdout（也就是寫進紀錄），遠端才看得到「現在在問什麼」。有 fileno 的話
+    提示由 readline 直接寫到終端機，紀錄裡會缺。代價是方向鍵編輯行不能用，
+    退格鍵照常。
+    """
+
+    def __init__(self, stream, handle):
+        self._stream, self._handle = stream, handle
+
+    def write(self, text):
+        self._stream.write(text)
+        self._handle.write(text)
+        self._handle.flush()
+        return len(text)
+
+    def flush(self):
+        self._stream.flush()
+        self._handle.flush()
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise io.UnsupportedOperation("fileno")
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+@contextlib.contextmanager
+def _tee_stdout(path: Path):
+    """把這段期間的畫面也記到 path（附加，同一個代號重跑不會蓋掉）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        stamp = datetime.now().isoformat(timespec="seconds")
+        handle.write(chr(10) + "===== " + stamp + " =====" + chr(10))
+        real = sys.stdout
+        sys.stdout = _Tee(real, handle)
+        try:
+            yield
+        finally:
+            sys.stdout = real
+
+
+def _plan_preflight(engine, calib, cap, args) -> None:
+    """量之前先把上機前檢查做完。沒過就讓操作者調整後重測，不讓人在壞的架設上量。"""
+    base = git_items(*_git_state()) + [PreflightItem(
+        True, "標定檔", f"{args.calibration}（基線 {calib.baseline_mm:.2f} mm）")]
+    while True:
+        items = base + _probe_items(engine, calib, cap, args,
+                                    _PLAN_PREFLIGHT_FRAMES, warmup=False)
+        _print_lines(verdict_lines(items))
+        if preflight_clear(items):
+            return
+        try:
+            answer = input("照上面調整，好了按 Enter 重新檢查；要離開輸入 q：")
+        except (EOFError, OSError):
+            raise SystemExit(_NO_KEYBOARD)
+        if answer.strip().lower() == "q":
+            raise SystemExit("已離開，沒有量任何資料。")
+
 _NO_KEYBOARD = ("讀不到鍵盤輸入，桌面減手肘或量角器沒辦法填。"
                 "請直接在實機的終端機（或 ssh 的互動視窗）重跑 run-plan，"
                 "不要用管線或背景執行。已經量完的段落都存好了")
@@ -1712,7 +1780,18 @@ def _ask_no(question: str) -> bool:
 
 
 def _run_plan(args) -> None:
-    """照計畫檔連跑一位受試者的所有趟次，每段量完當場檢查。"""
+    """照計畫檔連跑一位受試者的所有趟次，每段量完當場檢查。
+
+    一行指令做完全部：預檢、桌高、每一趟、分析，畫面同時記到 data/logs/。
+    """
+    if args.dry_run:
+        _run_plan_body(args)
+        return
+    with _tee_stdout(Path(args.out_dir).parent / "logs" / f"{args.subject}.log"):
+        _run_plan_body(args)
+
+
+def _run_plan_body(args) -> None:
     try:
         plan = load_plan(args.plan)
     except ValueError as exc:
@@ -1740,15 +1819,17 @@ def _run_plan(args) -> None:
         print("\n--dry-run 只檢查計畫檔，沒有開相機。", flush=True)
         return
 
-    offset = None
-    if any(t.desk_level is not None for t in plan.trips):
-        offset = _ask_desk_offset()
     calib, engine, cap = _prepare(args)
     display = NO_DISPLAY
     logs = []
     done = []
     try:
         display = _open_display(args)
+        _plan_preflight(engine, calib, cap, args)
+        # 量桌面減手肘要受試者坐著，所以排在預檢之後。
+        offset = None
+        if any(t.desk_level is not None for t in plan.trips):
+            offset = _ask_desk_offset()
         for n, trip in enumerate(plan.trips, start=1):
             ns = _plan_trip_args(parser, args, plan, trip, offset)
             _print_lines(_plan_header(plan, trip, n))
@@ -1811,6 +1892,47 @@ def _git_state() -> tuple[str | None, str | None, bool | None]:
     return local, remote, None if status is None else bool(status)
 
 
+def _probe_items(engine, calib, cap, args, frames: int, warmup: bool) -> list:
+    """解析度加試拍幾幀，整理成預檢的項目。`preflight` 與 `run-plan` 共用。
+
+    相機讀不到和「沒偵測到人」要分開講，該做的事不一樣（GPT 審查第 7 條）。
+    """
+    items, probes = [], []
+    try:
+        _discard_frames(cap, args.discard)
+        left_frame = _grab_pair(cap, args)[0]
+        problem = describe_resolution_mismatch(
+            calib.image_size, (left_frame.shape[1], left_frame.shape[0]),
+            args.vertical_split)
+        items.append(PreflightItem(
+            problem is None, "解析度",
+            problem or f"單眼 {left_frame.shape[1]}x{left_frame.shape[0]}，與標定一致",
+            "拔插相機 USB 再跑一次"))
+        if problem is None:
+            if warmup:
+                _step(f"載入模型（{args.precision} / {args.device}）")
+                engine.warmup(left_frame)
+            _step(f"試拍 {frames} 幀")
+            for _ in range(frames):
+                try:
+                    measurement = _measure_once(engine, calib, cap, args)[0]
+                except CameraReadError:
+                    raise
+                except RuntimeError as exc:  # 配不到人
+                    probes.append(FrameProbe(error=str(exc)))
+                    continue
+                probes.append(FrameProbe(
+                    shared_count=measurement.shared_count,
+                    angle_disparity_px=measurement.angle_max_vertical_disparity_px,
+                    depth_mm=measurement.reference_depth_mm,
+                    unusable=unusable_reason(measurement)))
+            items += probe_items(probes)
+    except CameraReadError as exc:
+        items.append(PreflightItem(False, "相機", f"讀不到畫面：{exc}",
+                                   "拔插相機 USB；還是不行就跑 dmesg | tail -40"))
+    return items
+
+
 def _run_preflight(args) -> None:
     """一個指令做完自測手冊「開始前」那幾項。沒過的話結束碼是 1。"""
     items = git_items(*_git_state())
@@ -1825,39 +1947,8 @@ def _run_preflight(args) -> None:
                                    "確認 USB 有接好；還是不行就跑 dmesg | tail -40"))
         _print_lines(verdict_lines(items))
         raise SystemExit(1)
-    probes = []
     try:
-        _discard_frames(cap, args.discard)
-        left_frame = _grab_pair(cap, args)[0]
-        problem = describe_resolution_mismatch(
-            calib.image_size, (left_frame.shape[1], left_frame.shape[0]),
-            args.vertical_split)
-        items.append(PreflightItem(
-            problem is None, "解析度",
-            problem or f"單眼 {left_frame.shape[1]}x{left_frame.shape[0]}，與標定一致",
-            "拔插相機 USB 再跑一次"))
-        if problem is None:
-            _step(f"載入模型（{args.precision} / {args.device}），試拍 {args.frames} 幀")
-            engine.warmup(left_frame)
-            for _ in range(args.frames):
-                try:
-                    measurement = _measure_once(engine, calib, cap, args)[0]
-                except CameraReadError:
-                    # 相機讀不到和「沒偵測到人」要分開講，該做的事不一樣
-                    # （GPT 審查第 7 條）。交給外面那層記成「相機」沒過。
-                    raise
-                except RuntimeError as exc:  # 配不到人
-                    probes.append(FrameProbe(error=str(exc)))
-                    continue
-                probes.append(FrameProbe(
-                    shared_count=measurement.shared_count,
-                    angle_disparity_px=measurement.angle_max_vertical_disparity_px,
-                    depth_mm=measurement.reference_depth_mm,
-                    unusable=unusable_reason(measurement)))
-            items += probe_items(probes)
-    except CameraReadError as exc:
-        items.append(PreflightItem(False, "相機", f"讀不到畫面：{exc}",
-                                   "拔插相機 USB；還是不行就跑 dmesg | tail -40"))
+        items += _probe_items(engine, calib, cap, args, args.frames, warmup=True)
     finally:
         cap.release()
     _print_lines(verdict_lines(items))
@@ -2080,8 +2171,9 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")
         if name == "run-plan":
-            p.add_argument("plan", type=Path,
-                           help="計畫檔（JSON），例如 plans/selftest.json")
+            p.add_argument("plan", type=Path, nargs="?",
+                           default=Path("plans/selftest.json"),
+                           help="計畫檔（JSON）。不給就用 plans/selftest.json")
             p.add_argument("--subject", required=True,
                            help="受試者代號，例如 S02。一人一碼，不要重複用")
             p.add_argument("--out-dir", type=Path, default=Path("data/sessions"),
