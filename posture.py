@@ -935,7 +935,7 @@ def _run_study(args) -> None:
                       "這是硬體的問題，先跑 dmesg | tail -40 看核心怎麼說", flush=True)
                 break
             cap.release()
-            cap = _reopen_camera(args)
+            cap = _reopen_camera(args, calib=calib)
             reopens += 1
             if cap is None:
                 print("找不到相機，剩下的段落不量了。已經量完的照常可以分析", flush=True)
@@ -1018,11 +1018,15 @@ _REOPEN_PAUSE_S = 1.0
 
 
 def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
-                   pause_s: float = _REOPEN_PAUSE_S):
+                   pause_s: float = _REOPEN_PAUSE_S, calib=None):
     """相機掉線之後重新找節點、重新開。找不到回傳 None。
 
     不能用原本的編號重開：實機每一次掉線，節點編號都整組移位（video0 消失、
     剩 video1 與 video2）。裝置重新列舉要一兩秒，所以給幾次機會。
+
+    給了 `calib` 就連解析度一起驗：重新列舉後的相機可能退回驅動預設的 640x480，
+    拿單眼 1280x720 的內參去算只會得到一整段看似正常、尺度全錯的資料
+    （2026-09-29 的老問題，開機那次有擋，重開這一條路沒有）。
     """
     for _ in range(attempts):
         time.sleep(pause_s)
@@ -1034,9 +1038,24 @@ def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
         if not cap.isOpened():
             cap.release()
             continue
+        _discard_frames(cap, args.discard)
+        if calib is not None:
+            try:
+                left_frame = _grab_pair(cap, args)[0]
+            except CameraReadError:
+                cap.release()
+                continue
+            problem = describe_resolution_mismatch(
+                calib.image_size,
+                (left_frame.shape[1], left_frame.shape[0]),
+                args.vertical_split,
+            )
+            if problem is not None:
+                _step(f"重新接上的相機解析度不符，不採用。{problem}")
+                cap.release()
+                continue
         args.camera = index
         _step(f"重新接上相機。{how}")
-        _discard_frames(cap, args.discard)
         return cap
     return None
 

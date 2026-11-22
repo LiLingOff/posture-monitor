@@ -344,3 +344,32 @@ def test_the_baseline_clash_names_its_own_flag(tmp_path):
         posture._refuse_to_overwrite(args)
     assert "--out" in str(exc.value)
     assert "chenyue-2.json" in str(exc.value)
+
+
+def test_capture_stereo_refuses_to_reuse_when_only_the_left_side_is_complete(tmp_path, forbid_camera):
+    """右邊缺檔或殘留舊影像時，同名檔會把不同時間的左右影像配成立體對，污染外參。"""
+    left, right = tmp_path / "left", tmp_path / "right"
+    _fill_with_images(left, 20)
+    _fill_with_images(right, 19)
+    with pytest.raises(RuntimeError, match="右.*|只有 19 張"):
+        capture.capture_stereo(1, 2, left, right, SPEC, target_count=20)
+
+
+def test_a_failed_second_camera_releases_the_first(tmp_path, monkeypatch):
+    released = []
+
+    class _Cam:
+        def __init__(self, ok, tag):
+            self._ok, self._tag = ok, tag
+
+        def isOpened(self):
+            return self._ok
+
+        def release(self):
+            released.append(self._tag)
+
+    cams = {0: _Cam(True, "l"), 1: _Cam(False, "r")}
+    monkeypatch.setattr(capture, "open_camera", lambda index, *a, **k: cams[index])
+    with pytest.raises(RuntimeError):
+        capture.capture_stereo(0, 1, tmp_path / "l", tmp_path / "r", SPEC, target_count=1)
+    assert "l" in released

@@ -83,11 +83,11 @@ class _Events:
 
 
 def _patch(monkeypatch, events, countdowns=None):
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, _FakeCap()))
     monkeypatch.setattr(posture, "_collect_baseline", events.collect)
     monkeypatch.setattr(posture, "_record", events.record)
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
-    monkeypatch.setattr(posture, "_reopen_camera", lambda args: _FakeCap())
+    monkeypatch.setattr(posture, "_reopen_camera", lambda args, **kw: _FakeCap())
     monkeypatch.setattr(
         posture, "_countdown",
         lambda seconds, message="": None if countdowns is None
@@ -150,7 +150,7 @@ def test_an_empty_condition_list_means_no_baseline_at_all(tmp_path, monkeypatch)
 
 def test_both_lists_empty_stops_before_the_camera(tmp_path, monkeypatch):
     opened = []
-    monkeypatch.setattr(posture, "_prepare", lambda args: opened.append(1))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: opened.append(1))
     with pytest.raises(SystemExit, match="至少要有一種姿勢"):
         posture._run_study(_args(tmp_path, before_baseline=" , ", conditions=""))
     assert not opened
@@ -304,7 +304,7 @@ def test_no_prompt_does_not_ask_for_the_end_angle(tmp_path, monkeypatch):
 def test_mismatched_options_stop_before_the_camera(tmp_path, monkeypatch, overrides,
                                                     message):
     opened = []
-    monkeypatch.setattr(posture, "_prepare", lambda args: opened.append(1))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: opened.append(1))
     with pytest.raises(SystemExit, match=message):
         posture._run_study(_args(tmp_path, **overrides))
     assert not opened

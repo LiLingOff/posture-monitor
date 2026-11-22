@@ -79,6 +79,29 @@ def _already_complete(
     return False
 
 
+def _stereo_already_complete(
+    left_out: Path, right_out: Path, target_count: int,
+    expected_size: tuple[int, int] | None = None,
+) -> bool:
+    """左右都已經夠張數才跳過。只有一邊夠的話直接停下來。
+
+    只看左邊的話，右邊缺檔或是上次實驗殘留的舊影像會被默默沿用，
+    標定用同名檔配對，不同時間的左右影像會被當成立體對，外參 R/T 就污染了。
+    """
+    left_done = _already_complete(left_out, target_count, expected_size)
+    if not left_done:
+        return False
+    right_count = len(list(right_out.glob("*.png")))
+    if right_count < target_count:
+        raise RuntimeError(
+            f"{left_out} 已有足夠張數，但 {right_out} 只有 {right_count} 張"
+            f"（目標 {target_count}）。左右要成對，請把兩個資料夾都清空重拍"
+        )
+    if expected_size is not None:
+        _reject_mismatched_existing_images(right_out, expected_size)
+    return True
+
+
 def _expected_eye_size(
     width: int | None, height: int | None, vertical_split: bool
 ) -> tuple[int, int] | None:
@@ -172,15 +195,20 @@ def capture_stereo(
 ) -> None:
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count, (width, height) if width and height else None):
+    if _stereo_already_complete(left_out, right_out, target_count,
+                                (width, height) if width and height else None):
         return
 
     cap_l = open_camera(left_index, width, height)
     cap_r = open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
-        raise RuntimeError(describe_stereo_open_failure(
+        message = describe_stereo_open_failure(
             (left_index, cap_l.isOpened()), (right_index, cap_r.isOpened())
-        ))
+        )
+        # 開成功的那一顆也要放掉，不然馬上重跑會變成「相機被占用」，蓋掉真正的原因。
+        cap_l.release()
+        cap_r.release()
+        raise RuntimeError(message)
 
     saved = len(list(left_out.glob("*.png")))
     next_index = _next_frame_index(left_out, right_out)
@@ -415,16 +443,21 @@ def capture_stereo_charuco(
     """
     left_out.mkdir(parents=True, exist_ok=True)
     right_out.mkdir(parents=True, exist_ok=True)
-    if _already_complete(left_out, target_count, (width, height) if width and height else None):
+    if _stereo_already_complete(left_out, right_out, target_count,
+                                (width, height) if width and height else None):
         return
 
     board = board_spec.build_board()
     cap_l = open_camera(left_index, width, height)
     cap_r = open_camera(right_index, width, height)
     if not cap_l.isOpened() or not cap_r.isOpened():
-        raise RuntimeError(describe_stereo_open_failure(
+        message = describe_stereo_open_failure(
             (left_index, cap_l.isOpened()), (right_index, cap_r.isOpened())
-        ))
+        )
+        # 開成功的那一顆也要放掉，不然馬上重跑會變成「相機被占用」，蓋掉真正的原因。
+        cap_l.release()
+        cap_r.release()
+        raise RuntimeError(message)
 
     saved = len(list(left_out.glob("*.png")))
     next_index = _next_frame_index(left_out, right_out)

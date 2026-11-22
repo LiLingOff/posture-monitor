@@ -44,6 +44,10 @@ class FrameResult:
     baseline_changed: bool = False
 
 
+# 移動平均的四軸，各自數連續缺值
+_AXES = ("ca", "sym", "drop", "ka")
+
+
 class MonitorState:
     """待命 → 倒數 → 取基準 → 監測。"""
 
@@ -63,7 +67,7 @@ class MonitorState:
         self.sym_window = RollingAngle(window)
         self.drop_window = RollingAngle(window)
         self.ka_window = RollingAngle(window)
-        self._ka_misses = MissCounter()
+        self._axis_misses = {name: MissCounter() for name in _AXES}
         self._judge = PostureJudge(margin_factor=margin)
         self._judge.watch_shoulder_drop(
             None if baseline is None else baseline.shoulder_drop_threshold_mm)
@@ -189,8 +193,17 @@ class MonitorState:
                 self.drop_window.clear()
                 self.ka_window.clear()
 
-        # 這一幀沒有 θ_KA（髖被擋、被略過、基準沒有這一項）就算一次缺值。
-        self._ka_misses.update(self.ka_window, reason is None and ka is not None)
+        # 每一軸各自數缺值：θ_sym 要兩肩、θ_KA 要頸與髖，某一點被擋時這一幀仍算數
+        # （reason 是 None），只是那一軸沒有值，舊平均不會被推走，要自己清。
+        ok = reason is None
+        present = {"ca": ok and corrected[0] is not None,
+                   "sym": ok and corrected[1] is not None,
+                   "drop": ok and drop is not None,
+                   "ka": ok and ka is not None}
+        windows = {"ca": self.ca_window, "sym": self.sym_window,
+                   "drop": self.drop_window, "ka": self.ka_window}
+        for name in _AXES:
+            self._axis_misses[name].update(windows[name], present[name])
 
         verdict = None
         if not self._no_judge:
@@ -219,7 +232,7 @@ class MonitorState:
         self.sym_window.clear()
         self.drop_window.clear()
         self.ka_window.clear()
-        self._ka_misses = MissCounter()
+        self._axis_misses = {name: MissCounter() for name in _AXES}
         self._judge = PostureJudge(margin_factor=self._margin)
         self._judge.watch_shoulder_drop(baseline.shoulder_drop_threshold_mm)
         self._judge.watch_trunk(baseline.trunk_threshold_deg)

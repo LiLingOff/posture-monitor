@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -237,9 +238,11 @@ def _number(text: str) -> float | None:
     if text is None or text.strip() == "":
         return None
     try:
-        return float(text)
+        value = float(text)
     except ValueError:
         return None
+    # nan、inf 當缺值：不然 nan 會一路進平均與方位角分組（int(nan) 會丟例外）。
+    return value if math.isfinite(value) else None
 
 
 def read_rows(path: Path) -> tuple[list[dict], dict[str, str]]:
@@ -289,7 +292,7 @@ def _replay_judgement(
     # θ_KA 只有 CSV 真的記了扣基準之後的值才重播。舊檔沒有這一欄，或基準沒有這一項，
     # 那一軸不開，重播結果與加這一項之前一樣。
     ka_window = RollingAngle(window)
-    ka_misses = MissCounter()
+    ka_misses, ca_misses, sym_misses = MissCounter(), MissCounter(), MissCounter()
     if any(_number(r.get("theta_ka_corrected_deg", "")) is not None for r in rows):
         judge.watch_trunk()
     counts: Counter = Counter()
@@ -321,6 +324,11 @@ def _replay_judgement(
         ka_present = (row.get("usable") == "1"
                       and _number(row.get("theta_ka_corrected_deg", "")) is not None)
         ka_misses.update(ka_window, ka_present)
+        # θ_CA、θ_sym 也各自數：某一軸這一幀沒值（例如左肩被擋，θ_sym 算不出來）
+        # 時，live 會把它的舊平均清掉，重播要一樣。
+        usable = row.get("usable") == "1"
+        ca_misses.update(ca_window, usable and _number(row.get("theta_ca_corrected_deg", "")) is not None)
+        sym_misses.update(sym_window, usable and _number(row.get("theta_sym_corrected_deg", "")) is not None)
 
         *_, verdict = judge.update(ca_window, sym_window, None, ka_window)
         counts[verdict.posture.value] += 1
@@ -366,8 +374,12 @@ def _used_a_baseline(summary: SessionSummary, meta: dict[str, str]) -> bool:
         return True
     raw = summary.angles.get("θ_CA 原始")
     corrected = summary.angles.get("θ_CA 扣基準")
-    return (raw is not None and corrected is not None
-            and not np.allclose(raw.values, corrected.values))
+    if raw is None or corrected is None:
+        return False
+    if raw.values.shape != corrected.values.shape:
+        # 兩欄有值的列數不同，代表同一列不是都有扣基準，至少有一部分扣過了。
+        return True
+    return not np.allclose(raw.values, corrected.values)
 
 
 def analyse_session(

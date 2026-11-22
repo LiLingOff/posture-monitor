@@ -138,7 +138,7 @@ class _Recorder:
 
 
 def _patch(monkeypatch, recorder, baseline=None):
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, _FakeCap()))
     monkeypatch.setattr(
         posture, "_collect_baseline",
         lambda engine, calib, cap, args, seconds, display=None: (
@@ -240,7 +240,7 @@ def test_a_bad_baseline_stops_and_asks_rather_than_carrying_on(tmp_path, monkeyp
         # 第一次有警告，第二次乾淨
         return _baseline(), ["略過 41/150 幀（27%）"] if len(attempts) == 1 else []
 
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, _FakeCap()))
     monkeypatch.setattr(posture, "_collect_baseline", collect)
     monkeypatch.setattr(posture, "_record", _Recorder())
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
@@ -260,7 +260,7 @@ def test_no_prompt_never_blocks_on_a_bad_baseline(tmp_path, monkeypatch):
         attempts.append(1)
         return _baseline(), ["略過 41/150 幀（27%）"]
 
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, _FakeCap()))
     monkeypatch.setattr(posture, "_collect_baseline", collect)
     monkeypatch.setattr(posture, "_record", _Recorder())
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
@@ -275,7 +275,7 @@ def test_the_camera_is_released_even_when_a_segment_blows_up(tmp_path, monkeypat
     released = []
     cap.release = lambda: released.append(1)
 
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, cap))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, cap))
     monkeypatch.setattr(posture, "_collect_baseline",
                         lambda *a, **k: (_baseline(), []))
     monkeypatch.setattr(posture, "_report", lambda *a, **k: None)
@@ -308,7 +308,7 @@ def test_both_printed_rejection_rates_use_the_same_denominator(tmp_path, monkeyp
                 frames=recording.frames + 10, transitions=[],
             )
 
-    monkeypatch.setattr(posture, "_prepare", lambda args: (None, None, _FakeCap()))
+    monkeypatch.setattr(posture, "_prepare", lambda args, **kw: (None, None, _FakeCap()))
     monkeypatch.setattr(posture, "_collect_baseline",
                         lambda *a, **k: (_baseline(), []))
     monkeypatch.setattr(posture, "_record", _Partial(rejection_rate=0.10))
@@ -420,7 +420,7 @@ def test_a_lost_camera_is_found_again_and_that_condition_is_measured_again(
     _patch(monkeypatch, recorder)
     reopened = []
     monkeypatch.setattr(posture, "_reopen_camera",
-                        lambda args: (reopened.append(1), _FakeCap())[1])
+                        lambda args, **kw: (reopened.append(1), _FakeCap())[1])
     posture._run_study(_args(tmp_path, conditions="upright,head-forward,head-back"))
 
     assert len(reopened) == 1
@@ -434,7 +434,7 @@ def test_if_the_camera_cannot_be_found_the_rest_is_skipped(tmp_path, monkeypatch
     """拿死掉的相機量下一段只會得到一份空記錄，還讓人以為那一段量過了。"""
     recorder = _Recorder(lost_on={1})
     _patch(monkeypatch, recorder)
-    monkeypatch.setattr(posture, "_reopen_camera", lambda args: None)
+    monkeypatch.setattr(posture, "_reopen_camera", lambda args, **kw: None)
     posture._run_study(_args(tmp_path, conditions="upright,head-forward,head-back"))
 
     assert len(recorder.calls) == 1
@@ -445,7 +445,7 @@ def test_a_camera_that_keeps_dropping_is_given_up_on(tmp_path, monkeypatch, caps
     """掉兩次以上就不是偶發，硬撐只會讓受試者坐著一直等。"""
     recorder = _Recorder(lost_on={1, 2, 3, 4, 5, 6})
     _patch(monkeypatch, recorder)
-    monkeypatch.setattr(posture, "_reopen_camera", lambda args: _FakeCap())
+    monkeypatch.setattr(posture, "_reopen_camera", lambda args, **kw: _FakeCap())
     posture._run_study(_args(tmp_path, conditions="upright,head-forward"))
 
     assert len(recorder.calls) == posture._STUDY_REOPEN_BUDGET + 1
@@ -475,6 +475,38 @@ def test_reopening_searches_again_instead_of_reusing_the_old_number(monkeypatch)
     assert cap is not None
     assert args.camera == 1
     assert len(tries) == 2
+
+
+def _reopen_with_frame_size(monkeypatch, width, height):
+    import numpy as np
+
+    class _Opened(_FakeCap):
+        def isOpened(self):
+            return True
+
+        def read(self):
+            return True, np.zeros((height, width, 3), np.uint8)
+
+    monkeypatch.setattr(posture, "find_camera_index", lambda w, h: (1, "自動挑到 index=1"))
+    monkeypatch.setattr(posture, "open_camera", lambda i, w, h: _Opened())
+    monkeypatch.setattr(posture, "_discard_frames", lambda cap, n: None)
+    args = SimpleNamespace(camera=0, width=2560, height=720, discard=0,
+                           vertical_split=False, swap_lr=False)
+    calib = SimpleNamespace(image_size=(1280, 720))
+    return posture._reopen_camera(args, attempts=2, pause_s=0, calib=calib), args
+
+
+def test_reopening_rejects_a_camera_that_fell_back_to_another_resolution(monkeypatch):
+    """重新列舉後相機可能退回 640x480；拿 1280x720 的內參去算，整段資料尺度全錯。"""
+    cap, args = _reopen_with_frame_size(monkeypatch, 1280, 480)  # 左半 640x480
+    assert cap is None
+    assert args.camera == 0
+
+
+def test_reopening_accepts_a_camera_at_the_calibrated_resolution(monkeypatch):
+    cap, args = _reopen_with_frame_size(monkeypatch, 2560, 720)
+    assert cap is not None
+    assert args.camera == 1
 
 
 def test_reopening_gives_up_after_its_attempts(monkeypatch):
