@@ -12,6 +12,25 @@ import numpy as np
 from calibration.stereo_calibration import StereoCalibrationResult
 
 
+def _paired_points(points_left, points_right) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """整理左右點並回傳哪些列兩邊都有限。形狀不對就明確報錯，不留給 OpenCV。
+
+    空輸入（空 list）要當成零個點，不是形狀錯誤。inf 與 NaN 一樣當成沒偵測到：
+    傳進 OpenCV 之後不同版本會回 NaN、inf 或直接 assertion failed。
+    """
+    left = np.asarray(points_left, dtype=np.float64)
+    right = np.asarray(points_right, dtype=np.float64)
+    left = left.reshape(0, 2) if left.size == 0 else left
+    right = right.reshape(0, 2) if right.size == 0 else right
+    for name, arr in (("points_left", left), ("points_right", right)):
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            raise ValueError(f"{name} 形狀應為 (N, 2)，實際是 {arr.shape}")
+    if len(left) != len(right):
+        raise ValueError(f"左右點數不同：左 {len(left)}、右 {len(right)}")
+    valid = np.isfinite(left).all(axis=1) & np.isfinite(right).all(axis=1)
+    return left, right, valid
+
+
 def triangulate_points(
     calib: StereoCalibrationResult, points_left: np.ndarray, points_right: np.ndarray
 ) -> np.ndarray:
@@ -19,12 +38,9 @@ def triangulate_points(
 
     回傳shape(N,3)，單位與標定時square_size_mm一致(mm)；NaN列的輸出也是NaN。
     """
-    points_left = np.asarray(points_left, dtype=np.float64)
-    points_right = np.asarray(points_right, dtype=np.float64)
+    points_left, points_right, valid = _paired_points(points_left, points_right)
     n = len(points_left)
     result = np.full((n, 3), np.nan, dtype=np.float64)
-
-    valid = ~np.isnan(points_left).any(axis=1) & ~np.isnan(points_right).any(axis=1)
     if not valid.any():
         return result
 
@@ -71,12 +87,9 @@ def rectified_vertical_disparity(
 
     這是少數能用真實資料（不是標定板）檢驗標定品質的指標。
     """
-    points_left = np.asarray(points_left, dtype=np.float64)
-    points_right = np.asarray(points_right, dtype=np.float64)
+    points_left, points_right, valid = _paired_points(points_left, points_right)
     n = len(points_left)
     result = np.full(n, np.nan, dtype=np.float64)
-
-    valid = ~np.isnan(points_left).any(axis=1) & ~np.isnan(points_right).any(axis=1)
     if not valid.any():
         return result
 
