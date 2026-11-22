@@ -24,7 +24,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-11-22 是 968 個
+python -m pytest -q          # 2026-11-22 是 1035 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -65,6 +65,14 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
   相鄰幀的自相關是 0.73，用 `std/√N` 實測低估 2.6 倍。
 - **跨受試者的誤差分母是人數不是幀數**（`geometry/cohort.py`），與上一條相反，
   理由寫在該檔案的註解裡。
+
+## 組員來量的時候用 run-plan（2026-11-22）
+
+組員一次只來一小時，正式量測走 `preflight` 再 `run-plan plans/selftest.json --subject <代號>`。
+`run-plan` 只是把幾趟 `study` 串起來加當場檢查，**量測方法要與 study 完全相同**：
+每一趟的參數由 `geometry/run_plan.trip_argv` 組成、交給同一個 parser，不要另外抄一份預設值。
+`study` 本身的行為（量角器可留空、掉線殘段留著接續編號）不要因為 run-plan 而改，
+run-plan 要的不同行為都經由 `_study_trip` 的 `check`、`on_camera_lost` 與 `args.require_angles` 傳進去。
 
 ## 現在卡在哪
 

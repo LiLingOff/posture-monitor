@@ -16,8 +16,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import io
+import re
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -76,7 +80,15 @@ from geometry.study import (baseline_path, build_trip_options,  # noqa: E402
                             is_tilt, next_trial,
                             parse_conditions, parse_number_list,
                             parse_optional_conditions, review,
-                            segment_metadata, session_paths)
+                            segment_metadata, session_paths, UPRIGHT)
+from geometry.preflight import (FrameProbe, git_items,  # noqa: E402
+                                probe_items, verdict_lines)
+from geometry.preflight import Item as PreflightItem  # noqa: E402
+from geometry.preflight import all_clear as preflight_clear  # noqa: E402
+from geometry.run_plan import (MAX_REDO_PER_SEGMENT, check_segment,  # noqa: E402
+                               describe_offset, discard_segment,
+                               estimated_minutes, load_plan, parse_offset,
+                               trip_argv)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -904,16 +916,52 @@ def _run_study(args) -> None:
     不扣基準，只記原始角度，分析時與同一趟（同一個 trip_id）的端正坐配對。
     `--conditions` 是空的就不取基準（趟 5，表4）。
     """
+    # 選項對不上的話在開相機之前就停。trip 在這裡建一次直接傳進去，
+    # trip_id（study 開始的時間）才與拆出 _study_trip 之前相同。
     before, conditions = _study_plan(args)
     trip = _trip_options(args, before + conditions)
-
     calib, engine, cap = _prepare(args)
-    display = _open_display(args)
+    display = NO_DISPLAY
+    try:
+        # 視窗開不起來（例如沒有圖形環境）時相機也要放掉，所以放在 try 裡。
+        display = _open_display(args)
+        recordings, baseline, cap = _study_trip(engine, calib, cap, args, display,
+                                                trip=trip)
+    finally:
+        display.close()
+        if cap is not None:
+            cap.release()
+
+    _study_summary(recordings, args, baseline)
+
+
+def _study_trip(engine, calib, cap, args, display=NO_DISPLAY, check=None,
+                trip=None, on_camera_lost=None):
+    """跑一趟（同一次坐下、一份基準），回傳 (錄製, 基準, 相機)。
+
+    相機與模型由呼叫端準備好，`study` 跑一趟、`run-plan` 連跑好幾趟都用它，
+    模型只載入一次。相機掉線會換一個新的 cap，所以要回傳給呼叫端釋放；
+    中途出錯時，換過的那個 cap 呼叫端拿不到，在這裡放掉。
+
+    `check(recording, recordings, baseline, first_upright)` 是 `run-plan` 的
+    當場檢查，回傳 "keep"、"redo"（作廢這段、同一段再量）或 "rebaseline"
+    （作廢這段、重取基準再量）。作廢的檔案由 check 自己搬走。`study` 不給，
+    行為與先前完全相同。
+
+    `on_camera_lost(recording)` 也是 `run-plan` 用的：掉線的殘段交給它搬走，
+    重量那段才沿用同一個編號（GPT 審查第 1 條）。`study` 不給，殘段照舊留著、
+    標 `camera_lost=1`，重量那段接續編號。
+    """
+    before, conditions = _study_plan(args)
+    if trip is None:
+        trip = _trip_options(args, before + conditions)
     root = args.out_dir
     recordings = []
     reopens = 0
     baseline = None
     queue = _study_queue(before, conditions)
+    first_upright_seen = False
+    given_cap = cap
     try:
         while queue:
             item = queue.pop(0)
@@ -926,7 +974,22 @@ def _run_study(args) -> None:
                 trip=trip, segment_index=index, tilt_index=tilt_index)
             recordings.append(recording)
             if recording.camera_lost is None:
+                if check is None:
+                    continue
+                first_upright = (not is_before and condition == UPRIGHT
+                                 and not first_upright_seen)
+                action = check(recording, recordings, baseline, first_upright)
+                if action == "keep":
+                    first_upright_seen = first_upright_seen or first_upright
+                    continue
+                recordings.pop()
+                if action == "rebaseline":
+                    baseline = None
+                queue.insert(0, item)
                 continue
+            if on_camera_lost is not None:
+                recordings.pop()
+                on_camera_lost(recording)
             # 2026-10-06 實機：head-forward 那段掉線之後，下一段 head-back 拿著
             # 已經消失的 video0 繼續跑，一幀都沒讀到就結束了。掉線時節點編號
             # 每一次都會移位，原本的 cap 不可能再讀到東西。
@@ -943,12 +1006,11 @@ def _run_study(args) -> None:
             # 同一種姿勢重量一次。改成跳到下一種的話，這一種就得另外找一趟補，
             # 而那一趟的基準不是這一份。
             queue.insert(0, item)
-    finally:
-        display.close()
-        if cap is not None:
+    except BaseException:
+        if cap is not None and cap is not given_cap:
             cap.release()
-
-    _study_summary(recordings, args, baseline)
+        raise
+    return recordings, baseline, cap
 
 
 def _study_queue(before: list[str], conditions: list[str]) -> list[tuple]:
@@ -1119,7 +1181,7 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
     if trip is not None:
         measured = None
         if tilt_index is not None and not trip.measured_angles and not args.no_prompt:
-            measured = _ask_angle("量角器量到的實際角度是幾度？（直接按 Enter 留空）")
+            measured = _ask_tilt_angle("量角器量到的實際角度是幾度？", args)
         extra = segment_metadata(trip, condition, segment_index, tilt_index, measured)
     if before:
         _countdown(args.countdown)
@@ -1144,8 +1206,7 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
         # 誤差裡分不出是 θ_sym 不準還是受試者沒撐住。掉線的那一段會被重量，不問。
         end = end_angle_for(trip, tilt_index)
         if end is None and not args.no_prompt:
-            end = _ask_angle("量完了，量角器現在量到的角度是幾度？"
-                             "（直接按 Enter 留空）")
+            end = _ask_tilt_angle("量完了，量角器現在量到的角度是幾度？", args)
         if end is not None:
             with open(log.path, "a", encoding="utf-8") as handle:
                 handle.write(end_angle_footer(end))
@@ -1153,6 +1214,37 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
     # 「要等 _study_one 跑完才算有效」的中間狀態。
     return replace(recording, condition=condition, trial=trial,
                    before_baseline=before)
+
+
+def _ask_tilt_angle(question: str, args) -> float | None:
+    """側傾段落問量角器。`run-plan` 要求一定要填（`args.require_angles`）。
+
+    2026-11-19 S01 三次側傾六段全部沒有量角器數字，誤差算不出來；當時直接按
+    Enter 就能留空。必填時空白不放行，真的量不到要明講輸入 `-`，再確認一次，
+    這樣留空一定是有人決定的，不是手滑。讀不到 stdin 時照舊留空，
+    沒有人在旁邊時卡住等輸入比留空更糟；但 run-plan 讀不到 stdin 時直接停，
+    因為那代表操作者根本沒辦法回答。
+    """
+    if not getattr(args, "require_angles", False):
+        return _ask_angle(question + "（直接按 Enter 留空）")
+    while True:
+        try:
+            answer = input(f"  {question}（必填；真的量不到輸入 - ）").strip()
+        except (EOFError, OSError):
+            # run-plan 一定有人在旁邊。讀不到鍵盤卻默默留空，正是這個模式要擋的
+            # 事（GPT 審查第 4 條），所以停下來講清楚。
+            raise SystemExit(_NO_KEYBOARD)
+        if answer in ("-", "－"):
+            if _ask_yes("  確定這一段不記量角器？誤差會算不出來。"):
+                return None
+            continue
+        if not answer:
+            print("  量角器的數字一定要填，請量完再輸入", flush=True)
+            continue
+        try:
+            return abs(float(answer))
+        except ValueError:
+            print(f"  {answer!r} 不是數字，請再輸入一次", flush=True)
 
 
 def _ask_angle(question: str) -> float | None:
@@ -1467,6 +1559,312 @@ def _run_profile_ref(args) -> None:
         print(f"\n逐幀與報告寫到 {args.out}")
 
 
+# ---- run-plan：引導模式 ------------------------------------------------------
+
+# run-plan 自己的選項，不抄進每一趟的 study 參數。其餘（相機、模型、視窗、
+# 受試者、輸出資料夾）原樣抄過去，所以 --display、--camera 這些照常生效。
+_PLAN_ONLY = frozenset({"mode", "plan", "dry_run"})
+
+_NO_KEYBOARD = ("讀不到鍵盤輸入，桌面減手肘或量角器沒辦法填。"
+                "請直接在實機的終端機（或 ssh 的互動視窗）重跑 run-plan，"
+                "不要用管線或背景執行。已經量完的段落都存好了")
+
+# 受試者代號只收英數、底線、連字號。代號會變成資料夾名稱，「..」或「.」沒有斜線
+# 也會把資料寫到 data/sessions 的上一層或根目錄（GPT 審查第 2 條）。
+_SUBJECT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _plan_trip_args(parser, args, plan, trip, offset):
+    """把計畫的一趟組成 study 的 args。用同一個 parser，預設值只有一處。"""
+    ns = parser.parse_args(["study"] + trip_argv(plan, trip, args.subject, offset))
+    for key, value in vars(args).items():
+        if key not in _PLAN_ONLY:
+            setattr(ns, key, value)
+    ns.require_angles = True
+    ns.no_prompt = False
+    ns.overwrite = False
+    return ns
+
+
+def _plan_header(plan, trip, n: int) -> list[str]:
+    bar = "=" * 60
+    segments = list(trip.before) + (["取基準"] if trip.conditions else []) + list(trip.conditions)
+    lines = ["", bar, f"  第 {n}/{len(plan.trips)} 趟：{trip.title}",
+             f"  約 {estimated_minutes(plan, trip):.0f} 分鐘（不含重量）",
+             "  段落：" + " → ".join(segments), bar]
+    if trip.setup:
+        lines += ["", "【操作者先做】", trip.setup]
+    if trip.subject_does:
+        lines += ["", "【告訴受試者】", trip.subject_does]
+    if trip.tilts:
+        lines += ["", "【側傾】每一段開始前與量完都要用量角器量，程式會問，一定要輸入數字。"]
+    return lines
+
+
+def _ask_desk_offset() -> float | None:
+    """問桌面減手肘。必填，問完再用白話覆述一次讓操作者確認正負號。
+
+    2026-11-19 兩趟的 desk_offset_cm 都記成 10，看起來是沒有重量；
+    覆述「桌面比手肘高 10 公分，對嗎？」比只看到一個數字更容易發現寫錯。
+    """
+    while True:
+        try:
+            text = input("桌面高減手肘高是幾公分？桌面比較高填正數，比較低填負數：")
+        except (EOFError, OSError):
+            raise SystemExit(_NO_KEYBOARD)
+        value = parse_offset(text)
+        if value is None:
+            print("  要填數字，例如 5 或 -3。拿量尺量：桌面高度減坐著時手肘的高度", flush=True)
+            continue
+        if _ask_yes(f"  {describe_offset(value)}，對嗎？"):
+            return value
+
+
+def _plan_checker(args):
+    """每段量完的當場檢查。回傳給 `_study_trip` 的 check。"""
+    redo_counts: dict = {}
+
+    def check(recording, recordings, baseline, first_upright):
+        reviews = review(recordings, baseline)
+        segment = reviews[-1]
+        result = check_segment(segment, first_upright_after_baseline=first_upright)
+        if result.ok and first_upright:
+            _warn_turned_before(recordings[:-1], reviews[:-1])
+        if result.ok:
+            print("  當場檢查：通過", flush=True)
+            return "keep"
+        print("  當場檢查：沒過", flush=True)
+        for problem in result.problems:
+            print(f"   - {problem}", flush=True)
+        # 重量時舊檔搬走，編號會沿用，所以 (條件, 編號) 認得出是同一段。
+        key = (recording.condition, recording.trial)
+        if redo_counts.get(key, 0) >= MAX_REDO_PER_SEGMENT:
+            print("  這一段已經重量過，不再重量，記下來交給事後判讀", flush=True)
+            return "keep"
+        question = ("要重取基準並重量這一段嗎？（受試者不用起身）"
+                    if result.retake_baseline else "要重量這一段嗎？")
+        if not _ask_yes(question):
+            print("  不重量，記下來交給事後判讀", flush=True)
+            return "keep"
+        redo_counts[key] = redo_counts.get(key, 0) + 1
+        if recording.log_path is not None:
+            moved = discard_segment(recording.log_path, args.out_dir, args.subject)
+            print(f"  原本那份搬到 {moved}，不會被算進分析", flush=True)
+        return "rebaseline" if result.retake_baseline else "redo"
+
+    return check
+
+
+def _warn_turned_before(recordings, reviews) -> None:
+    """自然坐量的當下還沒有同趟端正坐可比，量完第一段端正坐才看得出它有沒有轉身。
+
+    看出來了也不當場重量：自然坐要在「請坐正」之前量，已經念過坐正就不是
+    平常的坐法了。只能提醒操作者，要補就讓受試者休息、起身後整趟重跑
+    （GPT 審查第 3 條，只採提醒）。
+    """
+    for recording, segment in zip(recordings, reviews):
+        if recording.before_baseline and segment.turned_too_far:
+            print(f"  注意：{segment.condition} #{segment.trial} 的方位角和這段端正坐差 "
+                  f"{segment.turned_deg:+.0f}°，分析時會被判轉身作廢。自然坐不能在"
+                  "請坐正之後補量；要補的話，這一位全部量完、起身休息後，"
+                  "再單獨重跑一次趟 1。", flush=True)
+
+
+def _plan_discard_lost(args):
+    """相機掉線的殘段搬到作廢區，重量那段沿用同一個編號。"""
+    def discard(recording):
+        if recording.log_path is not None and Path(recording.log_path).exists():
+            moved = discard_segment(recording.log_path, args.out_dir, args.subject)
+            print(f"  相機掉線，殘缺的那份搬到 {moved}，這一段重量", flush=True)
+    return discard
+
+
+def _plan_analyse(parser, args, paths) -> None:
+    """一位受試者跑完就跑 analyse，輸出另存一份給 AI 判讀。"""
+    paths = [p for p in paths if p is not None and Path(p).exists()]
+    if not paths:
+        print("沒有可分析的段落。", flush=True)
+        return
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            _run_analyse(parser.parse_args(["analyse"] + [str(p) for p in paths]))
+    except (Exception, SystemExit) as exc:  # 分析出錯不該讓已量好的資料像是白量
+        print(buffer.getvalue())
+        print(f"analyse 出錯：{exc}。資料都已存好，把這段畫面拍照傳給使用者。", flush=True)
+        return
+    text = buffer.getvalue()
+    print(text)
+    out = Path(args.out_dir) / args.subject / (
+        f"analyse-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"分析結果另存到 {out}", flush=True)
+
+
+def _ask_no(question: str) -> bool:
+    """問一個是非題，預設「否」。讀不到 stdin 時當作否。"""
+    try:
+        answer = input(f"{question}[y/N] ").strip().lower()
+    except (EOFError, OSError):
+        return False
+    return answer in ("y", "yes")
+
+
+def _run_plan(args) -> None:
+    """照計畫檔連跑一位受試者的所有趟次，每段量完當場檢查。"""
+    try:
+        plan = load_plan(args.plan)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    args.subject = (args.subject or "").strip()
+    if not _SUBJECT_PATTERN.fullmatch(args.subject):
+        raise SystemExit("--subject 要是一個代號，例如 S02，只能用英文、數字、底線、連字號")
+    parser = build_parser()
+    # 每一趟先組一次參數，選項不對在開相機之前就停。
+    for trip in plan.trips:
+        ns = _plan_trip_args(parser, args, plan, trip, 0.0)
+        before, conditions = _study_plan(ns)
+        _trip_options(ns, before + conditions)
+
+    total = sum(estimated_minutes(plan, t) for t in plan.trips)
+    print(f"計畫：{plan.name}　受試者：{args.subject}　共 {len(plan.trips)} 趟，"
+          f"約 {total:.0f} 分鐘（不含重量與換人）", flush=True)
+    for note in plan.notes:
+        print(f"  ・{note}", flush=True)
+    if args.dry_run:
+        for n, trip in enumerate(plan.trips, start=1):
+            print(f"\n第 {n} 趟 {trip.title}{'（可跳過）' if trip.optional else ''}")
+            print("  等同指令：python posture.py study "
+                  + " ".join(trip_argv(plan, trip, args.subject, None)))
+        print("\n--dry-run 只檢查計畫檔，沒有開相機。", flush=True)
+        return
+
+    offset = None
+    if any(t.desk_level is not None for t in plan.trips):
+        offset = _ask_desk_offset()
+    calib, engine, cap = _prepare(args)
+    display = NO_DISPLAY
+    logs = []
+    done = []
+    try:
+        display = _open_display(args)
+        for n, trip in enumerate(plan.trips, start=1):
+            ns = _plan_trip_args(parser, args, plan, trip, offset)
+            _print_lines(_plan_header(plan, trip, n))
+            if trip.optional:
+                note = f"（{trip.optional_note}）" if trip.optional_note else ""
+                if not _ask_no(f"這一趟可以跳過{note}。要做嗎？"):
+                    print("跳過這一趟。", flush=True)
+                    continue
+            try:
+                recordings, baseline, cap = _study_trip(
+                    engine, calib, cap, ns, display, check=_plan_checker(ns),
+                    on_camera_lost=_plan_discard_lost(ns))
+            except Exception:
+                # 換過的相機 _study_trip 已經放掉；這裡的 cap 是交進去的那個，
+                # 由下面的 finally 放（重開過的話它早已放過，再放一次無妨）。
+                print("\n程式報錯了。把整個畫面拍照傳給使用者，不要自己改程式。"
+                      "已經量完的段落都存好了。", flush=True)
+                raise
+            # 掉線重開會換節點編號，下一趟要用新的。
+            args.camera = ns.camera
+            _study_summary(recordings, ns, baseline)
+            logs += [r.log_path for r, seg in zip(recordings, review(recordings, baseline))
+                     if seg.usable_data]
+            done.append(trip.title)
+            if cap is None:
+                print("相機找不到了，今天先停在這裡。", flush=True)
+                break
+    finally:
+        display.close()
+        if cap is not None:
+            cap.release()
+
+    print("\n" + "=" * 60, flush=True)
+    print(f"{args.subject} 量完了：{'、'.join(done) or '沒有完成任何一趟'}", flush=True)
+    _plan_analyse(parser, args, logs)
+    print("\n接下來：", flush=True)
+    print(f"  下一位受試者：python posture.py run-plan {args.plan} --subject <下一個代號>")
+    print("  今天全部量完就可以收工。AI 會自己用 ssh 拉資料判讀，不用傳任何檔案。")
+    print("  有報錯或卡住，把畫面拍照傳給使用者。", flush=True)
+
+
+# ---- preflight：上機前檢查 ---------------------------------------------------
+
+def _git_state() -> tuple[str | None, str | None, bool | None]:
+    """(目前 commit, GitHub 上的 commit, 有沒有未 commit 的修改)。拿不到就是 None。"""
+    here = Path(__file__).resolve().parent
+
+    def git(*argv, timeout=10):
+        try:
+            result = subprocess.run(["git", *argv], cwd=here, capture_output=True,
+                                    text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    local = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain", "--untracked-files=no")
+    remote_line = git("ls-remote", "origin", "HEAD", timeout=15)
+    remote = remote_line.split()[0] if remote_line else None
+    return local, remote, None if status is None else bool(status)
+
+
+def _run_preflight(args) -> None:
+    """一個指令做完自測手冊「開始前」那幾項。沒過的話結束碼是 1。"""
+    items = git_items(*_git_state())
+    calib = StereoCalibrationResult.load(args.calibration)
+    items.append(PreflightItem(True, "標定檔",
+                               f"{args.calibration}（基線 {calib.baseline_mm:.2f} mm）"))
+    engine = _build_engine(args)
+    try:
+        cap = _open_selected_camera(args, calib)
+    except RuntimeError as exc:
+        items.append(PreflightItem(False, "相機", str(exc),
+                                   "確認 USB 有接好；還是不行就跑 dmesg | tail -40"))
+        _print_lines(verdict_lines(items))
+        raise SystemExit(1)
+    probes = []
+    try:
+        _discard_frames(cap, args.discard)
+        left_frame = _grab_pair(cap, args)[0]
+        problem = describe_resolution_mismatch(
+            calib.image_size, (left_frame.shape[1], left_frame.shape[0]),
+            args.vertical_split)
+        items.append(PreflightItem(
+            problem is None, "解析度",
+            problem or f"單眼 {left_frame.shape[1]}x{left_frame.shape[0]}，與標定一致",
+            "拔插相機 USB 再跑一次"))
+        if problem is None:
+            _step(f"載入模型（{args.precision} / {args.device}），試拍 {args.frames} 幀")
+            engine.warmup(left_frame)
+            for _ in range(args.frames):
+                try:
+                    measurement = _measure_once(engine, calib, cap, args)[0]
+                except CameraReadError:
+                    # 相機讀不到和「沒偵測到人」要分開講，該做的事不一樣
+                    # （GPT 審查第 7 條）。交給外面那層記成「相機」沒過。
+                    raise
+                except RuntimeError as exc:  # 配不到人
+                    probes.append(FrameProbe(error=str(exc)))
+                    continue
+                probes.append(FrameProbe(
+                    shared_count=measurement.shared_count,
+                    angle_disparity_px=measurement.angle_max_vertical_disparity_px,
+                    depth_mm=measurement.reference_depth_mm,
+                    unusable=unusable_reason(measurement)))
+            items += probe_items(probes)
+    except CameraReadError as exc:
+        items.append(PreflightItem(False, "相機", f"讀不到畫面：{exc}",
+                                   "拔插相機 USB；還是不行就跑 dmesg | tail -40"))
+    finally:
+        cap.release()
+    _print_lines(verdict_lines(items))
+    if not preflight_clear(items):
+        raise SystemExit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """建整套 CLI。
 
@@ -1585,6 +1983,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("study", "一個行程跑完整套實驗流程：取基準，接著逐一量各種姿勢"),
         ("monitor", "一個視窗跑到底：按 c 當場取基準歸零，按 q 離開"),
         ("scale", "拿標定板驗證三角測量的尺度，不需要姿態模型"),
+        ("run-plan", "引導模式：照計畫檔連跑一位受試者的所有趟次，每段量完當場檢查"),
+        ("preflight", "上機前檢查：程式版本、相機、解析度、關鍵點、垂直視差、距離"),
     )
     for name, help_text in modes:
         p = sub.add_parser(name, help=help_text)
@@ -1647,6 +2047,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--no-subpixel", action="store_true",
                        help="關掉熱圖峰值的次像素精修，用來量化它的影響")
 
+        if name == "preflight":
+            p.add_argument("--frames", type=int, default=10,
+                           help="試拍幾幀。受試者要坐在平常的位置")
+            # preflight 不開視窗、不錄資料，下面那些選項對它沒有意義。
+            continue
+
         # 視窗。
         p.add_argument("--display", action="store_true",
                        help="開一個視窗，畫面疊上骨架與狀態面板。給操作者架設"
@@ -1673,6 +2079,16 @@ def build_parser() -> argparse.ArgumentParser:
         if name in ("live", "baseline", "study", "monitor"):
             p.add_argument("--subject", default="受試者",
                            help="受試者代號，寫進基準檔與 CSV")
+        if name == "run-plan":
+            p.add_argument("plan", type=Path,
+                           help="計畫檔（JSON），例如 plans/selftest.json")
+            p.add_argument("--subject", required=True,
+                           help="受試者代號，例如 S02。一人一碼，不要重複用")
+            p.add_argument("--out-dir", type=Path, default=Path("data/sessions"),
+                           help="資料寫到 <out-dir>/<subject>/ 底下；作廢的段落搬到"
+                                " <out-dir>-discarded/<subject>/")
+            p.add_argument("--dry-run", action="store_true",
+                           help="只檢查計畫檔並印出每一趟等同的 study 指令，不開相機")
         if name in ("live", "monitor"):
             p.add_argument("--baseline", type=Path, default=None,
                            help="個人基準檔，由 baseline 子指令產生。"
@@ -1787,6 +2203,9 @@ def main() -> None:
     if args.mode in offline:
         offline[args.mode](args)
         return
+    if args.mode == "run-plan" and args.dry_run:
+        _run_plan(args)
+        return
     if not args.calibration.is_file():
         raise SystemExit(
             f"找不到標定檔 {args.calibration}。先執行：\n"
@@ -1807,7 +2226,8 @@ def main() -> None:
 
     {"once": _run_once, "live": _run_live, "baseline": _run_baseline,
      "study": _run_study, "monitor": _run_monitor,
-     "scale": _run_scale}[args.mode](args)
+     "scale": _run_scale, "run-plan": _run_plan,
+     "preflight": _run_preflight}[args.mode](args)
 
 
 if __name__ == "__main__":

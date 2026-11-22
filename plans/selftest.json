@@ -1,0 +1,57 @@
+{
+  "name": "核心包：趟 1、趟 4、側傾 A",
+  "seconds_each": 60,
+  "countdown": 20,
+  "baseline_seconds": 30,
+  "snapshot_raw": true,
+  "notes": [
+    "每趟中間受試者不能起身，趟與趟之間可以休息",
+    "指導語逐字念，不要自己改寫",
+    "正式量測不要開 --display，螢幕放在受試者看不到的地方"
+  ],
+  "trips": [
+    {
+      "id": "trip1",
+      "title": "趟 1：自然坐、取基準、端正坐、頭前傾、軀幹前傾、端正坐",
+      "before": ["natural"],
+      "conditions": ["upright", "head-forward", "forward", "upright"],
+      "desk_level": "base",
+      "task": "copy-text",
+      "setup": [
+        "螢幕放在受試者正前方，旁邊放好要抄的那段文字。",
+        "牆上的標記貼在受試者正前方、視線高度。"
+      ],
+      "subject_does": [
+        "第一段：像平常用電腦一樣，面對螢幕抄寫這段文字，不用刻意坐好。",
+        "之後每一段程式會念指導語，照做就好；除了第一段，全程看牆上的標記，不看螢幕。",
+        "軀幹前傾之後的那段端正坐，要真的坐回來。"
+      ]
+    },
+    {
+      "id": "trip4",
+      "title": "趟 4：取基準、端正坐、左肩高、右肩高",
+      "conditions": ["upright", "left-shoulder-up", "right-shoulder-up"],
+      "desk_level": "base",
+      "subject_does": [
+        "只聳單邊肩膀，頭與上身不動，全程看牆上的標記。"
+      ]
+    },
+    {
+      "id": "tiltA",
+      "title": "側傾 A：取基準、端正坐、左傾 20°、右傾 20°",
+      "conditions": ["upright", "tilt-left", "tilt-right"],
+      "desk_level": "base",
+      "target_angle_deg": [20, 20],
+      "optional": true,
+      "optional_note": "側傾只要累計 3 位受試者，已經有 3 位做過就跳過",
+      "setup": [
+        "準備量角器與鉛垂線（或手機水平儀）。",
+        "量法：量角器一臂對齊鉛垂線，一臂沿背部中線。"
+      ],
+      "subject_does": [
+        "先把上身側彎到位，臉和肩膀仍然朝前，不要轉身。",
+        "雙手放大腿，不要放鍵盤。到位後保持不動，等量角器量完。"
+      ]
+    }
+  ]
+}
