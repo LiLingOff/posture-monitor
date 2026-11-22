@@ -48,6 +48,7 @@ def test_detect_charuco_respects_min_corners_threshold():
     board = SPEC.build_board()
     frontal = make_charuco_frontal_image(SPEC)
     total = board.getChessboardCorners().shape[0]
+    assert detect_charuco(frontal, board, min_corners=total) is not None, "剛好等於門檻要收"
     assert detect_charuco(frontal, board, min_corners=total + 1) is None
 
 

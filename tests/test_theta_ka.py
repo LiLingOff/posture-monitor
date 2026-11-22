@@ -255,6 +255,9 @@ def test_replay_judges_the_trunk_only_when_the_csv_recorded_it(tmp_path):
     plain = analyse_session(_write_session(tmp_path, "old.csv", ka=None), force_replay=True)
     assert over.judgement.share(Posture.OVER.value) > 0.5
     assert plain.judgement.share(Posture.OVER.value) == 0.0
+    # 沒有 θ_KA 欄時軸不開：若誤開，視窗永遠是空的，整段會變成「未知」而不是「正常」。
+    assert plain.judgement.share(Posture.UNKNOWN.value) < 0.5
+    assert plain.judgement.share(Posture.OK.value) > 0.5
 
 
 def test_cohort_rows_and_csv_carry_theta_ka(tmp_path):

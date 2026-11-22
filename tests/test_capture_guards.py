@@ -351,7 +351,7 @@ def test_capture_stereo_refuses_to_reuse_when_only_the_left_side_is_complete(tmp
     left, right = tmp_path / "left", tmp_path / "right"
     _fill_with_images(left, 20)
     _fill_with_images(right, 19)
-    with pytest.raises(RuntimeError, match="右.*|只有 19 張"):
+    with pytest.raises(RuntimeError, match=r"right.*只有 19 張"):
         capture.capture_stereo(1, 2, left, right, SPEC, target_count=20)
 
 

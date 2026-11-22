@@ -68,3 +68,18 @@ def test_a_legacy_file_with_unequal_column_lengths_does_not_crash():
         "θ_CA 扣基準": SimpleNamespace(values=np.array([1.0, 2.0])),
     })
     assert _used_a_baseline(summary, {}) is True
+
+
+def test_equal_length_columns_with_the_same_values_mean_no_baseline():
+    from types import SimpleNamespace
+
+    from geometry.session_analysis import _used_a_baseline
+
+    same = np.array([1.0, 2.0, 3.0])
+    summary = SimpleNamespace(angles={
+        "θ_CA 原始": SimpleNamespace(values=same),
+        "θ_CA 扣基準": SimpleNamespace(values=same.copy()),
+    })
+    assert _used_a_baseline(summary, {}) is False
+    summary.angles["θ_CA 扣基準"] = SimpleNamespace(values=same - 5.0)
+    assert _used_a_baseline(summary, {}) is True

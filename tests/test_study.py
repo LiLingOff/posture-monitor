@@ -117,6 +117,8 @@ class _Recorder:
 
     def __init__(self, rejection_rate=0.04, lost_on=()):
         self.calls = []
+        self.paths = []       # 每次寫進哪個 CSV，用來驗順序
+        self.baselines = []   # 每次拿到的基準，用來驗是不是同一份
         self._rate = rejection_rate
         # 第幾次呼叫（從 1 起算）要回報相機掉線。
         self._lost_on = set(lost_on)
@@ -124,6 +126,8 @@ class _Recorder:
     def __call__(self, engine, calib, cap, args, baseline, log, snapshots,
                  seconds, display=None):
         self.calls.append(seconds)
+        self.paths.append(None if log is None else log.path.name)
+        self.baselines.append(baseline)
         session = Session()
         for _ in range(100):
             session.add((5.0, 1.0))
@@ -159,6 +163,7 @@ def test_every_condition_gets_measured_in_order(tmp_path, monkeypatch, capsys):
     posture._run_study(_args(tmp_path, conditions="upright,forward"))
 
     assert recorder.calls == [90.0, 90.0]
+    assert recorder.paths == ["upright-1.csv", "forward-1.csv"], "要照 --conditions 的順序量"
     folder = tmp_path / "chenyue"
     assert (folder / "upright-1.csv").exists()
     assert (folder / "forward-1.csv").exists()
@@ -192,6 +197,9 @@ def test_the_baseline_is_taken_once_and_shared_by_every_condition(tmp_path, monk
     )
     posture._run_study(_args(tmp_path, conditions="upright,forward"))
     assert len(taken) == 1
+    assert len(recorder.baselines) == 2
+    assert recorder.baselines[0] is recorder.baselines[1], "兩段要拿到同一份基準"
+    assert recorder.baselines[0] is not None
 
 
 def test_the_baseline_values_reach_every_csv(tmp_path, monkeypatch):
@@ -317,6 +325,9 @@ def test_both_printed_rejection_rates_use_the_same_denominator(tmp_path, monkeyp
     printed = capsys.readouterr().out
     rates = re.findall(r"（略過 (\d+)%）|（(\d+)%）偵測失誤", printed)
     values = {a or b for a, b in rates}
+    assert len(rates) == 2, f"兩處都要印略過率才算比對過：{printed!r}"
+    # 十幀 θ_CA 缺值也在分母裡：略過 11 / 總幀 121，不是 11 / 111。
+    assert values == {"9"}
     assert len(values) == 1, f"印出了不一致的略過率：{values}"
 
 
@@ -425,6 +436,8 @@ def test_a_lost_camera_is_found_again_and_that_condition_is_measured_again(
 
     assert len(reopened) == 1
     assert len(recorder.calls) == 4
+    assert recorder.paths == ["upright-1.csv", "head-forward-1.csv",
+                              "head-forward-2.csv", "head-back-1.csv"], "掉線的那一種要馬上重量"
     folder = tmp_path / "chenyue"
     for name in ("upright-1", "head-forward-1", "head-forward-2", "head-back-1"):
         assert (folder / f"{name}.csv").exists(), name

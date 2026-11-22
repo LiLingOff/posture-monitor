@@ -211,6 +211,7 @@ def test_reference_depth_falls_back_to_the_median_when_ears_and_shoulders_are_mi
     left, right = _project(pose)
     m = measure_posture(_calib(), left, right)
     assert reference_depth_mm(m.keypoints_3d) == pytest.approx(690.0, abs=1.0)
+    assert m.reference_depth_mm == pytest.approx(690.0, abs=1.0), "pipeline 也要真的採用退回值"
 
 
 def test_report_columns_line_up_when_labels_are_chinese():
@@ -643,9 +644,9 @@ def test_no_mounting_advice_when_the_azimuth_was_not_measured():
     m = measure_posture(_calib(), lp, rp)
 
     warning = next((w for w in plausibility_warnings(m) if "單幀誤差" in w), None)
-    if warning is not None:
-        assert "往側面移" not in warning, "方位角沒量到就不能建議往哪邊移"
-        assert "方位角量不到" in warning
+    assert warning is not None, "方位角量不到時仍要報單幀誤差，不能乾脆不警告"
+    assert "往側面移" not in warning, "方位角沒量到就不能建議往哪邊移"
+    assert "方位角量不到" in warning
 
 
 def test_no_precision_warning_when_the_depth_is_already_impossible():

@@ -3,7 +3,7 @@ import numpy as np
 from geometry.keypoints3d import PersonKeypoints3D, triangulate_person_keypoints
 from geometry_synthetic import make_synthetic_stereo_calibration, project_point
 from pose.keypoints import PersonKeypoints
-from pose.topology import NUM_KEYPOINTS
+from pose.topology import NUM_KEYPOINTS, keypoint_index
 
 K = np.array(
     [
@@ -36,10 +36,13 @@ def test_bad_shape_raises():
 
 def test_get_returns_none_for_nan():
     points = np.zeros((NUM_KEYPOINTS, 3))
+    points[:] = np.arange(NUM_KEYPOINTS * 3, dtype=float).reshape(NUM_KEYPOINTS, 3)
     points[0] = np.nan
     kp3d = PersonKeypoints3D(points=points)
     assert kp3d.get("nose") is None
-    assert kp3d.get("left_eye") is not None
+    eye = kp3d.get("left_eye")
+    assert eye is not None
+    assert np.allclose(eye, points[keypoint_index("left_eye")]), "要回傳 left_eye 自己的座標，不是別的點或固定值"
 
 
 def test_triangulate_person_keypoints_recovers_known_points():

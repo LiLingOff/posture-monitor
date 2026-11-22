@@ -242,17 +242,36 @@ def test_the_csv_carries_every_number_the_markdown_shows(tmp_path):
         dict(subject="A", condition="upright", ca=0.0),
         dict(subject="A", condition="forward", ca=20.0),
     )
-    text = to_csv(session_rows(cohort))
+    import csv
+    import io
+
+    rows = session_rows(cohort)
+    text = to_csv(rows)
     assert text.splitlines()[0].startswith("subject,condition,trial,file")
-    assert len(text.strip().splitlines()) == 3
-    assert "upright" in text and "forward" in text
+    parsed = {r["condition"]: r for r in csv.DictReader(io.StringIO(text))}
+    assert set(parsed) == {"upright", "forward"}
+    # 數字真的寫進去：全寫成空白或 0 的實作要擋得住。
+    assert float(parsed["forward"]["theta_ca_deg"]) == 20.0
+    assert float(parsed["upright"]["theta_ca_deg"]) == 0.0
+    for r in parsed.values():
+        assert int(r["frames"]) == int(r["usable"]) == 60
+        assert float(r["rejection_rate"]) == 0.0
+        assert float(r["theta_sym_deg"]) == 1.0
+        assert float(r["distance_mm"]) == 660.0
+        assert float(r["azimuth_deg"]) == 22.0
+        assert r["theta_ca_inclusion"] == "納入"
 
 
 def test_a_missing_value_is_an_empty_cell_not_a_zero(tmp_path):
     """0 是合法的角度值，拿它表示缺失會讓下游算錯。"""
     cohort = _cohort(tmp_path, dict(subject="A", condition=None, ca=5.0))
-    body = to_csv(session_rows(cohort)).splitlines()[1]
-    assert ",," in body, "trial 沒有值，該是空格"
+    import csv
+    import io
+
+    row = next(csv.DictReader(io.StringIO(to_csv(session_rows(cohort)))))
+    assert row["trial"] == "", "trial 沒有值，該是空格"
+    assert row["theta_ka_deg"] == "", "沒有 θ_KA 也該是空格，不是 0"
+    assert row["theta_ca_deg"] == "5.0"
 
 
 def test_the_whole_report_renders_without_a_separation(tmp_path):

@@ -4,6 +4,7 @@
 兩個人量到的 θ_CA 可以差十幾度。基準取錯的後果比執行期單幀算錯嚴重：
 執行期的雜訊會被平均掉，基準的偏差會固定留在之後每一次判定裡。
 """
+import re
 from dataclasses import asdict
 
 import numpy as np
@@ -183,7 +184,7 @@ def test_failure_names_the_reason_the_frames_were_actually_dropped():
     message = str(exc.value)
     assert "12/12" in message, "要說出幾乎全部是同一個原因"
     assert "深度" in message
-    assert "54" in message or "mm" in message, "顯示的是原句，數字要留著"
+    assert re.search(r"深度 -?\d+mm", message), "顯示的是原句，數字要留著"
     assert "Nmm" not in message, "佔位符只該當分組的鍵，不該出現在訊息裡"
     assert "--all-keypoints" in message, "要給出下一步能查的指令"
     assert "光線" not in message, "人有偵測到，不該再叫人去查光線"

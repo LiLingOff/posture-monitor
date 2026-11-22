@@ -141,7 +141,9 @@ def test_holder_scan_never_raises_on_a_machine_without_proc():
 
     from calibration.device import _own_processes_holding
 
-    assert _own_processes_holding(Path("/dev/video0")) == [] or True
+    result = _own_processes_holding(Path("/dev/video0"))
+    assert isinstance(result, list), "沒有 /proc 時也要回傳清單，不能回傳 None 或丟例外"
+    assert all(isinstance(item, str) for item in result)
 
 
 def test_stereo_open_failure_says_which_camera_is_the_problem():
