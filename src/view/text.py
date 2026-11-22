@@ -21,6 +21,7 @@ Pillow。
 from __future__ import annotations
 
 import re
+import math
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -306,7 +307,10 @@ class TextPainter:
         筆畫之間的空隙會被填掉，「肩部垂直位移」糊成一團,實際畫出來確認過。
         沒有粗體字型檔時描邊是唯一的辦法，那時多半也沒有中文要畫。
         """
-        if not item.bold:
+        return self._stroke(item.bold)
+
+    def _stroke(self, bold: bool) -> int:
+        if not bold:
             return 0
         if self._bold_path is None:
             return 1
@@ -334,8 +338,13 @@ class TextPainter:
             # 下一段字蓋住，而狀態詞就在最前面。
             return sum(self._hershey_width(run, size * (_SUB_SIZE if sub else 1.0), bold)
                        for run, sub in self._runs(picked))
-        total = 0.0
+        total = reach = 0.0
         for run, sub in self._runs(picked):
             run_size = int(round(size * _SUB_SIZE)) if sub else size
-            total += self._font(run_size, bold).getlength(run)
-        return int(total)
+            font = self._font(run_size, bold)
+            # 墨水可以比推進寬度多出一截（K 的右腳），排版看的是墨水畫到哪。
+            reach = max(reach, total + font.getbbox(run)[2])
+            total += font.getlength(run)
+        # 進位：int() 會把 39.6 量成 39，而墨水實際畫到第 40 欄。
+        # 描邊會再往右多畫一圈。
+        return math.ceil(max(total, reach)) + self._stroke(bold)
