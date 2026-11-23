@@ -19,6 +19,8 @@ from geometry.run_plan import (BASELINE_UPRIGHT_LIMIT_DEG, check_segment,
                                describe_offset, discard_dir, discard_segment,
                                estimated_minutes, load_plan, parse_offset,
                                parse_plan, trip_argv)
+from geometry.run_plan import (ExistingSegment, resume_lines, select_trips,
+                               trip_progress)
 from geometry.study import SegmentReview, next_trial
 from posture_loader import load_posture_module
 
@@ -837,3 +839,82 @@ def test_stdout_is_restored_after_the_recording(tmp_path):
 def test_the_plan_defaults_to_the_selftest_file():
     args = posture.build_parser().parse_args(["run-plan", "--subject", "S03"])
     assert args.plan == Path("plans/selftest.json")
+
+
+# ---- 只跑幾趟、接續（2026-11-23）--------------------------------------------
+
+def test_trips_are_picked_by_id_in_plan_order():
+    plan = load_plan(PLAN)
+    assert [t.trip_id for t in select_trips(plan, "tiltA, trip4")] == ["trip4", "tiltA"]
+    with pytest.raises(ValueError, match="沒有 trip9"):
+        select_trips(plan, "trip9")
+    with pytest.raises(ValueError, match="空的"):
+        select_trips(plan, " , ")
+
+
+def _like_1123():
+    """1123 那天：趟 1、趟 4 量完，右肩高略過 17%，側傾還沒開始就中斷。"""
+    rate = {"right-shoulder-up": 0.17}
+    names = ["natural", "upright", "head-forward", "forward", "upright", "upright",
+             "left-shoulder-up", "right-shoulder-up"]
+    seen = {}
+    out = []
+    for name in names:
+        seen[name] = seen.get(name, 0) + 1
+        out.append(ExistingSegment(name, seen[name], rate.get(name, 0.02)))
+    return out
+
+
+def test_progress_tells_done_trips_from_ones_to_redo_and_ones_not_started():
+    plan = load_plan(PLAN)
+    trip1, trip4, tilt = trip_progress(plan, _like_1123())
+    assert trip1.done and not trip1.high_skip
+    assert trip4.done and trip4.high_skip == ("right-shoulder-up #1 略過 17%",)
+    assert not tilt.started and tilt.missing == ("tilt-left", "tilt-right")
+    lines = resume_lines(plan, [trip1, trip4, tilt], "1123",
+                         "python posture.py run-plan --subject 1123")
+    text = "\n".join(lines)
+    assert "  python posture.py run-plan --subject 1123 --trips tiltA" in lines
+    assert "  python posture.py run-plan --subject 1123 --trips trip4,tiltA" in lines
+    assert "建議整趟重量" in text and "自然坐已經量過" in text
+
+
+def test_a_retaken_segment_counts_by_its_latest_trial():
+    plan = load_plan(PLAN)
+    segs = _like_1123() + [ExistingSegment("right-shoulder-up", 2, 0.03)]
+    assert not trip_progress(plan, segs)[1].high_skip
+
+
+def _write_segment(folder, name):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text("# subject=1123\n", encoding="utf-8")
+
+
+def test_existing_data_without_trips_stops_before_the_camera(tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "sessions" / "S02"
+    for name in ("natural-1.csv", "upright-1.csv", "head-forward-1.csv", "forward-1.csv"):
+        _write_segment(folder, name)
+    opened = []
+    monkeypatch.setattr(posture, "_prepare", lambda *a, **k: opened.append(1))
+    with pytest.raises(SystemExit, match="沒有開相機"):
+        posture._run_plan_body(_plan_args(tmp_path, PLAN))
+    assert not opened
+    out = capsys.readouterr().out
+    assert "S02 已經有量過的資料" in out
+    assert "--trips trip4,tiltA" in out
+
+
+def test_trips_runs_only_the_named_trip_and_keeps_numbering(tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "sessions" / "S02"
+    for name in ("natural-1.csv", "upright-1.csv", "upright-2.csv", "upright-3.csv",
+                 "left-shoulder-up-1.csv", "right-shoulder-up-1.csv"):
+        _write_segment(folder, name)
+    studio = _Studio()
+    answers = {"桌面高減手肘高": ["0"], "對嗎": ["y"], "量角器": ["20", "20", "20", "20"]}
+    _patch(monkeypatch, studio, answers)
+    posture._run_plan(_plan_args(tmp_path, PLAN, trips="tiltA"))
+    assert [r[0] for r in studio.records] == [
+        "upright-4.csv", "tilt-left-1.csv", "tilt-right-1.csv"]
+    out = capsys.readouterr().out
+    assert "共 1 趟" in out
+    assert not any(answers.values())

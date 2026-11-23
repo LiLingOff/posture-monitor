@@ -87,10 +87,11 @@ from geometry.preflight import (FrameProbe, git_items,  # noqa: E402
                                 probe_items, verdict_lines)
 from geometry.preflight import Item as PreflightItem  # noqa: E402
 from geometry.preflight import all_clear as preflight_clear  # noqa: E402
-from geometry.run_plan import (MAX_REDO_PER_SEGMENT, check_segment,  # noqa: E402
-                               describe_offset, discard_segment,
-                               estimated_minutes, load_plan, parse_offset,
-                               trip_argv)
+from geometry.run_plan import (MAX_REDO_PER_SEGMENT, ExistingSegment,  # noqa: E402
+                               check_segment, describe_offset,
+                               discard_segment, estimated_minutes, load_plan,
+                               parse_offset, resume_lines, select_trips,
+                               trip_argv, trip_progress)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -1628,7 +1629,7 @@ def _run_profile_ref(args) -> None:
 
 # run-plan 自己的選項，不抄進每一趟的 study 參數。其餘（相機、模型、視窗、
 # 受試者、輸出資料夾）原樣抄過去，所以 --display、--camera 這些照常生效。
-_PLAN_ONLY = frozenset({"mode", "plan", "dry_run"})
+_PLAN_ONLY = frozenset({"mode", "plan", "dry_run", "trips"})
 
 # run-plan 開始前自動預檢時試拍的幀數。
 _PLAN_PREFLIGHT_FRAMES = 5
@@ -1859,6 +1860,30 @@ def _run_plan(args) -> None:
         _run_plan_body(args)
 
 
+_SEGMENT_NAME = re.compile(r"(?P<condition>.+)-(?P<trial>\d+)\.csv")
+
+
+def _existing_segments(folder: Path) -> list[ExistingSegment]:
+    """這位受試者資料夾裡已經有的段落。作廢的段落另外搬走了，不在這裡。"""
+    if not folder.is_dir():
+        return []
+    out = []
+    for path in sorted(folder.glob("*.csv")):
+        match = _SEGMENT_NAME.fullmatch(path.name)
+        if match is None:
+            continue
+        rate = None
+        try:
+            summary = analyse_session(path)
+            if summary.frames:
+                rate = 1.0 - summary.usable / summary.frames
+        except Exception:
+            # 讀壞的檔一樣算「有這一段」，只是不知道略過率。
+            pass
+        out.append(ExistingSegment(match["condition"], int(match["trial"]), rate))
+    return out
+
+
 def _run_plan_body(args) -> None:
     try:
         plan = load_plan(args.plan)
@@ -1873,14 +1898,35 @@ def _run_plan_body(args) -> None:
         ns = _plan_trip_args(parser, args, plan, trip, 0.0)
         before, conditions = _study_plan(ns)
         _trip_options(ns, before + conditions)
+    trips_text = getattr(args, "trips", None)
+    if trips_text is None:
+        selected = plan.trips
+    else:
+        try:
+            selected = select_trips(plan, trips_text)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
 
-    total = sum(estimated_minutes(plan, t) for t in plan.trips)
-    print(f"計畫：{plan.name}　受試者：{args.subject}　共 {len(plan.trips)} 趟，"
+    existing = _existing_segments(Path(args.out_dir) / args.subject)
+    if existing:
+        command = f"python posture.py run-plan --subject {args.subject}"
+        if Path(args.plan) != Path("plans/selftest.json"):
+            command = f"python posture.py run-plan {args.plan} --subject {args.subject}"
+        print()
+        _print_lines(resume_lines(plan, trip_progress(plan, existing),
+                                  args.subject, command))
+        print()
+        if trips_text is None and not args.dry_run:
+            # 不給 --trips 就從趟 1 重來，自然坐會量第二次。寧可停下來讓人選。
+            raise SystemExit("沒有開相機。照上面挑一條指令再跑一次（要加 --trips）。")
+
+    total = sum(estimated_minutes(plan, t) for t in selected)
+    print(f"計畫：{plan.name}　受試者：{args.subject}　共 {len(selected)} 趟，"
           f"約 {total:.0f} 分鐘（不含重量與換人）", flush=True)
     for note in plan.notes:
         print(f"  ・{note}", flush=True)
     if args.dry_run:
-        for n, trip in enumerate(plan.trips, start=1):
+        for n, trip in enumerate(selected, start=1):
             print(f"\n第 {n} 趟 {trip.title}{'（可跳過）' if trip.optional else ''}")
             print("  等同指令：python posture.py study "
                   + " ".join(trip_argv(plan, trip, args.subject, None)))
@@ -1896,9 +1942,9 @@ def _run_plan_body(args) -> None:
         _plan_preflight(engine, calib, cap, args)
         # 量桌面減手肘要受試者坐著，所以排在預檢之後。
         offset = None
-        if any(t.desk_level is not None for t in plan.trips):
+        if any(t.desk_level is not None for t in selected):
             offset = _ask_desk_offset()
-        for n, trip in enumerate(plan.trips, start=1):
+        for n, trip in enumerate(selected, start=1):
             ns = _plan_trip_args(parser, args, plan, trip, offset)
             _print_lines(_plan_header(plan, trip, n))
             if trip.optional:
@@ -2249,6 +2295,9 @@ def build_parser() -> argparse.ArgumentParser:
                                 " <out-dir>-discarded/<subject>/")
             p.add_argument("--dry-run", action="store_true",
                            help="只檢查計畫檔並印出每一趟等同的 study 指令，不開相機")
+            p.add_argument("--trips", default=None,
+                           help="只跑這幾趟，用計畫檔裡的 id、逗號分隔，例如 --trips trip4,tiltA。"
+                                "同一個代號已經有資料時一定要給，程式會先列出每一趟的狀況")
         if name in ("live", "monitor"):
             p.add_argument("--baseline", type=Path, default=None,
                            help="個人基準檔，由 baseline 子指令產生。"

@@ -346,3 +346,116 @@ def describe_offset(value: float) -> str:
     if value < 0:
         return f"桌面比手肘低 {-value:g} 公分"
     return "桌面和手肘一樣高"
+
+
+# ---- 只跑幾趟、接續之前的資料（2026-11-23）--------------------------------
+#
+# 1123 那天量到一半中斷，晚上要接著做側傾，但 run-plan 每次都從趟 1 開始：
+# 整個重來不但多花時間，自然坐也會變成第二次（受試者已經知道流程，不算自然）。
+# 所以加 `--trips` 只跑指定的趟。刻意不做「自動從斷掉的地方接」：哪一趟算做完
+# 要人判斷（例如做完了但有一段建議重量），程式猜錯的話現場不會有人發現。
+# 改成同一個代號已經有資料時先停下來，列出每一趟的狀況與下一步該打的指令。
+
+def select_trips(plan: Plan, text: str) -> tuple[PlanTrip, ...]:
+    """`--trips trip4,tiltA` → 計畫裡的那幾趟，照計畫檔的順序。"""
+    wanted = [part.strip() for part in text.split(",") if part.strip()]
+    if not wanted:
+        raise ValueError("--trips 是空的，例如 --trips tiltA")
+    known = [t.trip_id for t in plan.trips]
+    unknown = [w for w in wanted if w not in known]
+    if unknown:
+        raise ValueError(f"計畫裡沒有 {'、'.join(unknown)}；"
+                         f"可以用的有 {'、'.join(known)}")
+    return tuple(t for t in plan.trips if t.trip_id in wanted)
+
+
+@dataclass(frozen=True)
+class ExistingSegment:
+    """資料夾裡已經有的一段。rejection_rate 讀不出來時是 None。"""
+
+    condition: str
+    trial: int
+    rejection_rate: float | None = None
+
+
+def _own_conditions(plan: Plan, trip: PlanTrip) -> tuple[str, ...]:
+    """只有這一趟才有的姿勢。upright 每一趟都有，看不出是哪一趟量的。"""
+    others = {c for t in plan.trips if t is not trip for c in t.segments}
+    own = tuple(dict.fromkeys(c for c in trip.segments if c not in others))
+    return own or tuple(dict.fromkeys(trip.segments))
+
+
+@dataclass(frozen=True)
+class TripProgress:
+    trip: PlanTrip
+    present: tuple[str, ...]
+    missing: tuple[str, ...]
+    high_skip: tuple[str, ...]        # 「right-shoulder-up #1 略過 17%」
+
+    @property
+    def done(self) -> bool:
+        return not self.missing
+
+    @property
+    def started(self) -> bool:
+        return bool(self.present)
+
+
+def trip_progress(plan: Plan, segments) -> list[TripProgress]:
+    """每一趟做到哪裡。同一種姿勢量過好幾次時看最新的那一次。"""
+    latest: dict[str, ExistingSegment] = {}
+    for seg in segments:
+        if seg.condition not in latest or seg.trial > latest[seg.condition].trial:
+            latest[seg.condition] = seg
+    out = []
+    for trip in plan.trips:
+        own = _own_conditions(plan, trip)
+        present = tuple(c for c in own if c in latest)
+        missing = tuple(c for c in own if c not in latest)
+        high = tuple(
+            f"{c} #{latest[c].trial} 略過 {latest[c].rejection_rate:.0%}"
+            for c in present
+            if latest[c].rejection_rate is not None
+            and latest[c].rejection_rate > REJECTION_LIMIT)
+        out.append(TripProgress(trip, present, missing, high))
+    return out
+
+
+def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
+                 command: str) -> list[str]:
+    """同一個代號已經有資料時印給操作者看的話，含下一步可以照打的指令。
+
+    `command` 是不含 --trips 的那一段，例如 `python posture.py run-plan --subject S02`。
+    """
+    lines = [f"{subject} 已經有量過的資料："]
+    for p in progress:
+        name = f"{p.trip.title}（{p.trip.trip_id}）"
+        if not p.started:
+            state = "還沒做"
+        elif p.done:
+            state = "做完了"
+        else:
+            state = f"沒做完，還缺 {'、'.join(p.missing)}"
+        if p.high_skip:
+            state += f"；{'、'.join(p.high_skip)}，建議整趟重量"
+        lines.append(f"  ・{name}：{state}")
+
+    todo = [p.trip.trip_id for p in progress if not p.done]
+    redo = [p.trip.trip_id for p in progress if p.done and p.high_skip]
+    lines.append("")
+    if todo:
+        lines.append("只補還沒做完的：")
+        lines.append(f"  {command} --trips {','.join(todo)}")
+    if redo:
+        both = [p.trip.trip_id for p in progress
+                if p.trip.trip_id in todo or p.trip.trip_id in redo]
+        lines.append("連建議重量的一起做：")
+        lines.append(f"  {command} --trips {','.join(both)}")
+    if not todo and not redo:
+        lines.append("每一趟都做完了。真的要重量某一趟，加 --trips，例如：")
+        lines.append(f"  {command} --trips {plan.trips[-1].trip_id}")
+    if any(p.started and any(c.startswith("natural") for c in p.trip.segments)
+           for p in progress):
+        lines.append("自然坐已經量過，那一趟非必要不要重量：受試者知道流程後就不算自然坐了。")
+    lines.append("如果其實是另一位受試者，換一個沒用過的代號。")
+    return lines
