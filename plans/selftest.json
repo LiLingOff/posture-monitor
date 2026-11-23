@@ -38,12 +38,10 @@
     },
     {
       "id": "tiltA",
-      "title": "側傾 A：取基準、端正坐、左傾 20°、右傾 20°",
+      "title": "側傾 A：取基準、端正坐、左傾 20°、右傾 20°（每位受試者都要做）",
       "conditions": ["upright", "tilt-left", "tilt-right"],
       "desk_level": "base",
       "target_angle_deg": [20, 20],
-      "optional": true,
-      "optional_note": "側傾只要累計 3 位受試者，已經有 3 位做過就跳過",
       "setup": [
         "準備量角器與鉛垂線（或手機水平儀）。",
         "量法：量角器一臂對齊鉛垂線，一臂沿背部中線。"

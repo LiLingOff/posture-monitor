@@ -45,7 +45,8 @@ def test_the_shipped_plan_matches_the_selftest_manual():
     assert trip4.conditions == ("upright", "left-shoulder-up", "right-shoulder-up")
     assert tilt.conditions == ("upright", "tilt-left", "tilt-right")
     assert tilt.target_angles == (20.0, 20.0)
-    assert tilt.optional and not trip1.optional and not trip4.optional
+    # 側傾全員做（2026-11-17 依指導老師意見定案），不能被跳過。
+    assert not tilt.optional and not trip1.optional and not trip4.optional
     assert (plan.seconds_each, plan.countdown, plan.snapshot_raw) == (60.0, 20, True)
 
 
@@ -296,7 +297,22 @@ def _patch(monkeypatch, studio, answers, probes=None):
     return asked, analysed
 
 
-def _plan_args(tmp_path, plan_path=PLAN, **overrides):
+def _skippable_tilt_plan(tmp_path):
+    """正式計畫檔的副本，只把側傾改成可跳過。
+
+    多數流程測試關心的是趟 1、趟 4，回 n 跳過側傾才不用每個都準備四個量角器
+    讀數。正式計畫檔的側傾是必做的，見 test_the_shipped_plan_matches_the_selftest_manual。
+    """
+    data = json.loads(PLAN.read_text(encoding="utf-8"))
+    data["trips"][2]["optional"] = True
+    path = tmp_path / "skippable-tilt.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _plan_args(tmp_path, plan_path=None, **overrides):
+    if plan_path is None:
+        plan_path = _skippable_tilt_plan(tmp_path)
     values = dict(
         mode="run-plan", plan=plan_path, subject="S02", out_dir=tmp_path / "sessions",
         dry_run=False, calibration=Path("x.npz"), camera=0, width=None, height=None,
@@ -316,10 +332,10 @@ def _names(root):
 
 def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypatch, capsys):
     studio = _Studio()
-    answers = {"桌面高減手肘高": ["5"], "對嗎": ["y"], "要做嗎": ["y"],
+    answers = {"桌面高減手肘高": ["5"], "對嗎": ["y"],
                "量角器": ["21", "19", "20", "22"]}
     asked, analysed = _patch(monkeypatch, studio, answers)
-    posture._run_plan(_plan_args(tmp_path))
+    posture._run_plan(_plan_args(tmp_path, PLAN))
     root = tmp_path / "sessions"
     assert [r[0] for r in studio.records] == [
         "natural-1.csv", "upright-1.csv", "head-forward-1.csv", "forward-1.csv",
@@ -340,6 +356,8 @@ def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "當場檢查：沒過" not in out
     assert "AI 會自己用 ssh 拉資料" in out
+    assert not any("要做嗎" in q for q in asked), "正式計畫檔的側傾不能問要不要跳過"
+    assert "可跳過" not in out
     assert not any(answers.values())
 
 
