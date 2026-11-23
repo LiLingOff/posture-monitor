@@ -360,6 +360,9 @@ def test_the_typing_segment_shows_the_text_in_the_terminal_and_stays_quiet(
     assert "Every morning, the streets of the city" in out
     assert out.count("Every morning") == 1
     assert "請直接在下面打字" in out
+    # 打完字、取基準之前要叫操作者把螢幕轉開；沒有打字的趟（趟 4）不提醒。
+    assert out.count("把螢幕轉到受試者看不到的地方") == 1
+    assert out.index("時間到") < out.index("把螢幕轉到受試者看不到的地方")
 
 
 def test_typing_text_wraps_to_the_terminal_without_losing_words(monkeypatch, capsys):

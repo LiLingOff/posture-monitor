@@ -1013,7 +1013,9 @@ def _study_trip(engine, calib, cap, args, display=NO_DISPLAY, check=None,
             item = queue.pop(0)
             condition, is_before, index, tilt_index = item
             if not is_before and baseline is None:
-                baseline = _study_baseline(engine, calib, cap, args, root, display)
+                baseline = _study_baseline(
+                    engine, calib, cap, args, root, display,
+                    screen_away=any(is_typing_segment(c, trip.task) for c in before))
             recording = _study_one(
                 engine, calib, cap, args, None if is_before else baseline,
                 condition, root, display, before=is_before,
@@ -1168,14 +1170,22 @@ def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
     return None
 
 
-def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY):
+def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY,
+                    screen_away: bool = False):
     """取基準，品質不好就問要不要重取。
 
     取完就直接往下走是不行的。2026-09-29 有一份基準略過了 27% 的幀，當時
     沒有任何提示，而後面所有量測都帶著它。
+
+    screen_away=True 是剛在這台螢幕上打完字：之後的段落終端機會即時印角度，
+    受試者看得到就會跟著調姿勢，所以先叫操作者把螢幕轉開。
     """
     target = baseline_path(root, args.subject)
     while True:
+        if screen_away:
+            print()
+            print("【操作者先做】把螢幕轉到受試者看不到的地方（剛才打字的那台），"
+                  "之後受試者只看牆上的標記。", flush=True)
         _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
                 + condition_brief("upright")
                 + "\n  取完之後不要起身，會直接接著量測。",
