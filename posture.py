@@ -899,7 +899,8 @@ def _show_typing_text() -> None:
     print()
     print("請受試者看著下面這段英文，在這個視窗直接打字：")
     print("-" * width)
-    print(textwrap.fill(TYPING_TEXT, width=width))
+    # 不在連字號處斷行：battle-field 被拆成兩行，受試者會以為要打成兩個字。
+    print(textwrap.fill(TYPING_TEXT, width=width, break_on_hyphens=False))
     print("-" * width, flush=True)
 
 

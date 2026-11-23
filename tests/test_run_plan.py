@@ -378,8 +378,8 @@ def test_the_typing_segment_shows_the_text_in_the_terminal_and_stays_quiet(
     assert studio.quiet == [name for name, _ in studio.records]
     assert flushed == [1]
     out = capsys.readouterr().out
-    assert "Every morning, the streets of the city" in out
-    assert out.count("Every morning") == 1
+    assert "Four score and seven years ago" in out
+    assert out.count("Four score") == 1
     assert "請直接在下面打字" in out
     assert "把螢幕轉" not in out
     assert out.count("量測中，請保持姿勢") == len(studio.records) - 1

@@ -76,17 +76,18 @@ DEFAULT_TASK = "copy-text"
 # 自然坐在實機終端機上打英文。文字直接印在終端機、受試者就在終端機打，
 # 不用另外印紙、開記事本：每位受試者看到的版面與字一定相同，也少一樣要準備的東西。
 TYPING_TASK = "type-english"
+# 2026-11-23 起改用林肯《蓋茲堡演說》的前半段（公有領域）。1123 打的是之前那段
+# 自編短文（Every morning, the streets of the city...），之後的受試者都是這段。
 TYPING_TEXT = (
-    "Every morning, the streets of the city slowly wake up. Buses pass through "
-    "the intersections, shop owners pull open their metal doors, and steam rises "
-    "from the baskets at the breakfast stand. Students carry their backpacks "
-    "through the school gate. Some of them run around the field, and others sit "
-    "under the trees and wait for the first bell. Inside the classroom, the "
-    "windows are open and a light wind carries the smell of rain. The teacher "
-    "writes the plan for the day on the board, and everyone opens a book to "
-    "begin. At noon the cafeteria fills with people carrying trays and looking "
-    "for a seat. In the evening the sun turns the room orange, the last class "
-    "ends, and the school grows quiet again."
+    "Four score and seven years ago our fathers brought forth on this continent, "
+    "a new nation, conceived in Liberty, and dedicated to the proposition that "
+    "all men are created equal. Now we are engaged in a great civil war, testing "
+    "whether that nation, or any nation so conceived and so dedicated, can long "
+    "endure. We are met on a great battle-field of that war. We have come to "
+    "dedicate a portion of that field, as a final resting place for those who "
+    "here gave their lives that that nation might live. It is altogether fitting "
+    "and proper that we should do this. But, in a larger sense, we can not "
+    "dedicate, we can not consecrate, we can not hallow this ground."
 )
 
 
