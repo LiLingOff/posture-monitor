@@ -124,7 +124,7 @@ class _Recorder:
         self._lost_on = set(lost_on)
 
     def __call__(self, engine, calib, cap, args, baseline, log, snapshots,
-                 seconds, display=None):
+                 seconds, display=None, quiet=False):
         self.calls.append(seconds)
         self.paths.append(None if log is None else log.path.name)
         self.baselines.append(baseline)

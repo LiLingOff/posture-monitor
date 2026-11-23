@@ -73,6 +73,26 @@ UPRIGHT = "upright"
 DESK_LEVELS = ("base", "desk-up", "seat-up")
 # 自然坐沒給 --task 時記的任務名稱。
 DEFAULT_TASK = "copy-text"
+# 自然坐在實機終端機上打英文。文字直接印在終端機、受試者就在終端機打，
+# 不用另外印紙、開記事本：每位受試者看到的版面與字一定相同，也少一樣要準備的東西。
+TYPING_TASK = "type-english"
+TYPING_TEXT = (
+    "Every morning, the streets of the city slowly wake up. Buses pass through "
+    "the intersections, shop owners pull open their metal doors, and steam rises "
+    "from the baskets at the breakfast stand. Students carry their backpacks "
+    "through the school gate. Some of them run around the field, and others sit "
+    "under the trees and wait for the first bell. Inside the classroom, the "
+    "windows are open and a light wind carries the smell of rain. The teacher "
+    "writes the plan for the day on the board, and everyone opens a book to "
+    "begin. At noon the cafeteria fills with people carrying trays and looking "
+    "for a seat. In the evening the sun turns the room orange, the last class "
+    "ends, and the school grows quiet again."
+)
+
+
+def is_typing_segment(condition: str, task: str | None) -> bool:
+    """這一段要不要在終端機上顯示英文、讓受試者直接打。"""
+    return is_natural(condition) and task == TYPING_TASK
 
 
 def is_natural(condition: str) -> bool:

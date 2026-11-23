@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -77,10 +78,11 @@ from geometry.scale_check import (check_scale,  # noqa: E402
                                  format_scale_check)
 from geometry.study import (baseline_path, build_trip_options,  # noqa: E402
                             condition_brief, end_angle_footer, end_angle_for,
-                            is_tilt, next_trial,
+                            is_tilt, is_typing_segment, next_trial,
                             parse_conditions, parse_number_list,
                             parse_optional_conditions, review,
-                            segment_metadata, session_paths, UPRIGHT)
+                            segment_metadata, session_paths, TYPING_TEXT,
+                            UPRIGHT)
 from geometry.preflight import (FrameProbe, git_items,  # noqa: E402
                                 probe_items, verdict_lines)
 from geometry.preflight import Item as PreflightItem  # noqa: E402
@@ -375,11 +377,16 @@ def _prepare(args):
 
 
 def _record(engine, calib, cap, args, baseline, log, snapshots,
-            seconds: float | None = None, display=NO_DISPLAY) -> Recording:
+            seconds: float | None = None, display=NO_DISPLAY,
+            quiet: bool = False) -> Recording:
     """錄製一段。seconds 是 None 就跑到 Ctrl-C 為止。
 
     固定秒數是實測逼出來的：2026-09-29 有一次量測跑到受試者忘記維持姿勢，
     整段資料作廢。段落短就不會忘。
+
+    quiet=True 時不印逐幀那一行與狀態變化（狀態變化照樣記進 transitions）。
+    受試者在終端機上打字的那一段要用：原地更新的那一行會把打的字蓋掉。
+    相機出問題的提示仍然會印，操作者要看得到。
     """
     judge = _make_judge(args, baseline)
     display.begin()
@@ -467,16 +474,18 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 if verdict.changed:
                     line = f"{_elapsed(started_at)}  {verdict.posture.value}：{verdict.reason}"
                     transitions.append(line)
-                    # 狀態變化印成獨立的一行，因為它會被原地更新的那一行蓋掉。
-                    _print_line("")
-                    print("\r" + line, flush=True)
+                    if not quiet:
+                        # 狀態變化印成獨立的一行，因為它會被原地更新的那一行蓋掉。
+                        _print_line("")
+                        print("\r" + line, flush=True)
 
             remaining = (None if seconds is None
                          else seconds - (time.perf_counter() - started_at))
-            _print_line(live_line(
-                ca_window, sym_window, measurement, corrected, rejected, reason,
-                verdict, remaining
-            ))
+            if not quiet:
+                _print_line(live_line(
+                    ca_window, sym_window, measurement, corrected, rejected, reason,
+                    verdict, remaining
+                ))
             _tell(display.show(LiveView.build(
                 frames=frames, match=match, measurement=measurement,
                 corrected=corrected, ca_window=ca_window, sym_window=sym_window,
@@ -883,6 +892,43 @@ def _run_baseline(args) -> None:
     print(f"  python posture.py live --baseline {args.out} --log data/sessions/xxx.csv ...")
 
 
+def _show_typing_text() -> None:
+    """把要打的英文印在終端機上，按終端機寬度在字與字之間換行。"""
+    width = min(100, shutil.get_terminal_size(fallback=(100, 24)).columns - 1)
+    print()
+    print("請受試者看著下面這段英文，在這個視窗直接打字：")
+    print("-" * width)
+    print(textwrap.fill(TYPING_TEXT, width=width))
+    print("-" * width, flush=True)
+
+
+def _discard_typed_input() -> None:
+    """丟掉輸入緩衝裡還沒被讀走的字。
+
+    錄製時沒有人讀 stdin，受試者打的字（含中途按的 Enter）都堆在緩衝裡。
+    stdin 不是終端機（管線、測試）時什麼都不做。
+    """
+    try:
+        if not sys.stdin.isatty():
+            return
+    except (AttributeError, ValueError, OSError):
+        return
+    try:
+        import termios
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        return
+    except ImportError:
+        pass
+    except (OSError, ValueError):
+        return
+    try:
+        import msvcrt  # Windows 開發機沒有 termios
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    except (ImportError, OSError):
+        pass
+
+
 def _prompt(message: str, interactive: bool = True) -> None:
     """印出指導語並等使用者按 Enter。
 
@@ -1183,6 +1229,9 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
         if tilt_index is not None and not trip.measured_angles and not args.no_prompt:
             measured = _ask_tilt_angle("量角器量到的實際角度是幾度？", args)
         extra = segment_metadata(trip, condition, segment_index, tilt_index, measured)
+    typing = is_typing_segment(condition, getattr(trip, "task", None))
+    if typing:
+        _show_typing_text()
     if before:
         _countdown(args.countdown)
         print("\r開始量測        ", flush=True)
@@ -1191,8 +1240,19 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
                     None if before else baseline_path(root, args.subject), extra)
     snapshots = _open_snapshots(args, shots_dir)
     try:
-        recording = _record(engine, calib, cap, args, baseline, log, snapshots,
-                            args.seconds_each, display)
+        if typing:
+            # 放在開檔訊息之後，讓受試者打字的地方緊接在這句下面。
+            print("請直接在下面打字，打錯不用改，打到哪算到哪：", flush=True)
+            recording = _record(engine, calib, cap, args, baseline, log, snapshots,
+                                args.seconds_each, display, quiet=True)
+            # 受試者打的字還留在輸入緩衝裡，不清掉的話下一個問題（例如要不要
+            # 重量）會把它當成回答。先換行，免得總結接在打到一半的那行後面。
+            _discard_typed_input()
+            print()
+            print("時間到，可以停了。", flush=True)
+        else:
+            recording = _record(engine, calib, cap, args, baseline, log, snapshots,
+                                args.seconds_each, display)
         _report(recording, baseline, log)
     finally:
         log.close()

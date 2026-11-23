@@ -67,7 +67,7 @@ class _Events:
         return _baseline(), []
 
     def record(self, engine, calib, cap, args, baseline, log, snapshots,
-               seconds, display=None):
+               seconds, display=None, quiet=False):
         self._calls += 1
         self.events.append(("record", baseline))
         session = Session()

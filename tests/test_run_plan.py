@@ -4,7 +4,9 @@
 沒有量角器數字、兩趟 desk_offset_cm 都是 10、基準和端正坐差十幾度沒有重取。
 組員一次只來一小時，這些測試盯的是「當場擋下來」與「重量不弄亂檔名」。
 """
+import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -229,6 +231,7 @@ class _Studio:
     def __init__(self, bad=None):
         self.bad = bad or {}
         self.records = []      # (檔名, 有沒有基準)
+        self.quiet = []        # 不印逐幀那一行的段落檔名
         self.baselines = 0
         self.cap = _FakeCap()
 
@@ -237,8 +240,10 @@ class _Studio:
         return _baseline(), []
 
     def record(self, engine, calib, cap, args, baseline, log, snapshots,
-               seconds, display=None):
+               seconds, display=None, quiet=False):
         self.records.append((log.path.name, baseline is not None))
+        if quiet:
+            self.quiet.append(log.path.name)
         rate, ca = self.bad.get(len(self.records), (0.02, 1.0))
         session = Session()
         for _ in range(98):
@@ -336,6 +341,41 @@ def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypa
     assert "當場檢查：沒過" not in out
     assert "AI 會自己用 ssh 拉資料" in out
     assert not any(answers.values())
+
+
+def test_the_typing_segment_shows_the_text_in_the_terminal_and_stays_quiet(
+        tmp_path, monkeypatch, capsys):
+    """selftest 的自然坐是 type-english：英文印在終端機，受試者直接在終端機打。
+    那一段不印逐幀那一行（會蓋掉打的字），量完把沒讀走的輸入丟掉，
+    免得被下一個問題當成回答。其他段落照舊。"""
+    studio = _Studio()
+    answers = {"桌面高減手肘高": ["5"], "對嗎": ["y"], "要做嗎": ["n"]}
+    _patch(monkeypatch, studio, answers)
+    flushed = []
+    monkeypatch.setattr(posture, "_discard_typed_input", lambda: flushed.append(1))
+    posture._run_plan(_plan_args(tmp_path))
+    assert studio.quiet == ["natural-1.csv"]
+    assert flushed == [1]
+    out = capsys.readouterr().out
+    assert "Every morning, the streets of the city" in out
+    assert out.count("Every morning") == 1
+    assert "請直接在下面打字" in out
+
+
+def test_typing_text_wraps_to_the_terminal_without_losing_words(monkeypatch, capsys):
+    monkeypatch.setattr(posture.shutil, "get_terminal_size",
+                        lambda fallback=None: os.terminal_size((60, 24)))
+    posture._show_typing_text()
+    lines = capsys.readouterr().out.splitlines()
+    body = lines[3:-1]
+    assert all(len(line) <= 59 for line in body)
+    assert " ".join(body) == posture.TYPING_TEXT
+
+
+def test_discarding_typed_input_does_nothing_when_stdin_is_not_a_terminal(monkeypatch):
+    monkeypatch.setattr(posture.sys, "stdin", io.StringIO("leftover"))
+    posture._discard_typed_input()
+    assert posture.sys.stdin.read() == "leftover"
 
 
 def test_a_bad_segment_is_redone_once_under_the_same_name(tmp_path, monkeypatch, capsys):
