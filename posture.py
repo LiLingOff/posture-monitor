@@ -1013,9 +1013,7 @@ def _study_trip(engine, calib, cap, args, display=NO_DISPLAY, check=None,
             item = queue.pop(0)
             condition, is_before, index, tilt_index = item
             if not is_before and baseline is None:
-                baseline = _study_baseline(
-                    engine, calib, cap, args, root, display,
-                    screen_away=any(is_typing_segment(c, trip.task) for c in before))
+                baseline = _study_baseline(engine, calib, cap, args, root, display)
             recording = _study_one(
                 engine, calib, cap, args, None if is_before else baseline,
                 condition, root, display, before=is_before,
@@ -1170,22 +1168,14 @@ def _reopen_camera(args, attempts: int = _REOPEN_ATTEMPTS,
     return None
 
 
-def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY,
-                    screen_away: bool = False):
+def _study_baseline(engine, calib, cap, args, root: Path, display=NO_DISPLAY):
     """取基準，品質不好就問要不要重取。
 
     取完就直接往下走是不行的。2026-09-29 有一份基準略過了 27% 的幀，當時
     沒有任何提示，而後面所有量測都帶著它。
-
-    screen_away=True 是剛在這台螢幕上打完字：之後的段落終端機會即時印角度，
-    受試者看得到就會跟著調姿勢，所以先叫操作者把螢幕轉開。
     """
     target = baseline_path(root, args.subject)
     while True:
-        if screen_away:
-            print()
-            print("【操作者先做】把螢幕轉到受試者看不到的地方（剛才打字的那台），"
-                  "之後受試者只看牆上的標記。", flush=True)
         _prompt(f"接下來要取 {args.subject} 的個人基準，取樣 {args.seconds:.0f} 秒。\n"
                 + condition_brief("upright")
                 + "\n  取完之後不要起身，會直接接著量測。",
@@ -1260,6 +1250,11 @@ def _study_one(engine, calib, cap, args, baseline, condition: str, root: Path,
             _discard_typed_input()
             print()
             print("時間到，可以停了。", flush=True)
+        elif getattr(args, "hide_live", False):
+            print("量測中，請保持姿勢，時間到會提示。", flush=True)
+            recording = _record(engine, calib, cap, args, baseline, log, snapshots,
+                                args.seconds_each, display, quiet=True)
+            print("時間到。", flush=True)
         else:
             recording = _record(engine, calib, cap, args, baseline, log, snapshots,
                                 args.seconds_each, display)
@@ -1719,6 +1714,9 @@ def _plan_trip_args(parser, args, plan, trip, offset):
         if key not in _PLAN_ONLY:
             setattr(ns, key, value)
     ns.require_angles = True
+    # 受試者可能看得到螢幕（自然坐就在這台上打字），逐幀那一行有角度，
+    # 看得到就會跟著調姿勢。每段量完的總結照印，那時候已經量完了。
+    ns.hide_live = True
     ns.no_prompt = False
     ns.overwrite = False
     return ns

@@ -346,23 +346,23 @@ def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypa
 def test_the_typing_segment_shows_the_text_in_the_terminal_and_stays_quiet(
         tmp_path, monkeypatch, capsys):
     """selftest 的自然坐是 type-english：英文印在終端機，受試者直接在終端機打。
-    那一段不印逐幀那一行（會蓋掉打的字），量完把沒讀走的輸入丟掉，
-    免得被下一個問題當成回答。其他段落照舊。"""
+    量完把沒讀走的輸入丟掉，免得被下一個問題當成回答。
+    run-plan 每一段都不印逐幀那一行（有角度，受試者看得到會跟著調），
+    所以也不必叫操作者轉開螢幕。"""
     studio = _Studio()
     answers = {"桌面高減手肘高": ["5"], "對嗎": ["y"], "要做嗎": ["n"]}
     _patch(monkeypatch, studio, answers)
     flushed = []
     monkeypatch.setattr(posture, "_discard_typed_input", lambda: flushed.append(1))
     posture._run_plan(_plan_args(tmp_path))
-    assert studio.quiet == ["natural-1.csv"]
+    assert studio.quiet == [name for name, _ in studio.records]
     assert flushed == [1]
     out = capsys.readouterr().out
     assert "Every morning, the streets of the city" in out
     assert out.count("Every morning") == 1
     assert "請直接在下面打字" in out
-    # 打完字、取基準之前要叫操作者把螢幕轉開；沒有打字的趟（趟 4）不提醒。
-    assert out.count("把螢幕轉到受試者看不到的地方") == 1
-    assert out.index("時間到") < out.index("把螢幕轉到受試者看不到的地方")
+    assert "把螢幕轉" not in out
+    assert out.count("量測中，請保持姿勢") == len(studio.records) - 1
 
 
 def test_typing_text_wraps_to_the_terminal_without_losing_words(monkeypatch, capsys):

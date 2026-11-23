@@ -117,6 +117,7 @@ class _Recorder:
 
     def __init__(self, rejection_rate=0.04, lost_on=()):
         self.calls = []
+        self.quiet = []       # 單獨跑 study 時逐幀那一行照印，只有 run-plan 才藏
         self.paths = []       # 每次寫進哪個 CSV，用來驗順序
         self.baselines = []   # 每次拿到的基準，用來驗是不是同一份
         self._rate = rejection_rate
@@ -126,6 +127,7 @@ class _Recorder:
     def __call__(self, engine, calib, cap, args, baseline, log, snapshots,
                  seconds, display=None, quiet=False):
         self.calls.append(seconds)
+        self.quiet.append(quiet)
         self.paths.append(None if log is None else log.path.name)
         self.baselines.append(baseline)
         session = Session()
@@ -164,6 +166,7 @@ def test_every_condition_gets_measured_in_order(tmp_path, monkeypatch, capsys):
 
     assert recorder.calls == [90.0, 90.0]
     assert recorder.paths == ["upright-1.csv", "forward-1.csv"], "要照 --conditions 的順序量"
+    assert recorder.quiet == [False, False], "單獨跑 study 要照印逐幀那一行"
     folder = tmp_path / "chenyue"
     assert (folder / "upright-1.csv").exists()
     assert (folder / "forward-1.csv").exists()
