@@ -13,9 +13,12 @@
 """
 from __future__ import annotations
 
+import csv
 import json
+import random
 import shutil
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .baseline import REJECTION_LIMIT
@@ -26,6 +29,9 @@ from .study import DESK_LEVELS, TURN_LIMIT_DEG, UPRIGHT, is_tilt
 # 2026-11-18 掃 25 份基準，只有 9 份在 5° 內，所以這一條會常常觸發，
 # 每一趟只問一次，避免把一小時的組員時間全花在重取上。
 BASELINE_UPRIGHT_LIMIT_DEG = 5.0
+
+# 計畫檔本身的順序叫 A 組。
+ORDER_A = "A"
 
 # 一段最多當場重量幾次。重量一次還是不過，多半是受試者或架設的問題，
 # 再量也只是讓下一位受試者等，記下來交給事後判讀。
@@ -66,6 +72,12 @@ class Plan:
     baseline_seconds: float = 30.0
     snapshot_raw: bool = True
     notes: tuple[str, ...] = field(default_factory=tuple)
+    # 除了計畫檔本身的順序（A 組）以外的順序，(組別, 這一組的各趟)。
+    orders: tuple[tuple[str, tuple["PlanTrip", ...]], ...] = field(default_factory=tuple)
+
+    @property
+    def groups(self) -> tuple[str, ...]:
+        return (ORDER_A,) + tuple(name for name, _ in self.orders)
 
 
 def _strings(value, where: str) -> tuple[str, ...]:
@@ -131,6 +143,79 @@ def _positive(value, default, where: str):
     return value
 
 
+def _check_same_segments(where: str, base: PlanTrip, trip: PlanTrip) -> None:
+    """另一組的這一趟必須量同樣的段，只能換順序。
+
+    每一段的身分是姿勢加側傾目標角度，所以「左傾 10°」不能偷偷變成「左傾 15°」。
+    取基準後第一段要與 A 組相同：5° 基準檢查與轉身參考都靠它。A 組以端正坐收尾的趟
+    （趟 1 的漂移檢查）也要照樣收尾。
+    """
+    name = f"{where} 的趟次 {base.trip_id}"
+    if trip.tilts != len(trip.target_angles):
+        raise ValueError(f"{name} 有 {trip.tilts} 段側傾，target_angle_deg 卻有 "
+                         f"{len(trip.target_angles)} 個")
+    if sorted(_all_keys(trip)) != sorted(_all_keys(base)):
+        raise ValueError(f"{name} 量的段和 A 組不一樣；另一組只能換順序，不能增減段落"
+                         f"或改側傾角度")
+    if base.conditions:
+        if trip.conditions[0] != base.conditions[0]:
+            raise ValueError(f"{name} 取基準後第一段要和 A 組一樣（{base.conditions[0]}）")
+        if (len(base.conditions) > 1 and base.conditions[-1] == UPRIGHT
+                and trip.conditions[-1] != UPRIGHT):
+            raise ValueError(f"{name} 最後一段要和 A 組一樣是 {UPRIGHT}（漂移檢查）")
+
+
+def _parse_orders(raw, trips: list[PlanTrip]) -> tuple[tuple[str, tuple[PlanTrip, ...]], ...]:
+    """計畫檔的 orders：除了 A 組（檔案本身的順序）以外的各組順序。
+
+    {"B": {"trips": ["trip1", ...], "conditions": {"trip1": [...]},
+           "target_angle_deg": {"tiltB": [30, 10]}}}
+    沒寫的趟沿用 A 組的段落順序。自然坐（before）不能動：它要在任何坐姿指示之前量。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError('orders 要是一個物件，例如 {"B": {...}}')
+    by_id = {t.trip_id: t for t in trips}
+    out = []
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("orders 的組別名稱不能是空的")
+        name = name.strip()
+        where = f"orders 的 {name} 組"
+        if name == ORDER_A:
+            raise ValueError("A 組就是計畫檔本身的順序，orders 裡不能再寫 A")
+        if not isinstance(spec, dict):
+            raise ValueError(f"{where} 要是一個物件")
+        ids = _strings(spec.get("trips"), f"{where} 的 trips")
+        if sorted(ids) != sorted(by_id):
+            raise ValueError(f"{where} 的 trips 要把計畫裡每一趟各寫一次（"
+                             f"{'、'.join(by_id)}）")
+        tables = {}
+        for label in ("conditions", "target_angle_deg"):
+            table = spec.get(label) or {}
+            if not isinstance(table, dict):
+                raise ValueError(f"{where} 的 {label} 要是 {{趟次 id: [...]}}")
+            unknown = [k for k in table if k not in by_id]
+            if unknown:
+                raise ValueError(f"{where} 的 {label} 有計畫裡沒有的趟次：{'、'.join(unknown)}")
+            tables[label] = table
+        new_trips = []
+        for trip_id in ids:
+            base = by_id[trip_id]
+            conditions = (_strings(tables["conditions"][trip_id],
+                                   f"{where} 的 {trip_id} conditions")
+                          if trip_id in tables["conditions"] else base.conditions)
+            angles = (_numbers(tables["target_angle_deg"][trip_id],
+                               f"{where} 的 {trip_id} target_angle_deg")
+                      if trip_id in tables["target_angle_deg"] else base.target_angles)
+            trip = replace(base, conditions=conditions, target_angles=angles)
+            _check_same_segments(where, base, trip)
+            new_trips.append(trip)
+        out.append((name, tuple(new_trips)))
+    return tuple(out)
+
+
 def parse_plan(data) -> Plan:
     """把計畫檔的 JSON 內容轉成 Plan。內容不對就丟 ValueError，訊息說哪裡錯。
 
@@ -181,9 +266,11 @@ def parse_plan(data) -> Plan:
         if trip.tilts and not trip.target_angles:
             raise ValueError(f"{where} 有側傾段落，要給 target_angle_deg")
         trips.append(trip)
+    orders = _parse_orders(data.get("orders"), trips)
     return Plan(
         name=_text(data.get("name"), "name") or "未命名計畫",
         trips=tuple(trips),
+        orders=orders,
         seconds_each=float(_positive(data.get("seconds_each"), 60.0, "seconds_each")),
         countdown=int(_positive(data.get("countdown"), 20, "countdown")),
         baseline_seconds=float(_positive(data.get("baseline_seconds"), 30.0,
@@ -212,7 +299,8 @@ def _number_text(value: float) -> str:
 
 
 def trip_argv(plan: Plan, trip: PlanTrip, subject: str,
-              desk_offset_cm: float | None) -> list[str]:
+              desk_offset_cm: float | None,
+              order_group: str | None = None) -> list[str]:
     """這一趟等同的 `study` 參數（不含 "study" 本身）。
 
     組成真正的指令列再交給同一個 parser，而不是自己填 Namespace：study 的預設值
@@ -235,6 +323,8 @@ def trip_argv(plan: Plan, trip: PlanTrip, subject: str,
     if trip.target_angles:
         argv += ["--target-angle-deg",
                  ",".join(_number_text(a) for a in trip.target_angles)]
+    if order_group:
+        argv += ["--order-group", order_group]
     if plan.snapshot_raw:
         argv.append("--snapshot-raw")
     return argv
@@ -388,8 +478,9 @@ def segment_key(condition: str, target: float | None) -> str:
     return condition
 
 
-def _trip_keys(trip: PlanTrip) -> tuple[str, ...]:
-    """這一趟每一段的身分，照段落順序。側傾段依序對應 target_angle_deg。"""
+def _all_keys(trip: PlanTrip) -> list[str]:
+    """這一趟每一段的身分，照段落順序，重複的也留著（趟 1 有兩段端正坐）。
+    側傾段依序對應 target_angle_deg。"""
     keys = []
     tilt_index = 0
     for condition in trip.segments:
@@ -399,7 +490,12 @@ def _trip_keys(trip: PlanTrip) -> tuple[str, ...]:
                 target = trip.target_angles[tilt_index]
             tilt_index += 1
         keys.append(segment_key(condition, target))
-    return tuple(dict.fromkeys(keys))
+    return keys
+
+
+def _trip_keys(trip: PlanTrip) -> tuple[str, ...]:
+    """這一趟有哪幾種段（不重複）。"""
+    return tuple(dict.fromkeys(_all_keys(trip)))
 
 
 def _label(key: str) -> str:
@@ -491,3 +587,59 @@ def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
         lines.append("自然坐已經量過，那一趟非必要不要重量：受試者知道流程後就不算自然坐了。")
     lines.append("如果其實是另一位受試者，換一個沒用過的代號。")
     return lines
+
+
+# ---- 順序效應：分組與登記（2026-11-24）--------------------------------------
+#
+# 說明書寫「隨機分兩組採不同姿態呈現順序，檢驗順序效應」。A 組是計畫檔本身的順序，
+# 其他組在計畫檔的 orders 裡，只換趟與趟內姿勢的順序。分組由程式平衡分派，不交給
+# 操作者決定：操作者知道受試者是誰，人為分派會帶進偏誤。
+
+def plan_for_order(plan: Plan, group: str) -> Plan:
+    """換成這一組的順序。其餘（秒數、倒數、備註）不變。"""
+    if group == ORDER_A:
+        return plan
+    for name, trips in plan.orders:
+        if name == group:
+            return replace(plan, trips=trips)
+    raise ValueError(f"計畫裡沒有 {group} 組；可以用的有 {'、'.join(plan.groups)}")
+
+
+def assign_order(registry: Mapping[str, str], groups: Sequence[str],
+                 rng: random.Random) -> str:
+    """人數少的那一組優先；一樣多就隨機。這樣組間人數最多差 1。"""
+    counts = {g: 0 for g in groups}
+    for group in registry.values():
+        if group in counts:
+            counts[group] += 1
+    fewest = min(counts.values())
+    return rng.choice([g for g in groups if counts[g] == fewest])
+
+
+def read_order_groups(path: Path) -> dict[str, str]:
+    """已登記的 受試者 → 組別。檔案還沒有就是空的；組別空白的列當作沒登記。"""
+    from .trips import read_groups
+    path = Path(path)
+    if not path.exists():
+        return {}
+    return {subject: group for subject, group in read_groups(path).items()
+            if group != "未分組"}
+
+
+def register_order_group(path: Path, subject: str, group: str) -> None:
+    """登記一位受試者的組別（附加一列，檔案不在就建立）。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.exists() and path.stat().st_size > 0
+    needs_newline = False
+    if existing:
+        with path.open("rb") as handle:
+            handle.seek(-1, 2)
+            needs_newline = handle.read(1) not in (b"\n", b"\r")
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        if needs_newline:
+            handle.write("\n")
+        writer = csv.writer(handle, lineterminator="\n")
+        if not existing:
+            writer.writerow(["subject", "group"])
+        writer.writerow([subject, group])

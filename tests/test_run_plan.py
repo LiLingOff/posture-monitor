@@ -312,6 +312,7 @@ def _skippable_tilt_plan(tmp_path):
     """
     data = json.loads(PLAN.read_text(encoding="utf-8"))
     data["trips"] = data["trips"][:3]
+    data.pop("orders", None)          # 副本只剩三趟，B 組順序用不到
     data["trips"][2]["optional"] = True
     path = tmp_path / "skippable-tilt.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -329,6 +330,7 @@ def _plan_args(tmp_path, plan_path=None, **overrides):
         repo_dir=Path("r"), min_confidence=0.0, input_height=256, no_subpixel=False,
         display=False, display_width=1280, display_eyes="left", display_lang="en",
         font=None, window=30, all_keypoints=False,
+        order_group="A",              # 固定照 A 組；分派另有測試，不讓亂數影響這些
     )
     values.update(overrides)
     return SimpleNamespace(**values)

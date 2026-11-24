@@ -207,12 +207,15 @@ class TripOptions:
     measured_angles: tuple = ()
     measured_end_angles: tuple = ()
     azimuth_targets: tuple = ()
+    # 順序效應的組別（A、B…），run-plan 分派。單獨跑 study 沒有就不寫。
+    order_group: str | None = None
 
 
 def build_trip_options(trip_id: str, segments: list[str], *, desk_level=None,
                        lift_cm=None, desk_offset_cm=None, task=None,
                        target_angles=(), measured_angles=(),
-                       azimuth_targets=(), measured_end_angles=()) -> TripOptions:
+                       azimuth_targets=(), measured_end_angles=(),
+                       order_group=None) -> TripOptions:
     """檢查各選項與段落對不對得上，對不上就丟 ValueError（在開相機之前）。
 
     segments 是這一趟依序要量的所有段落（基準前的與基準後的接在一起）。
@@ -243,7 +246,7 @@ def build_trip_options(trip_id: str, segments: list[str], *, desk_level=None,
         desk_offset_cm=desk_offset_cm, task=task,
         target_angles=tuple(target_angles), measured_angles=tuple(measured_angles),
         measured_end_angles=tuple(measured_end_angles),
-        azimuth_targets=tuple(azimuth_targets),
+        azimuth_targets=tuple(azimuth_targets), order_group=order_group,
     )
 
 
@@ -280,6 +283,8 @@ def segment_metadata(options: TripOptions, condition: str, segment_index: int,
         value = (options.azimuth_targets[0] if len(options.azimuth_targets) == 1
                  else options.azimuth_targets[segment_index])
         meta["azimuth_target_deg"] = _g(value)
+    if options.order_group:
+        meta["order_group"] = options.order_group
     return meta
 
 

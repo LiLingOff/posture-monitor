@@ -7,8 +7,24 @@
   "notes": [
     "每趟中間受試者不能起身，趟與趟之間可以休息",
     "指導語逐字念，不要自己改寫",
-    "正式量測不要開 --display；終端機量測中不顯示角度，螢幕放在受試者面前沒關係"
+    "正式量測不要開 --display；終端機量測中不顯示角度，螢幕放在受試者面前沒關係",
+    "順序分兩組（A、B），由程式平衡分派，不用自己決定；畫面會寫這位是哪一組，照畫面的順序做"
   ],
+  "orders": {
+    "B": {
+      "trips": ["trip1", "tiltB", "tiltA", "trip4"],
+      "conditions": {
+        "trip1": ["upright", "forward", "head-forward", "upright"],
+        "trip4": ["upright", "right-shoulder-up", "left-shoulder-up"],
+        "tiltA": ["upright", "tilt-right", "tilt-left"],
+        "tiltB": ["upright", "tilt-right", "tilt-left"]
+      },
+      "target_angle_deg": {
+        "tiltA": [20, 20],
+        "tiltB": [30, 10]
+      }
+    }
+  },
   "trips": [
     {
       "id": "trip1",

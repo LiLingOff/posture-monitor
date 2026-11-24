@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import csv
 import io
+import random
 import re
 import shutil
 import subprocess
@@ -88,10 +89,11 @@ from geometry.preflight import (FrameProbe, git_items,  # noqa: E402
 from geometry.preflight import Item as PreflightItem  # noqa: E402
 from geometry.preflight import all_clear as preflight_clear  # noqa: E402
 from geometry.run_plan import (MAX_REDO_PER_SEGMENT, ExistingSegment,  # noqa: E402
-                               check_segment, describe_offset,
+                               assign_order, check_segment, describe_offset,
                                discard_segment, estimated_minutes, load_plan,
-                               parse_offset, resume_lines, select_trips,
-                               trip_argv, trip_progress)
+                               parse_offset, plan_for_order, read_order_groups,
+                               register_order_group, resume_lines,
+                               select_trips, trip_argv, trip_progress)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -1106,6 +1108,7 @@ def _trip_options(args, segments: list[str]):
             lift_cm=getattr(args, "lift_cm", None),
             desk_offset_cm=getattr(args, "desk_offset_cm", None),
             task=getattr(args, "task", None),
+            order_group=getattr(args, "order_group", None),
             target_angles=parse_number_list(
                 getattr(args, "target_angle_deg", None), "--target-angle-deg"),
             measured_angles=parse_number_list(
@@ -1630,7 +1633,7 @@ def _run_profile_ref(args) -> None:
 
 # run-plan 自己的選項，不抄進每一趟的 study 參數。其餘（相機、模型、視窗、
 # 受試者、輸出資料夾）原樣抄過去，所以 --display、--camera 這些照常生效。
-_PLAN_ONLY = frozenset({"mode", "plan", "dry_run", "trips"})
+_PLAN_ONLY = frozenset({"mode", "plan", "dry_run", "trips", "order_group"})
 
 # run-plan 開始前自動預檢時試拍的幀數。
 _PLAN_PREFLIGHT_FRAMES = 5
@@ -1709,9 +1712,10 @@ _NO_KEYBOARD = ("讀不到鍵盤輸入，桌面減手肘或量角器沒辦法填
 _SUBJECT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
-def _plan_trip_args(parser, args, plan, trip, offset):
+def _plan_trip_args(parser, args, plan, trip, offset, order_group=None):
     """把計畫的一趟組成 study 的 args。用同一個 parser，預設值只有一處。"""
-    ns = parser.parse_args(["study"] + trip_argv(plan, trip, args.subject, offset))
+    ns = parser.parse_args(["study"] + trip_argv(plan, trip, args.subject, offset,
+                                                 order_group))
     for key, value in vars(args).items():
         if key not in _PLAN_ONLY:
             setattr(ns, key, value)
@@ -1724,12 +1728,15 @@ def _plan_trip_args(parser, args, plan, trip, offset):
     return ns
 
 
-def _plan_header(plan, trip, n: int) -> list[str]:
+def _plan_header(plan, trip, n: int, group: str | None = None) -> list[str]:
     bar = "=" * 60
     segments = list(trip.before) + (["取基準"] if trip.conditions else []) + list(trip.conditions)
     lines = ["", bar, f"  第 {n}/{len(plan.trips)} 趟：{trip.title}",
              f"  約 {estimated_minutes(plan, trip):.0f} 分鐘（不含重量）",
-             "  段落：" + " → ".join(segments), bar]
+             "  段落：" + " → ".join(segments)]
+    if group is not None:
+        lines.append(f"  順序：{group} 組")
+    lines.append(bar)
     if trip.setup:
         lines += ["", "【操作者先做】", trip.setup]
     if trip.subject_does:
@@ -1861,6 +1868,52 @@ def _run_plan(args) -> None:
         _run_plan_body(args)
 
 
+# 順序組別的亂數。獨立出來是為了讓測試能固定它；正式跑時每次都不同。
+_ORDER_RNG = random.Random()
+
+
+def _order_registry_path(args) -> Path:
+    """分組登記檔放在 data/ 底下，不在 data/sessions 裡：cohort 會遞迴找所有 CSV，
+    放進去會被當成量測檔。"""
+    return Path(args.out_dir).parent / "order_groups.csv"
+
+
+def _decide_order_group(args, plan, existing) -> tuple[str | None, bool]:
+    """這位受試者照哪一組的順序量。回傳 (組別, 是不是這次才定的)。
+
+    已登記的照登記；沒登記但資料夾已有資料就停下來，不猜（猜錯的話同一個人前後兩半
+    順序不同，之後分組比較就是錯的）；全新的人由程式平衡分派。計畫只有一組時
+    回傳 None，什麼都不登記也不寫進標頭，行為和沒有順序效應時一樣。
+    """
+    given = (getattr(args, "order_group", None) or "").strip() or None
+    if given is not None and given not in plan.groups:
+        raise SystemExit(f"--order-group {given} 不在計畫的組別裡（{'、'.join(plan.groups)}）")
+    if len(plan.groups) == 1:
+        return None, False
+    try:
+        registry = read_order_groups(_order_registry_path(args))
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    registered = registry.get(args.subject)
+    if registered is not None:
+        if registered not in plan.groups:
+            raise SystemExit(f"{args.subject} 登記的組別是 {registered}，計畫裡沒有這一組"
+                             f"（有 {'、'.join(plan.groups)}）")
+        if given is not None and given != registered:
+            raise SystemExit(f"{args.subject} 已經登記是 {registered} 組，不能改成 {given} 組。"
+                             "同一個人前後用不同順序量，分組比較就不準了")
+        return registered, False
+    if given is not None:
+        return given, True
+    if existing:
+        raise SystemExit(
+            f"{args.subject} 已經有量過的資料，但還沒登記順序組別，程式不猜。"
+            f"先加 --order-group A（或 B，照他當時實際量的順序）重打一次，"
+            f"程式會列出哪幾趟還沒做，再補上 --trips，例如：python posture.py run-plan "
+            f"--subject {args.subject} --order-group A --trips tiltB")
+    return assign_order(registry, plan.groups, _ORDER_RNG), True
+
+
 _SEGMENT_NAME = re.compile(r"(?P<condition>.+)-(?P<trial>\d+)\.csv")
 
 
@@ -1898,9 +1951,13 @@ def _run_plan_body(args) -> None:
     if not _SUBJECT_PATTERN.fullmatch(args.subject):
         raise SystemExit("--subject 要是一個代號，例如 S02，只能用英文、數字、底線、連字號")
     parser = build_parser()
+    existing = _existing_segments(Path(args.out_dir) / args.subject)
+    group, new_group = _decide_order_group(args, plan, existing)
+    if group is not None:
+        plan = plan_for_order(plan, group)
     # 每一趟先組一次參數，選項不對在開相機之前就停。
     for trip in plan.trips:
-        ns = _plan_trip_args(parser, args, plan, trip, 0.0)
+        ns = _plan_trip_args(parser, args, plan, trip, 0.0, group)
         before, conditions = _study_plan(ns)
         _trip_options(ns, before + conditions)
     trips_text = getattr(args, "trips", None)
@@ -1912,7 +1969,6 @@ def _run_plan_body(args) -> None:
         except ValueError as exc:
             raise SystemExit(str(exc))
 
-    existing = _existing_segments(Path(args.out_dir) / args.subject)
     if existing:
         command = f"python posture.py run-plan --subject {args.subject}"
         if Path(args.plan) != Path("plans/selftest.json"):
@@ -1925,6 +1981,14 @@ def _run_plan_body(args) -> None:
             # 不給 --trips 就從趟 1 重來，自然坐會量第二次。寧可停下來讓人選。
             raise SystemExit("沒有開相機。照上面挑一條指令再跑一次（要加 --trips）。")
 
+    if group is not None:
+        if new_group and not args.dry_run:
+            register_order_group(_order_registry_path(args), args.subject, group)
+        note = "（剛分派）" if new_group else ""
+        if new_group and args.dry_run:
+            note = "（預演，這次沒有登記）"
+        print(f"順序：{args.subject} 是 {group} 組{note}，照 {group} 組的順序量。", flush=True)
+
     total = sum(estimated_minutes(plan, t) for t in selected)
     print(f"計畫：{plan.name}　受試者：{args.subject}　共 {len(selected)} 趟，"
           f"約 {total:.0f} 分鐘（不含重量與換人）", flush=True)
@@ -1934,7 +1998,7 @@ def _run_plan_body(args) -> None:
         for n, trip in enumerate(selected, start=1):
             print(f"\n第 {n} 趟 {trip.title}{'（可跳過）' if trip.optional else ''}")
             print("  等同指令：python posture.py study "
-                  + " ".join(trip_argv(plan, trip, args.subject, None)))
+                  + " ".join(trip_argv(plan, trip, args.subject, None, group)))
         print("\n--dry-run 只檢查計畫檔，沒有開相機。", flush=True)
         return
 
@@ -1950,8 +2014,8 @@ def _run_plan_body(args) -> None:
         if any(t.desk_level is not None for t in selected):
             offset = _ask_desk_offset()
         for n, trip in enumerate(selected, start=1):
-            ns = _plan_trip_args(parser, args, plan, trip, offset)
-            _print_lines(_plan_header(plan, trip, n))
+            ns = _plan_trip_args(parser, args, plan, trip, offset, group)
+            _print_lines(_plan_header(plan, trip, n, group))
             if trip.optional:
                 note = f"（{trip.optional_note}）" if trip.optional_note else ""
                 if not _ask_no(f"這一趟可以跳過{note}。要做嗎？"):
@@ -2300,6 +2364,9 @@ def build_parser() -> argparse.ArgumentParser:
                                 " <out-dir>-discarded/<subject>/")
             p.add_argument("--dry-run", action="store_true",
                            help="只檢查計畫檔並印出每一趟等同的 study 指令，不開相機")
+            p.add_argument("--order-group", default=None,
+                           help="這位受試者的順序組別（A、B）。平常不用給，程式會平衡分派並登記；"
+                                "只有已經量過、還沒登記的人要補登記時才用")
             p.add_argument("--trips", default=None,
                            help="只跑這幾趟，用計畫檔裡的 id、逗號分隔，例如 --trips trip4,tiltA。"
                                 "同一個代號已經有資料時一定要給，程式會先列出每一趟的狀況")
@@ -2377,6 +2444,9 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--task", default=None,
                            help="自然坐的任務名稱，只寫進 natural 段落。"
                                 "不給時記 copy-text；要抄的文字由操作者準備")
+            p.add_argument("--order-group", default=None,
+                           help="順序效應的組別（A、B），寫進每一段的標頭。"
+                                "run-plan 會自己帶，單獨跑 study 不用給")
             p.add_argument("--target-angle-deg", default=None,
                            help="側傾的目標角度，逗號分隔，依序對應這一趟的 "
                                 "tilt-left、tilt-right 段落")
