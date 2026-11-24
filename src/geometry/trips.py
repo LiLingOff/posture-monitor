@@ -340,6 +340,23 @@ TILT_SIGN = {"tilt-left": +1.0, "tilt-right": -1.0}
 # 大一些、又遠小於 20° 的目標角度，第一批實機資料之後要回頭檢查。
 TILT_DRIFT_WARN_DEG = 3.0
 
+# 3D 側傾角（減端正坐）小於這個值時，tan 比值的分母接近 0，不報放大倍數。
+MIN_AMPLIFICATION_DEG = 5.0
+
+
+def _sym_2d_vs_3d(summary: SessionSummary, upright: SessionSummary | None):
+    """(2D 減端正坐, 3D 減端正坐, 平均方位角, 幀數)。任何一邊缺資料就全是 None／0。
+
+    只用 2D 與 3D 同一幀都有值的幀（`legacy_sym_pairs`），兩邊的分母才一致。
+    """
+    if upright is None or not summary.legacy_sym_pairs or not upright.legacy_sym_pairs:
+        return None, None, None, 0
+    tilt = np.array(summary.legacy_sym_pairs, dtype=float)
+    ref = np.array(upright.legacy_sym_pairs, dtype=float)
+    return (float(tilt[:, 2].mean() - ref[:, 2].mean()),
+            float(tilt[:, 1].mean() - ref[:, 1].mean()),
+            float(tilt[:, 0].mean()), len(tilt))
+
 
 @dataclass(frozen=True)
 class TiltRow:
@@ -355,6 +372,51 @@ class TiltRow:
     # 量完那一段之後再讀一次量角器的值（標頭或檔尾的 measured_end_angle_deg）。
     # 加在最後面並給預設值，沒記結束值的舊檔與舊測試照常可讀。
     measured_end_deg: float | None = None
+    # 前作 2D 肩線傾斜角（左眼影像）與 3D θ_sym，**兩邊都減同趟端正坐**，才是同法比較。
+    # 沒有同趟端正坐、或舊檔沒有像素欄，就都是 None，不退回原始值。
+    sym_2d_deg: float | None = None
+    sym_3d_same_ref_deg: float | None = None
+    azimuth_deg: float | None = None     # 這一段側傾的平均方位角（實際算出來的）
+    frames_2d: int = 0
+
+    @property
+    def error_2d_deg(self) -> float | None:
+        """2D 肩線角（減端正坐）− 帶號量角器實測值。"""
+        if self.sym_2d_deg is None or self.expected_deg is None:
+            return None
+        return self.sym_2d_deg - self.expected_deg
+
+    @property
+    def error_3d_same_ref_deg(self) -> float | None:
+        """3D θ_sym（同樣減同趟端正坐）− 帶號量角器實測值，與 2D 同法。"""
+        if self.sym_3d_same_ref_deg is None or self.expected_deg is None:
+            return None
+        return self.sym_3d_same_ref_deg - self.expected_deg
+
+    @property
+    def magnitude_error_2d_deg(self) -> float | None:
+        """|2D| − 實測值。前作只看大小，這一欄保留那種用法。"""
+        if self.sym_2d_deg is None or self.reference_deg is None:
+            return None
+        return abs(self.sym_2d_deg) - self.reference_deg
+
+    @property
+    def amplification(self) -> float | None:
+        """tan(2D) / tan(3D)：同一段裡 2D 比 3D 放大幾倍。3D 不到
+        MIN_AMPLIFICATION_DEG 時分母接近 0，不報。"""
+        if self.sym_2d_deg is None or self.sym_3d_same_ref_deg is None:
+            return None
+        if abs(self.sym_3d_same_ref_deg) < MIN_AMPLIFICATION_DEG:
+            return None
+        return (math.tan(math.radians(self.sym_2d_deg))
+                / math.tan(math.radians(self.sym_3d_same_ref_deg)))
+
+    @property
+    def predicted_amplification(self) -> float | None:
+        """弱透視、相機水平時的預期放大倍數 1/cosφ。"""
+        if self.azimuth_deg is None or self.azimuth_deg >= 89.0:
+            return None
+        return 1.0 / math.cos(math.radians(self.azimuth_deg))
 
     @property
     def side(self) -> str:
@@ -434,6 +496,8 @@ def tilt_rows(summaries: list[SessionSummary]) -> list[TiltRow]:
                 value, error = raw.mean, raw.standard_error
         turn = turned_deg(summary, index)
         rate = axis_rejection_rate(summary, "θ_sym")
+        sym_2d, sym_3d, azimuth, frames_2d = _sym_2d_vs_3d(
+            summary, trip_upright(summary, index))
         out.append(TiltRow(
             summary=summary,
             target_deg=_meta_float(summary, "target_angle_deg"),
@@ -442,20 +506,27 @@ def tilt_rows(summaries: list[SessionSummary]) -> list[TiltRow]:
             rate=rate, status=axis_status([rate], "θ_sym", is_turned(turn)),
             turned_deg=turn,
             measured_end_deg=_meta_float(summary, "measured_end_angle_deg"),
+            sym_2d_deg=sym_2d, sym_3d_same_ref_deg=sym_3d,
+            azimuth_deg=azimuth, frames_2d=frames_2d,
         ))
     return out
 
 
-def tilt_by_angle(rows: list[TiltRow], cutoff: float | None = None
+def tilt_by_angle(rows: list[TiltRow], cutoff: float | None = None,
+                  attribute: str = "error_deg"
                   ) -> dict[tuple[str, float | None], GroupMean]:
-    """(左右, 目標角度) → 誤差的跨受試者平均。看誤差會不會隨角度變大。"""
+    """(左右, 目標角度) → 誤差的跨受試者平均。看誤差會不會隨角度變大。
+
+    attribute 指定彙整 TiltRow 的哪個誤差：預設 `error_deg`（3D 扣基準），2D 與 3D
+    同法比較時用 `error_2d_deg`、`error_3d_same_ref_deg`、`amplification`。
+    """
     buckets: dict[tuple[str, float | None], dict[str, list[float]]] = {}
     for row in rows:
-        if row.error_deg is None or not passes([row.rate], row.status, cutoff):
+        value = getattr(row, attribute)
+        if value is None or not passes([row.rate], row.status, cutoff):
             continue
         key = (row.side, row.target_deg)
-        buckets.setdefault(key, {}).setdefault(row.summary.subject_key, []).append(
-            row.error_deg)
+        buckets.setdefault(key, {}).setdefault(row.summary.subject_key, []).append(value)
     return {key: group_mean([float(np.mean(v)) for v in subjects.values()])
             for key, subjects in sorted(buckets.items(),
                                         key=lambda kv: (kv[0][0], kv[0][1] or 0))}

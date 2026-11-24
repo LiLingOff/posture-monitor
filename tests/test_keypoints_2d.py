@@ -11,8 +11,9 @@ import pytest
 
 from geometry.cohort import collect
 from geometry.cohort_report import session_rows, to_csv, to_text
-from geometry.legacy_2d import (predicted_2d_bias, theta_ca_2d,
-                                theta_ca_2d_from_row)
+from geometry.legacy_2d import (predicted_2d_bias, predicted_sym_2d, theta_ca_2d,
+                                theta_ca_2d_from_row, theta_sym_2d,
+                                theta_sym_2d_from_row)
 from geometry.measurement_log import _COLUMNS, MeasurementLog
 from geometry.session_analysis import (analyse_session, legacy_2d_by_azimuth,
                                        read_rows)
@@ -261,3 +262,51 @@ def test_cohort_without_pixel_columns_has_no_2d_section(tmp_path):
     cohort = collect([tmp_path])
     assert "前作 2D" not in to_text(cohort, None)
     assert session_rows(cohort)[0]["theta_ca_2d_deg"] is None
+
+
+# ---- 前作 2D 肩線傾斜角（側傾情境） ---------------------------------------
+
+def _shoulders_in_image(theta_deg, phi_deg, half_width=100.0):
+    """冠狀面內傾斜 θ 的雙肩，弱透視、相機水平，方位角 φ（0° 正面）。
+
+    受試者左肩在影像右側：水平分量 w·cosθ 被壓成 cosφ 倍，垂直分量 w·sinθ 不變。
+    θ 右肩較高為正，影像 y 向下，所以左肩的 y 比右肩大。
+    """
+    t, p = math.radians(theta_deg), math.radians(phi_deg)
+    dx = 2 * half_width * math.cos(t) * math.cos(p)
+    dy = 2 * half_width * math.sin(t)
+    return (500.0 + dx, 300.0 + dy), (500.0, 300.0)      # (左肩, 右肩)
+
+
+def test_theta_sym_2d_sign_is_right_shoulder_higher_positive():
+    assert theta_sym_2d((600.0, 300.0), (500.0, 300.0)) == pytest.approx(0.0)
+    assert theta_sym_2d((600.0, 320.0), (500.0, 300.0)) > 0     # 右肩較高（y 較小）
+    assert theta_sym_2d((600.0, 280.0), (500.0, 300.0)) < 0     # 左肩較高
+
+
+def test_theta_sym_2d_is_exact_for_a_frontal_camera():
+    left, right = _shoulders_in_image(12.0, 0.0)
+    assert theta_sym_2d(left, right) == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize("theta", [10.0, -20.0, 30.0])
+def test_theta_sym_2d_is_magnified_by_one_over_cos_azimuth(theta):
+    left, right = _shoulders_in_image(theta, 40.0)
+    expected = math.degrees(math.atan(math.tan(math.radians(theta))
+                                      / math.cos(math.radians(40.0))))
+    assert theta_sym_2d(left, right) == pytest.approx(expected)
+    assert predicted_sym_2d(theta, 40.0) == pytest.approx(expected)
+    assert abs(theta_sym_2d(left, right)) > abs(theta)
+
+
+def test_theta_sym_2d_missing_coordinate_is_none_not_zero():
+    assert theta_sym_2d(None, (1.0, 2.0)) is None
+    assert theta_sym_2d((float("nan"), 1.0), (1.0, 2.0)) is None
+    assert theta_sym_2d_from_row({"left_shoulder_lx_px": "5"}) is None
+    assert theta_sym_2d_from_row({}) is None
+
+
+def test_theta_sym_2d_from_row_reads_the_left_eye_columns():
+    row = {"left_shoulder_lx_px": "600", "left_shoulder_ly_px": "320",
+           "right_shoulder_lx_px": "500", "right_shoulder_ly_px": "300"}
+    assert theta_sym_2d_from_row(row) == pytest.approx(math.degrees(math.atan2(20, 100)))

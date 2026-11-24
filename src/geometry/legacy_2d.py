@@ -111,3 +111,52 @@ def theta_ca_2d_from_row(row: dict) -> tuple[float, str] | None:
         if angle is not None:
             return angle, side
     return None
+
+
+# ---- 前作的 2D 肩線傾斜角（說明書表4，側傾情境）------------------------------
+#
+# 前作（cam_front.py）用正面相機、雙肩像素連線算傾斜角：
+#     arctan[(y_L − y_R) / (x_L − x_R)]，再取絕對值、限制在 0～90°。
+# 這裡照同一個式子，但**保留正負號、不 clamp**：
+#   - 正負號與 3D 的 θ_sym 相同（右肩較高為正），量角器的實測值也帶號，誤差才能相減；
+#   - 端正坐本身就有幾度偏差，先取絕對值再扣端正坐會把負的側傾算成錯的數字。
+# 前作「只看大小」的用法，由呼叫端另外取絕對值。
+#
+# 相機斜角架設（方位角 φ，0° 是正面）時，雙肩連線的水平分量被壓縮成 cosφ 倍而垂直
+# 分量不變，所以 tan θ_est = tan θ_true / cosφ（弱透視、相機水平）。與
+# `posture_angles.theta_sym` 註解裡說的 1/cos(方位角) 是同一件事。
+
+
+def theta_sym_2d(
+    left_xy: tuple[float, float] | None,
+    right_xy: tuple[float, float] | None,
+) -> float | None:
+    """前作的 2D 肩線傾斜角（度），右肩較高為正。缺值回傳 None，不回傳 0。
+
+    left_xy、right_xy 是受試者左肩、右肩在同一張影像上的像素座標。影像 y 向下，
+    右肩較高時 y_右 < y_左，所以 y_左 − y_右 > 0。
+    """
+    if left_xy is None or right_xy is None:
+        return None
+    (xl, yl), (xr, yr) = left_xy, right_xy
+    if not _finite(xl, yl, xr, yr):
+        return None
+    return math.degrees(math.atan2(yl - yr, xl - xr))
+
+
+def theta_sym_2d_from_row(row: dict) -> float | None:
+    """從逐幀 CSV 的一列（左眼影像座標）算 2D 肩線傾斜角。缺欄或缺值是 None。"""
+    values = [_cell(row, f"{side}_shoulder_l{axis}_px")
+              for side in ("left", "right") for axis in ("x", "y")]
+    if None in values:
+        return None
+    return theta_sym_2d((values[0], values[1]), (values[2], values[3]))
+
+
+def predicted_sym_2d(theta_true_deg: float, azimuth_deg: float) -> float:
+    """弱透視、相機水平時，2D 肩線角的預期值：tan θ_est = tan θ_true / cosφ。
+
+    只在 |θ_true| < 90° 且 φ < 90° 成立。
+    """
+    ratio = 1.0 / math.cos(math.radians(azimuth_deg))
+    return math.degrees(math.atan(ratio * math.tan(math.radians(theta_true_deg))))

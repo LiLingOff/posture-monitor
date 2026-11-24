@@ -21,12 +21,14 @@ _FIELDS = ["frame", "elapsed_s", "usable", "reject_reason", "theta_ca_deg",
            "theta_sym_deg", "theta_ca_corrected_deg", "theta_sym_corrected_deg",
            "azimuth_deg", "shoulder_height_mm", "theta_ka_deg",
            "right_ear_lx_px", "right_ear_ly_px",
-           "right_shoulder_lx_px", "right_shoulder_ly_px", "posture"]
+           "right_shoulder_lx_px", "right_shoulder_ly_px",
+           "left_shoulder_lx_px", "left_shoulder_ly_px", "posture"]
 
 
 def _write(folder, name, *, subject="s01", condition="upright", trial=1, trip="T1",
            ca=0.0, sym=0.0, ka=None, azimuth=40.0, shoulder=-100.0, frames=60,
            rejected=0, sym_missing=0, baseline=None, extra=None, theta_2d=None,
+           sym_2d=None,
            captured_at="2026-11-18T10:00:00"):
     """一段合成 CSV。baseline=(θ_CA, θ_sym, 方位角) 代表這段有扣基準。"""
     folder.mkdir(parents=True, exist_ok=True)
@@ -64,6 +66,12 @@ def _write(folder, name, *, subject="s01", condition="upright", trial=1, trip="T
                 row.update({"right_shoulder_lx_px": 500.0, "right_shoulder_ly_px": 400.0,
                             "right_ear_ly_px": 300.0,
                             "right_ear_lx_px": 500.0 - math.tan(t2) * 100.0 * _SIN45})
+            if sym_2d is not None:
+                # 雙肩 x 差 100px，左肩 y 比右肩大多少由 2D 角度決定（右肩較高為正）
+                tan2 = math.tan(math.radians(sym_2d + wiggle))
+                row.update({"right_shoulder_lx_px": 400.0, "right_shoulder_ly_px": 300.0,
+                            "left_shoulder_lx_px": 500.0,
+                            "left_shoulder_ly_px": 300.0 + 100.0 * tan2})
             writer.writerow(row)
         for i in range(rejected):
             writer.writerow({"frame": frames + i + 1, "elapsed_s": 0, "usable": 0,
@@ -458,3 +466,78 @@ def test_forward_and_tilt_carry_the_sensitivity_runs(tmp_path):
     sections = dict(trip_sections(_load(tmp_path)))
     assert "軀幹前傾：跨受試者平均與敏感度分析" in sections
     assert "≤15%" in sections["側傾：θ_sym 對量角器"]
+
+
+# ---- 側傾：前作 2D 肩線傾斜角 -------------------------------------------
+
+def _tilt_2d_trip(folder, *, up2d, up3d, t2d, t3d, measured, azimuth=45.0,
+                  condition="tilt-left", subject="s01", with_pixels=True):
+    _write(folder, "upright-1.csv", subject=subject, sym=up3d, azimuth=azimuth,
+           baseline=(0.0, 0.0, azimuth), sym_2d=up2d if with_pixels else None)
+    _write(folder, f"{condition}-1.csv", subject=subject, condition=condition,
+           sym=t3d, azimuth=azimuth, baseline=(0.0, 0.0, azimuth),
+           captured_at="2026-11-18T10:05:00",
+           extra={"target_angle_deg": 20, "measured_angle_deg": measured},
+           sym_2d=t2d if with_pixels else None)
+
+
+def test_the_2d_tilt_error_subtracts_the_same_trip_upright_and_keeps_the_sign(tmp_path):
+    # 端正坐 2D 有 +5.7° 的零點；右傾 2D 原始 −20.6°。減端正坐後是 −26.3°。
+    # 先取絕對值再減會得到 +14.9°，這是要防的錯。
+    _tilt_2d_trip(tmp_path / "s01", up2d=5.7, up3d=6.4, t2d=-20.6, t3d=-14.4,
+                  measured=20, condition="tilt-right")
+    row = tilt_rows(_load(tmp_path))[0]
+    assert row.sym_2d_deg == pytest.approx(-26.3, abs=0.01)
+    assert row.sym_3d_same_ref_deg == pytest.approx(-20.8, abs=0.01)
+    assert row.error_2d_deg == pytest.approx(-6.3, abs=0.01)
+    assert row.error_3d_same_ref_deg == pytest.approx(-0.8, abs=0.01)
+    assert row.magnitude_error_2d_deg == pytest.approx(6.3, abs=0.01)
+    assert row.azimuth_deg == pytest.approx(45.0)
+
+
+def test_the_2d_amplification_is_the_tan_ratio_and_is_compared_with_1_over_cos(tmp_path):
+    t3 = 15.0
+    t2 = math.degrees(math.atan(math.tan(math.radians(t3)) / math.cos(math.radians(45.0))))
+    _tilt_2d_trip(tmp_path / "s01", up2d=0.0, up3d=0.0, t2d=t2, t3d=t3, measured=15)
+    row = tilt_rows(_load(tmp_path))[0]
+    assert row.amplification == pytest.approx(1.0 / math.cos(math.radians(45.0)), rel=1e-3)
+    assert row.predicted_amplification == pytest.approx(1.4142, rel=1e-3)
+
+
+def test_a_small_3d_tilt_does_not_report_an_amplification(tmp_path):
+    _tilt_2d_trip(tmp_path / "s01", up2d=0.0, up3d=0.0, t2d=2.0, t3d=1.0, measured=15)
+    assert tilt_rows(_load(tmp_path))[0].amplification is None
+
+
+def test_no_pixels_or_no_upright_means_no_2d_not_a_fallback_to_raw(tmp_path):
+    _tilt_2d_trip(tmp_path / "old", up2d=0, up3d=0, t2d=0, t3d=-15, measured=15,
+                  with_pixels=False, subject="old")
+    _write(tmp_path / "lone", "tilt-left-1.csv", subject="lone", condition="tilt-left",
+           sym=15.0, baseline=(0.0, 0.0, 40.0), sym_2d=20.0,
+           extra={"target_angle_deg": 20, "measured_angle_deg": 15})
+    summaries = _load(tmp_path)
+    rows = {r.summary.subject_key: r for r in tilt_rows(summaries)}
+    assert rows["old"].sym_2d_deg is None and rows["old"].error_2d_deg is None
+    assert rows["lone"].sym_2d_deg is None and rows["lone"].error_2d_deg is None
+    assert "前作 2D 肩線傾斜角" not in dict(trip_sections(summaries))["側傾：θ_sym 對量角器"]
+
+
+def test_the_2d_by_angle_table_counts_people_not_frames(tmp_path):
+    for subject, t2d in (("s01", 20.0), ("s02", 30.0)):
+        _tilt_2d_trip(tmp_path / subject, up2d=0.0, up3d=0.0, t2d=t2d, t3d=15.0,
+                      measured=15, subject=subject)
+    table = tilt_by_angle(tilt_rows(_load(tmp_path)), attribute="error_2d_deg")
+    group = table[("左", 20.0)]
+    assert group.n == 2 and group.mean == pytest.approx(10.0)
+
+
+def test_the_tilt_report_and_csv_carry_the_2d_columns(tmp_path):
+    _tilt_2d_trip(tmp_path / "s01", up2d=0.0, up3d=0.0, t2d=20.0, t3d=15.0, measured=15)
+    summaries = _load(tmp_path)
+    text = dict(trip_sections(summaries))["側傾：θ_sym 對量角器"]
+    assert "前作 2D 肩線傾斜角對 3D θ_sym" in text
+    assert "依目標角度：2D 與 3D 同法比較" in text
+    row = list(csv.DictReader(trip_csvs(summaries)["tilt.csv"].splitlines()))[0]
+    assert float(row["error_2d_deg"]) == pytest.approx(5.0, abs=0.01)
+    assert float(row["amplification_2d"]) > 1.0
+    assert float(row["predicted_amplification_2d"]) == pytest.approx(1.4142, rel=1e-3)

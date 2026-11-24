@@ -186,6 +186,8 @@ def tilt_text(rows) -> str:
                                f"（{r.drift_deg:+.1f}°）" for r in slid)
                    + "。這幾段的誤差含著滑動，要小心讀。")
 
+    out += _sym_2d_lines(rows)
+
     by_angle = tilt_by_angle(rows)
     if by_angle:
         strict = {c: tilt_by_angle(rows, c) for c in SENSITIVITY_LIMITS}
@@ -200,6 +202,18 @@ def tilt_text(rows) -> str:
                       [[side, _fmt(target, 0, "°", signed=False), cell_text(g)]
                        + [cell_text(strict[c].get((side, target))) for c in SENSITIVITY_LIMITS]
                        for (side, target), g in by_angle.items()])
+        if any(r.sym_2d_deg is not None for r in rows):
+            by_2d = tilt_by_angle(rows, attribute="error_2d_deg")
+            by_3d = tilt_by_angle(rows, attribute="error_3d_same_ref_deg")
+            by_amp = tilt_by_angle(rows, attribute="amplification")
+            out += ["", "依目標角度：2D 與 3D 同法比較（都減同趟端正坐；分母是人數）", ""]
+            out += _table([("側", 4), ("目標", 8), ("3D 誤差", 24), ("2D 誤差", 24),
+                           ("2D/3D 放大", 24)],
+                          [[side, _fmt(target, 0, "°", signed=False),
+                            cell_text(by_3d.get((side, target))),
+                            cell_text(by_2d.get((side, target))),
+                            _amp_cell(by_amp.get((side, target)))]
+                           for (side, target) in by_angle])
     symmetry = tilt_symmetry(rows)
     if symmetry:
         out += ["", "左右是否對稱（|θ_sym| − 實測值，兩邊接近才算對稱）", ""]
@@ -210,13 +224,56 @@ def tilt_text(rows) -> str:
     return "\n".join(out)
 
 
+def _amp_cell(group) -> str:
+    if group is None or group.mean is None:
+        return "—"
+    return f"{with_error(group.mean, group.error, '×', 2, signed=False)}（n={group.n}）"
+
+
+def _sym_2d_lines(rows) -> list[str]:
+    """前作 2D 肩線傾斜角與 3D θ_sym 對量角器（都減同趟端正坐）。沒有任何一段有 2D 就不印。"""
+    shown = [r for r in rows if r.sym_2d_deg is not None]
+    if not shown:
+        return []
+    header = [("受試者", 12), ("段", 14), ("φ", 8), ("量角器", 9), ("3D", 10),
+              ("3D 誤差", 10), ("2D", 10), ("2D 誤差", 10), ("|2D|誤差", 10),
+              ("放大 tan比", 11), ("1/cosφ", 8), ("幀數", 6)]
+    body = []
+    for row in shown:
+        s = row.summary
+        body.append([
+            s.subject_key, f"{s.condition}#{s.trial or '—'}",
+            _fmt(row.azimuth_deg, 1, "°", signed=False),
+            _fmt(row.expected_deg, 1, "°"),
+            _fmt(row.sym_3d_same_ref_deg), _fmt(row.error_3d_same_ref_deg),
+            _fmt(row.sym_2d_deg), _fmt(row.error_2d_deg),
+            _fmt(row.magnitude_error_2d_deg),
+            _fmt(row.amplification, 2, "×", signed=False),
+            _fmt(row.predicted_amplification, 2, "×", signed=False),
+            str(row.frames_2d),
+        ])
+    return ["", "前作 2D 肩線傾斜角對 3D θ_sym（都減同趟端正坐，誤差 = 角度 − 帶號量角器）", ""] \
+        + _table(header, body) + [
+        "",
+        "  2D = atan2(y左肩 − y右肩, x左肩 − x右肩)，左眼影像的原始像素，與前作 cam_front 同式，",
+        "  但保留正負號（右肩較高為正）、不取絕對值：端正坐本身有零點，先取絕對值再扣會算錯；",
+        "  「|2D|誤差」是前作只看大小的用法。2D 與 3D 只用兩者同一幀都有值的幀。",
+        "  放大 = tan(2D)/tan(3D)，3D 不到 5° 不報。1/cosφ 是弱透視、相機水平的理論值，φ 用這一段",
+        "  實際算出的平均方位角。實測放大比 1/cosφ 小時，可能是相機有俯仰、近大遠小的透視、",
+        "  側傾時方位角在變、或 2D 沒去畸變；這裡不分，也不把它湊成 1/cosφ。",
+    ]
+
+
 def tilt_csv(rows) -> str:
     fields = ["subject", "trip_id", "desk_level", "condition", "trial", "file",
               "target_angle_deg", "measured_angle_deg", "measured_end_angle_deg",
               "angle_drift_deg", "reference_angle_deg", "expected_theta_sym_deg",
               "theta_sym_deg", "theta_sym_error_deg", "theta_sym_source",
               "error_deg", "magnitude_error_deg", "sign_ok",
-              "theta_sym_rejection_rate", "inclusion", "turned_deg"]
+              "theta_sym_rejection_rate", "inclusion", "turned_deg",
+              "azimuth_deg", "frames_2d", "sym_2d_deg", "sym_3d_same_ref_deg",
+              "error_2d_deg", "error_3d_same_ref_deg", "magnitude_error_2d_deg",
+              "amplification_2d", "predicted_amplification_2d"]
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
@@ -241,6 +298,13 @@ def tilt_csv(rows) -> str:
             "sign_ok": "" if row.sign_ok is None else int(row.sign_ok),
             "theta_sym_rejection_rate": r(row.rate), "inclusion": row.status,
             "turned_deg": r(row.turned_deg, 2),
+            "azimuth_deg": r(row.azimuth_deg, 2), "frames_2d": row.frames_2d,
+            "sym_2d_deg": r(row.sym_2d_deg), "sym_3d_same_ref_deg": r(row.sym_3d_same_ref_deg),
+            "error_2d_deg": r(row.error_2d_deg),
+            "error_3d_same_ref_deg": r(row.error_3d_same_ref_deg),
+            "magnitude_error_2d_deg": r(row.magnitude_error_2d_deg),
+            "amplification_2d": r(row.amplification),
+            "predicted_amplification_2d": r(row.predicted_amplification),
         })
     return buffer.getvalue()
 

@@ -29,7 +29,7 @@ import numpy as np
 
 from .baseline import group_rejection_reason
 from .judgement import MissCounter, Posture, PostureJudge, windows_are_stale
-from .legacy_2d import theta_ca_2d_from_row
+from .legacy_2d import theta_ca_2d_from_row, theta_sym_2d_from_row
 from .smoothing import RollingAngle
 from .terminal import with_error
 from .uncertainty import lag1_autocorrelation, standard_error
@@ -185,6 +185,8 @@ class SessionSummary:
     azimuth_bins: list = field(default_factory=list)
     # 前作 2D θ_CA 與 3D θ_CA 的逐幀配對 (方位角, 3D, 2D)，舊檔沒有像素欄時是空的。
     legacy_pairs: list = field(default_factory=list)
+    # 前作 2D 肩線傾斜角與 3D θ_sym 的逐幀配對 (方位角, 3D θ_sym 原始, 2D)。
+    legacy_sym_pairs: list = field(default_factory=list)
 
     @property
     def legacy_2d(self) -> Legacy2DSummary | None:
@@ -438,6 +440,7 @@ def analyse_session(
 
     summary.azimuth_bins = rejection_by_azimuth(rows)
     summary.legacy_pairs = legacy_2d_pairs(rows)
+    summary.legacy_sym_pairs = legacy_sym_pairs(rows)
     stored = None if force_replay else _read_judgement(rows)
     summary.judgement = stored or _replay_judgement(rows, window, margin)
     return summary
@@ -622,6 +625,24 @@ def legacy_2d_pairs(rows: list[dict]) -> list[tuple[float, float, float]]:
         if azimuth is None or theta_3d is None or legacy is None:
             continue
         pairs.append((azimuth, theta_3d, legacy[0]))
+    return pairs
+
+
+def legacy_sym_pairs(rows: list[dict]) -> list[tuple[float, float, float]]:
+    """可用幀裡 (方位角, 3D θ_sym 原始, 2D 肩線傾斜角) 三者齊全的那些。
+
+    2D 與 3D 要同一幀都有值才收，缺任何一個整幀不收。舊檔沒有像素欄時回傳空的。
+    """
+    pairs = []
+    for row in rows:
+        if row.get("usable") != "1":
+            continue
+        azimuth = _number(row.get("azimuth_deg", ""))
+        theta_3d = _number(row.get("theta_sym_deg", ""))
+        theta_2d = theta_sym_2d_from_row(row)
+        if azimuth is None or theta_3d is None or theta_2d is None:
+            continue
+        pairs.append((azimuth, theta_3d, theta_2d))
     return pairs
 
 
