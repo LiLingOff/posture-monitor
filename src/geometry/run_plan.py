@@ -376,13 +376,44 @@ class ExistingSegment:
     condition: str
     trial: int
     rejection_rate: float | None = None
+    # 側傾段標頭裡的 target_angle_deg。側傾 A（20°）與側傾 B（10°、30°）的檔名
+    # 都是 tilt-left／tilt-right，只能靠它分。
+    target_angle: float | None = None
 
 
-def _own_conditions(plan: Plan, trip: PlanTrip) -> tuple[str, ...]:
-    """只有這一趟才有的姿勢。upright 每一趟都有，看不出是哪一趟量的。"""
-    others = {c for t in plan.trips if t is not trip for c in t.segments}
-    own = tuple(dict.fromkeys(c for c in trip.segments if c not in others))
-    return own or tuple(dict.fromkeys(trip.segments))
+def segment_key(condition: str, target: float | None) -> str:
+    """一段的身分：姿勢，側傾再加目標角度（tilt-left@10）。"""
+    if is_tilt(condition) and target is not None:
+        return f"{condition}@{target:g}"
+    return condition
+
+
+def _trip_keys(trip: PlanTrip) -> tuple[str, ...]:
+    """這一趟每一段的身分，照段落順序。側傾段依序對應 target_angle_deg。"""
+    keys = []
+    tilt_index = 0
+    for condition in trip.segments:
+        target = None
+        if is_tilt(condition):
+            if tilt_index < len(trip.target_angles):
+                target = trip.target_angles[tilt_index]
+            tilt_index += 1
+        keys.append(segment_key(condition, target))
+    return tuple(dict.fromkeys(keys))
+
+
+def _label(key: str) -> str:
+    """給人看的名稱：tilt-left@10 → tilt-left 10°。"""
+    name, _, target = key.partition("@")
+    return f"{name} {target}°" if target else name
+
+
+def _own_keys(plan: Plan, trip: PlanTrip) -> tuple[str, ...]:
+    """只有這一趟才有的段。upright 每一趟都有，看不出是哪一趟量的。"""
+    others = {k for t in plan.trips if t is not trip for k in _trip_keys(t)}
+    keys = _trip_keys(trip)
+    own = tuple(k for k in keys if k not in others)
+    return own or keys
 
 
 @dataclass(frozen=True)
@@ -405,18 +436,19 @@ def trip_progress(plan: Plan, segments) -> list[TripProgress]:
     """每一趟做到哪裡。同一種姿勢量過好幾次時看最新的那一次。"""
     latest: dict[str, ExistingSegment] = {}
     for seg in segments:
-        if seg.condition not in latest or seg.trial > latest[seg.condition].trial:
-            latest[seg.condition] = seg
+        key = segment_key(seg.condition, seg.target_angle)
+        if key not in latest or seg.trial > latest[key].trial:
+            latest[key] = seg
     out = []
     for trip in plan.trips:
-        own = _own_conditions(plan, trip)
-        present = tuple(c for c in own if c in latest)
-        missing = tuple(c for c in own if c not in latest)
+        own = _own_keys(plan, trip)
+        present = tuple(_label(k) for k in own if k in latest)
+        missing = tuple(_label(k) for k in own if k not in latest)
         high = tuple(
-            f"{c} #{latest[c].trial} 略過 {latest[c].rejection_rate:.0%}"
-            for c in present
-            if latest[c].rejection_rate is not None
-            and latest[c].rejection_rate > REJECTION_LIMIT)
+            f"{_label(k)} #{latest[k].trial} 略過 {latest[k].rejection_rate:.0%}"
+            for k in own
+            if k in latest and latest[k].rejection_rate is not None
+            and latest[k].rejection_rate > REJECTION_LIMIT)
         out.append(TripProgress(trip, present, missing, high))
     return out
 

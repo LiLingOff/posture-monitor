@@ -38,10 +38,10 @@ def _trip(**overrides):
 
 
 def test_the_shipped_plan_matches_the_selftest_manual():
-    """計畫檔要與自測手冊的三條 study 指令一致，量測方法不能因為換成引導模式而變。"""
+    """計畫檔要與自測手冊的 study 指令一致，量測方法不能因為換成引導模式而變。"""
     plan = load_plan(PLAN)
-    assert [t.trip_id for t in plan.trips] == ["trip1", "trip4", "tiltA"]
-    trip1, trip4, tilt = plan.trips
+    assert [t.trip_id for t in plan.trips] == ["trip1", "trip4", "tiltA", "tiltB"]
+    trip1, trip4, tilt, tilt_b = plan.trips
     assert trip1.before == ("natural",)
     assert trip1.conditions == ("upright", "head-forward", "forward", "upright")
     assert trip4.conditions == ("upright", "left-shoulder-up", "right-shoulder-up")
@@ -49,6 +49,10 @@ def test_the_shipped_plan_matches_the_selftest_manual():
     assert tilt.target_angles == (20.0, 20.0)
     # 側傾全員做（2026-11-17 依指導老師意見定案），不能被跳過。
     assert not tilt.optional and not trip1.optional and not trip4.optional
+    # 側傾 B：左傾 10°、右傾 30°，檢查誤差會不會隨角度變大（2026-11-24 加入）。
+    assert tilt_b.conditions == ("upright", "tilt-left", "tilt-right")
+    assert tilt_b.target_angles == (10.0, 30.0)
+    assert not tilt_b.optional
     assert (plan.seconds_each, plan.countdown, plan.snapshot_raw) == (60.0, 20, True)
 
 
@@ -100,11 +104,12 @@ def test_a_plan_that_is_not_json_says_which_line(tmp_path):
 
 def test_the_time_estimate_counts_baseline_and_protractor():
     plan = load_plan(PLAN)
-    trip1, trip4, tilt = plan.trips
+    trip1, trip4, tilt, tilt_b = plan.trips
     # 趟 1：5 段 × 90 秒 + 基準 50 秒 = 500 秒
     assert estimated_minutes(plan, trip1) == pytest.approx(500 / 60)
     # 側傾 A：3 段 × 90 + 50 + 2 段量角器 × 60 = 440 秒
     assert estimated_minutes(plan, tilt) == pytest.approx(440 / 60)
+    assert estimated_minutes(plan, tilt_b) == pytest.approx(440 / 60)
 
 
 # ---- 當場檢查 ----------------------------------------------------------
@@ -300,12 +305,13 @@ def _patch(monkeypatch, studio, answers, probes=None):
 
 
 def _skippable_tilt_plan(tmp_path):
-    """正式計畫檔的副本，只把側傾改成可跳過。
+    """正式計畫檔的副本：去掉側傾 B，側傾 A 改成可跳過。
 
-    多數流程測試關心的是趟 1、趟 4，回 n 跳過側傾才不用每個都準備四個量角器
-    讀數。正式計畫檔的側傾是必做的，見 test_the_shipped_plan_matches_the_selftest_manual。
+    多數流程測試關心的是趟 1、趟 4，回 n 跳過側傾才不用每個都準備量角器讀數。
+    正式計畫檔的兩趟側傾都是必做的，見 test_the_shipped_plan_matches_the_selftest_manual。
     """
     data = json.loads(PLAN.read_text(encoding="utf-8"))
+    data["trips"] = data["trips"][:3]
     data["trips"][2]["optional"] = True
     path = tmp_path / "skippable-tilt.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -335,7 +341,8 @@ def _names(root):
 def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypatch, capsys):
     studio = _Studio()
     answers = {"桌面高減手肘高": ["5"], "對嗎": ["y"],
-               "量角器": ["21", "19", "20", "22"]}
+               "量角器": ["21", "19", "20", "22",     # 側傾 A 左、右的開始與結束值
+                          "11", "9", "31", "29"]}     # 側傾 B
     asked, analysed = _patch(monkeypatch, studio, answers)
     posture._run_plan(_plan_args(tmp_path, PLAN))
     root = tmp_path / "sessions"
@@ -343,8 +350,8 @@ def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypa
         "natural-1.csv", "upright-1.csv", "head-forward-1.csv", "forward-1.csv",
         "upright-2.csv", "upright-3.csv", "left-shoulder-up-1.csv",
         "right-shoulder-up-1.csv", "upright-4.csv", "tilt-left-1.csv",
-        "tilt-right-1.csv"]
-    assert studio.baselines == 3
+        "tilt-right-1.csv", "upright-5.csv", "tilt-left-2.csv", "tilt-right-2.csv"]
+    assert studio.baselines == 4
     assert studio.cap.released >= 1
     # 量角器的開始值與結束值都寫進去了。
     tilt = (root / "S02" / "tilt-left-1.csv").read_text(encoding="utf-8")
@@ -352,7 +359,10 @@ def test_a_clean_run_records_every_trip_in_order_and_analyses(tmp_path, monkeypa
     # 桌面減手肘每一趟都有。
     for name in ("natural-1.csv", "left-shoulder-up-1.csv", "tilt-right-1.csv"):
         assert "desk_offset_cm=5" in (root / "S02" / name).read_text(encoding="utf-8")
-    assert len(analysed) == 1 and len(analysed[0]) == 11
+    assert len(analysed) == 1 and len(analysed[0]) == 14
+    # 側傾 B 的目標角度寫進標頭，之後靠它分側傾 A 與 B。
+    tilt_b = (root / "S02" / "tilt-right-2.csv").read_text(encoding="utf-8")
+    assert "target_angle_deg=30" in tilt_b and "measured_angle_deg=31" in tilt_b
     saved = list((root / "S02").glob("analyse-*.txt"))
     assert saved and "ANALYSE OUTPUT" in saved[0].read_text(encoding="utf-8")
     out = capsys.readouterr().out
@@ -867,16 +877,37 @@ def _like_1123():
 
 def test_progress_tells_done_trips_from_ones_to_redo_and_ones_not_started():
     plan = load_plan(PLAN)
-    trip1, trip4, tilt = trip_progress(plan, _like_1123())
+    progress = trip_progress(plan, _like_1123())
+    trip1, trip4, tilt, tilt_b = progress
     assert trip1.done and not trip1.high_skip
     assert trip4.done and trip4.high_skip == ("right-shoulder-up #1 略過 17%",)
-    assert not tilt.started and tilt.missing == ("tilt-left", "tilt-right")
-    lines = resume_lines(plan, [trip1, trip4, tilt], "1123",
+    assert not tilt.started and tilt.missing == ("tilt-left 20°", "tilt-right 20°")
+    assert not tilt_b.started and tilt_b.missing == ("tilt-left 10°", "tilt-right 30°")
+    lines = resume_lines(plan, progress, "1123",
                          "python posture.py run-plan --subject 1123")
     text = "\n".join(lines)
-    assert "  python posture.py run-plan --subject 1123 --trips tiltA" in lines
-    assert "  python posture.py run-plan --subject 1123 --trips trip4,tiltA" in lines
+    assert "  python posture.py run-plan --subject 1123 --trips tiltA,tiltB" in lines
+    assert "  python posture.py run-plan --subject 1123 --trips trip4,tiltA,tiltB" in lines
     assert "建議整趟重量" in text and "自然坐已經量過" in text
+
+
+def test_tilt_a_and_tilt_b_are_told_apart_by_target_angle():
+    """兩趟側傾的檔名都是 tilt-left／tilt-right，只能靠標頭的目標角度分。
+    側傾 A 做完不能被當成側傾 B 也做完，否則補量建議會漏掉側傾 B。"""
+    plan = load_plan(PLAN)
+    segs = _like_1123() + [ExistingSegment("tilt-left", 1, 0.02, 20.0),
+                           ExistingSegment("tilt-right", 1, 0.02, 20.0)]
+    *_, tilt, tilt_b = trip_progress(plan, segs)
+    assert tilt.done and not tilt_b.started
+    lines = resume_lines(plan, trip_progress(plan, segs), "S02",
+                         "python posture.py run-plan --subject S02")
+    assert "  python posture.py run-plan --subject S02 --trips tiltB" in lines
+    # 側傾 B 也量過，而且 tilt-left 又量了第二次：看最新的那一次。
+    more = segs + [ExistingSegment("tilt-left", 2, 0.30, 10.0),
+                   ExistingSegment("tilt-right", 2, 0.02, 30.0)]
+    *_, tilt, tilt_b = trip_progress(plan, more)
+    assert tilt.done and tilt_b.done
+    assert tilt_b.high_skip == ("tilt-left 10° #2 略過 30%",)
 
 
 def test_a_retaken_segment_counts_by_its_latest_trial():

@@ -1874,14 +1874,18 @@ def _existing_segments(folder: Path) -> list[ExistingSegment]:
         if match is None:
             continue
         rate = None
+        target = None
         try:
             summary = analyse_session(path)
             if summary.frames:
                 rate = 1.0 - summary.usable / summary.frames
+            raw = summary.meta.get("target_angle_deg")
+            target = float(raw) if raw not in (None, "") else None
         except Exception:
-            # 讀壞的檔一樣算「有這一段」，只是不知道略過率。
+            # 讀壞的檔一樣算「有這一段」，只是不知道略過率與目標角度。
             pass
-        out.append(ExistingSegment(match["condition"], int(match["trial"]), rate))
+        out.append(ExistingSegment(match["condition"], int(match["trial"]), rate,
+                                   target))
     return out
 
 
