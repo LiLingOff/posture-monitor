@@ -74,6 +74,17 @@ python -m pyflakes posture.py src/**/*.py tests/*.py
 `study` 本身的行為（量角器可留空、掉線殘段留著接續編號）不要因為 run-plan 而改，
 run-plan 要的不同行為都經由 `_study_trip` 的 `check`、`on_camera_lost` 與 `args.require_angles` 傳進去。
 
+### 順序分組與 Kinovea（2026-11-24）
+
+- `plans/selftest.json` 的 `orders.B` 是 B 組順序（趟序與趟內姿勢全反），A 組就是檔案本身的順序。
+  **分組由程式分派並登記在 `data/order_groups.csv`，不要改成讓操作者選**（操作者知道受試者是誰）。
+  自然坐、取基準後第一段端正坐、趟 1 最後一段端正坐固定不動，`parse_plan` 會擋違規的計畫檔。
+- 登記檔放在 `data/` 而不是 `data/sessions/`：`cohort` 會遞迴找所有 CSV。`--subject-groups` 是表4 的
+  身高層，順序組別用 `--order-groups`，兩個不能混。
+- 接續判斷用「姿勢加側傾目標角度」當段落身分（`tilt-left@10`），因為側傾 A 與 B 的檔名都一樣。
+- `kinovea-pack` 沿用盲評包的匿名化，只收側傾段 `raw/` 原圖；`kinovea` 取 CSV 該幀的**原始**
+  `theta_sym_deg`（Kinovea 量的是影像上的絕對角度）。Kinovea 是 2D 影像角度、受透視影響，報告不可寫成 3D 的真值。
+
 ## 現在卡在哪
 
 1. 姿勢清單已定（2026-10-06）：upright、head-forward、head-back、
