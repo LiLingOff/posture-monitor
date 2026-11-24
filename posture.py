@@ -70,6 +70,8 @@ from geometry.session_analysis import analyse_session  # noqa: E402
 from geometry.session_report import format_report, segment_table  # noqa: E402
 from geometry.smoothing import RollingAngle  # noqa: E402
 from geometry.triangulation import triangulate_points  # noqa: E402
+from geometry.kinovea import (KinoveaImportError, export_summary,  # noqa: E402
+                              import_report)
 from geometry.trip_report import trip_csvs, trip_sections  # noqa: E402
 from geometry.trips import read_groups  # noqa: E402
 from geometry.live_report import (elapsed_text, live_line,  # noqa: E402
@@ -1535,6 +1537,24 @@ def _run_rating_pack(args) -> None:
         raise SystemExit(str(exc))
 
 
+def _run_kinovea_pack(args) -> None:
+    """匯出給 Kinovea 標註者的側傾原圖包。不碰相機。"""
+    annotators = [r.strip() for r in args.annotators.split(",") if r.strip()]
+    try:
+        print(export_summary(args.paths, args.out, annotators, args.per_segment,
+                             args.seed, args.key_out, args.allow_overlay))
+    except RatingPackError as exc:
+        raise SystemExit(str(exc))
+
+
+def _run_kinovea(args) -> None:
+    """讀回 Kinovea 標註，對回同一幀的 3D θ_sym 算相關。沒有標註檔時照實說。"""
+    try:
+        print(import_report(args.key, args.sheets, args.out, args.bootstrap))
+    except (KinoveaImportError, FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc))
+
+
 def _run_ratings(args) -> None:
     """讀回評分，算評分者信度與有效警報。沒有評分檔時照實說，不當掉。"""
     try:
@@ -2241,6 +2261,38 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--bootstrap", type=int, default=2000,
                     help="信賴區間的 bootstrap 次數")
 
+    kp = sub.add_parser("kinovea-pack",
+                        help="匯出給 Kinovea 標註者的側傾原圖包，不需要相機")
+    kp.add_argument("paths", type=Path, nargs="+",
+                    help="受試者資料夾（data/sessions/<subject>）或整個 data/sessions")
+    kp.add_argument("--out", type=Path, required=True,
+                    help="標註包的資料夾，要不存在或是空的。底下每位標註者一個資料夾，"
+                         "整包交出去也不帶 key")
+    kp.add_argument("--key-out", type=Path, default=None,
+                    help="key 檔的位置，不能在 --out 裡面。預設是 --out 旁邊的 "
+                         "<資料夾名>-key/key.csv")
+    kp.add_argument("--annotators", default="K1",
+                    help="標註者代號，逗號分隔。預設只有一位 K1；多位標同一批圖時，"
+                         "匯入時每張取平均")
+    kp.add_argument("--per-segment", type=int, default=3,
+                    help="每段側傾取幾張快照（平均挑）。預設 3，一位受試者 12 張")
+    kp.add_argument("--seed", type=int, default=None,
+                    help="亂數種子。不給就用系統亂數，每次匯出都不同")
+    kp.add_argument("--allow-overlay", action="store_true",
+                    help="沒有原圖（量測時沒加 --snapshot-raw）時改用疊加骨架的快照。"
+                         "標註者會看到系統的骨架，盲標的前提打折")
+
+    kn = sub.add_parser("kinovea",
+                        help="讀回 Kinovea 標註，對回 3D θ_sym 算相關，不需要相機")
+    kn.add_argument("--key", type=Path, required=True,
+                    help="kinovea-pack 產生的 key 檔（預設在標註包旁邊的 <資料夾名>-key/key.csv）")
+    kn.add_argument("--sheets", type=Path, nargs="*", default=[],
+                    help="標註者交回的 rating_sheet.csv 或放它們的資料夾。沒有的話印「沒有標註檔」")
+    kn.add_argument("--out", type=Path, default=None,
+                    help="把報告與逐張 CSV 寫到這個資料夾")
+    kn.add_argument("--bootstrap", type=int, default=None,
+                    help="相關係數信賴區間的 bootstrap 次數（受試者至少 5 位才給區間）")
+
     # 正側面參考：手機的影片或圖片，要載入姿態模型但不開雙目相機。
     pr = sub.add_parser("profile-ref",
                         help="手機正側 90° 的影片或圖片，算 θ_CA 的獨立參考值，不需要雙目相機")
@@ -2509,6 +2561,7 @@ def main() -> None:
     # analyse 與 cohort 只讀 CSV，標定檔與相機的檢查對它們都不適用。
     offline = {"analyse": _run_analyse, "cohort": _run_cohort,
                "rating-pack": _run_rating_pack, "ratings": _run_ratings,
+               "kinovea-pack": _run_kinovea_pack, "kinovea": _run_kinovea,
                "profile-ref": _run_profile_ref}
     if args.mode in offline:
         offline[args.mode](args)

@@ -123,11 +123,15 @@ def _evenly(items: list, limit: int) -> list:
 
 
 def find_items(paths: list[Path], per_segment: int = 0,
-               allow_overlay: bool = False) -> tuple[list[PackItem], list[str], list[str]]:
+               allow_overlay: bool = False, include=None,
+               kendall: bool = True) -> tuple[list[PackItem], list[str], list[str]]:
     """找出所有要匯出的圖。回傳 (圖, 略過的段落說明, 用了疊加版的段落)。
 
     沒有原圖而且沒允許疊加版時，丟出錯誤並列出全部缺原圖的段落，
     不要只匯出一部分讓人以為收齊了。
+
+    include 是一個函式，吃 CSV 標頭的 meta 字典，回傳 False 的段落整段不看
+    （Kinovea 標註包只要側傾段）；kendall=False 不收 Kendall 照片。
     """
     csvs: list[Path] = []
     for path in paths:
@@ -140,6 +144,8 @@ def find_items(paths: list[Path], per_segment: int = 0,
     skipped, overlay, missing_raw = [], [], []
     for csv_path in sorted(set(csvs)):
         meta = read_meta(csv_path)
+        if include is not None and not include(meta):
+            continue
         subject = meta.get("subject") or csv_path.parent.name
         segment = f"{csv_path.parent.name}/{csv_path.name}"
         base = dict(subject=subject, trip_id=meta.get("trip_id", ""),
@@ -164,10 +170,10 @@ def find_items(paths: list[Path], per_segment: int = 0,
         found.sort(key=lambda f: f[0])
         for _, image, parsed in _evenly(found, per_segment):
             items.append(PackItem(source=image, kind="snapshot", **base, **parsed))
-        kendall = csv_path.with_name(f"{csv_path.stem}-kendall")
+        kendall_dir = csv_path.with_name(f"{csv_path.stem}-kendall")
         photos = []
-        if kendall.is_dir():
-            photos = sorted(p for p in kendall.iterdir()
+        if kendall and kendall_dir.is_dir():
+            photos = sorted(p for p in kendall_dir.iterdir()
                             if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES)
             for photo in photos:
                 items.append(PackItem(source=photo, kind="kendall", **base))
@@ -311,7 +317,8 @@ def default_key_path(out_dir: Path) -> Path:
 
 def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
                sheet_columns: list[str] | None = None,
-               seed: int | None = None, key_path: Path | None = None) -> PackResult:
+               seed: int | None = None, key_path: Path | None = None,
+               readme: str | None = None) -> PackResult:
     """寫出盲評包。out_dir 必須不存在或是空的，免得新舊兩批混在一起。
 
     out_dir 底下只有每位評分者一個資料夾，整包交出去也不會帶到 key；
@@ -395,7 +402,7 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
             writer = csv.DictWriter(handle, fieldnames=columns)
             writer.writeheader()
             writer.writerows(rows)
-        (folder / "README.txt").write_text(_RATER_README, encoding="utf-8")
+        (folder / "README.txt").write_text(readme or _RATER_README, encoding="utf-8")
 
     return PackResult(out_dir=out_dir, items=len(items), raters=list(raters), key_path=key_path,
                       adjacent_same_subject=adjacent,
