@@ -16,6 +16,9 @@ third_party/
 # 逐幀記錄、快照與個人基準。快照是左眼原始畫面，裡面有受試者的臉，
 # 而這個 repo 是 public；從 Jetson 拷回來的檔案不能跟著進版控。
 data/sessions/
+# 順序分組的登記檔，裡面是受試者代號，不進 public repo。
+data/order_groups.csv
+data/kinovea/
 data/baselines/
 # run-plan 當場作廢的段落搬到 <out-dir>-discarded/，同樣有受試者的臉。
 data/sessions-discarded/
