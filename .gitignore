@@ -40,3 +40,5 @@ data/check*/
 
 # run-plan 的畫面紀錄（script 錄下來給遠端旁觀），含受試者代號，不進 public repo。
 data/logs/
+data/csv-from-mina/
+data/sessions-from-mina/
