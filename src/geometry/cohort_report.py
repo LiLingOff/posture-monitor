@@ -322,7 +322,8 @@ def separation_sensitivity_text(separation: Separation, cohort: Cohort) -> str:
 
 
 def to_text(cohort: Cohort, separation: Separation | None,
-            rows: list[dict] | None = None, groups: dict | None = None) -> str:
+            rows: list[dict] | None = None, groups: dict | None = None,
+            order_groups: dict | None = None) -> str:
     rows = session_rows(cohort) if rows is None else rows
     parts = [
         "量測結果彙整",
@@ -343,7 +344,7 @@ def to_text(cohort: Cohort, separation: Separation | None,
                   separation_text(separation, cohort)]
         if separation.per_subject:
             parts += ["", separation_sensitivity_text(separation, cohort)]
-    for title, text in trip_sections(cohort.sessions, groups):
+    for title, text in trip_sections(cohort.sessions, groups, order_groups):
         parts += ["", _heading(title), text]
     return "\n".join(parts) + "\n"
 

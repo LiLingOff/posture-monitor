@@ -1448,7 +1448,8 @@ def _run_cohort(args) -> None:
     # 過它所有的幀，重建三次就是三倍的工，而這個指令的用途正是吃一整個資料夾。
     rows = session_rows(cohort)
     groups = _subject_groups(args)
-    report = to_text(cohort, separation, rows, groups)
+    order_groups = _order_groups(args)
+    report = to_text(cohort, separation, rows, groups, order_groups)
     print(report)
 
     if args.out is not None:
@@ -1456,7 +1457,7 @@ def _run_cohort(args) -> None:
         (args.out / "cohort.txt").write_text(report, encoding="utf-8")
         (args.out / "cohort.csv").write_text(to_csv(rows), encoding="utf-8")
         print(f"已寫到 {args.out / 'cohort.txt'} 與 {args.out / 'cohort.csv'}")
-        _write_trip_csvs(args.out, cohort.sessions, groups)
+        _write_trip_csvs(args.out, cohort.sessions, groups, order_groups)
 
 
 def _subject_groups(args) -> dict | None:
@@ -1470,9 +1471,30 @@ def _subject_groups(args) -> dict | None:
         raise SystemExit(f"--subject-groups 讀不進來：{exc}")
 
 
-def _write_trip_csvs(out: Path, summaries, groups=None) -> None:
+def _order_groups(args) -> dict | None:
+    """順序組別的登記檔。標頭沒有 order_group 的舊檔（1123 那幾位）靠它補。
+
+    --order-groups 明確給了就用它；沒給時，每個資料夾路徑的上一層找 order_groups.csv
+    （data/sessions 的話就是 data/order_groups.csv），找不到就算了，只看標頭。
+    """
+    explicit = getattr(args, "order_groups", None)
+    try:
+        if explicit is not None:
+            if not Path(explicit).exists():
+                raise SystemExit(f"--order-groups 找不到 {explicit}")
+            return read_order_groups(explicit)
+        for path in args.paths:
+            candidate = Path(path).parent / "order_groups.csv"
+            if Path(path).is_dir() and candidate.exists():
+                return read_order_groups(candidate)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"順序分組登記檔讀不進來：{exc}")
+    return None
+
+
+def _write_trip_csvs(out: Path, summaries, groups=None, order_groups=None) -> None:
     """配對差值、側傾、表4 比值各一份 CSV，給迴歸與報告用。沒有資料的不寫。"""
-    for name, text in trip_csvs(summaries, groups).items():
+    for name, text in trip_csvs(summaries, groups, order_groups).items():
         (out / name).write_text(text, encoding="utf-8")
         print(f"已寫到 {out / name}")
 
@@ -2159,6 +2181,10 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--out", type=Path, default=None,
                     help="把報告與 CSV 寫到這個資料夾。不給就只印出來。"
                          "要放進報告的表格從 CSV 匯入")
+    ch.add_argument("--order-groups", type=Path, default=None,
+                    help="順序組別的登記檔（run-plan 自己維護的 data/order_groups.csv）。"
+                         "新資料的標頭已經有組別；沒給時會在資料夾的上一層自動找，"
+                         "標頭沒有組別的舊檔靠它補")
     ch.add_argument("--subject-groups", type=Path, default=None,
                     help="受試者分組表（CSV，欄位 subject,group），表4 依身高層"
                          "分組報告時用。不給就全部歸未分組")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 from io import StringIO
 
+from .order_effect import order_csv, order_effect, order_text
 from .terminal import cell, display_width, with_error
 from .trips import (AXIS_LIMITS, FORWARD_QUANTITIES, NATURAL_QUANTITIES,
                     SENSITIVITY_LIMITS, TILT_DRIFT_WARN_DEG, UNPAIRED, VOID,
@@ -387,7 +388,7 @@ def _is_forward(condition: str) -> bool:
     return condition == "forward"
 
 
-def trip_sections(summaries, groups=None) -> list[tuple[str, str]]:
+def trip_sections(summaries, groups=None, order_groups=None) -> list[tuple[str, str]]:
     """(標題, 內文) 的清單，沒有資料的部分不列。"""
     out = []
     natural = paired_differences(summaries, is_natural, NATURAL_QUANTITIES)
@@ -409,10 +410,13 @@ def trip_sections(summaries, groups=None) -> list[tuple[str, str]]:
     ratios = ratio_rows(summaries)
     if ratios:
         out.append(("表4：方位角比值", ratio_text(ratios, groups)))
+    order = order_effect(summaries, order_groups)
+    if order is not None:
+        out.append(("順序效應（A 組減 B 組）", order_text(order)))
     return out
 
 
-def trip_csvs(summaries, groups=None) -> dict[str, str]:
+def trip_csvs(summaries, groups=None, order_groups=None) -> dict[str, str]:
     """檔名 → CSV 內容。沒有資料的不產生。"""
     out = {}
     natural = paired_differences(summaries, is_natural, NATURAL_QUANTITIES)
@@ -427,4 +431,7 @@ def trip_csvs(summaries, groups=None) -> dict[str, str]:
     ratios = ratio_rows(summaries)
     if ratios:
         out["azimuth_ratio.csv"] = ratio_csv(ratios, groups)
+    order = order_effect(summaries, order_groups)
+    if order is not None:
+        out["order_effect.csv"] = order_csv(order)
     return out
