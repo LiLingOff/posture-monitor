@@ -24,7 +24,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-11-24 是 1123 個
+python -m pytest -q          # 2026-11-24 是 1134 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 

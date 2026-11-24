@@ -17,7 +17,9 @@ import csv
 import json
 import random
 import shutil
+import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -549,6 +551,15 @@ def trip_progress(plan: Plan, segments) -> list[TripProgress]:
     return out
 
 
+def next_trips(progress: list[TripProgress]) -> tuple[list[str], list[str], list[str]]:
+    """還要做的趟：(沒做完的, 做完但建議重量的, 兩者合起來照計畫順序)。"""
+    todo = [p.trip.trip_id for p in progress if not p.done]
+    redo = [p.trip.trip_id for p in progress if p.done and p.high_skip]
+    both = [p.trip.trip_id for p in progress
+            if p.trip.trip_id in todo or p.trip.trip_id in redo]
+    return todo, redo, both
+
+
 def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
                  command: str) -> list[str]:
     """同一個代號已經有資料時印給操作者看的話，含下一步可以照打的指令。
@@ -568,15 +579,12 @@ def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
             state += f"；{'、'.join(p.high_skip)}，建議整趟重量"
         lines.append(f"  ・{name}：{state}")
 
-    todo = [p.trip.trip_id for p in progress if not p.done]
-    redo = [p.trip.trip_id for p in progress if p.done and p.high_skip]
+    todo, redo, both = next_trips(progress)
     lines.append("")
     if todo:
         lines.append("只補還沒做完的：")
         lines.append(f"  {command} --trips {','.join(todo)}")
     if redo:
-        both = [p.trip.trip_id for p in progress
-                if p.trip.trip_id in todo or p.trip.trip_id in redo]
         lines.append("連建議重量的一起做：")
         lines.append(f"  {command} --trips {','.join(both)}")
     if not todo and not redo:
@@ -587,6 +595,88 @@ def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
         lines.append("自然坐已經量過，那一趟非必要不要重量：受試者知道流程後就不算自然坐了。")
     lines.append("如果其實是另一位受試者，換一個沒用過的代號。")
     return lines
+
+
+# ---- 受試者列表（`posture.py subjects`，2026-11-24）---------------------------
+
+@dataclass(frozen=True)
+class SubjectRow:
+    subject: str
+    group: str
+    segments: tuple           # ExistingSegment，這位受試者資料夾裡已有的段落
+    last_measured: datetime | None = None
+
+
+def _width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - _width(text))
+
+
+def _trip_state(p: TripProgress) -> str:
+    if not p.started:
+        return "未做"
+    if not p.done:
+        return "未完"
+    return "重量" if p.high_skip else "完成"
+
+
+def subjects_text(plan: Plan, rows: Sequence[SubjectRow],
+                  unregistered: Sequence[str] = (), command: str | None = None) -> str:
+    """每位受試者每一趟做到哪裡，加上下一步可以照打的指令。
+
+    欄位照計畫檔（A 組）的趟序；B 組的人先換成他自己的順序再算進度，
+    段落身分（tilt-left@10）才對得上，顯示時再按 A 組的欄位擺。
+    「完成」只看段落在不在與略過率，不看轉身作廢；那要比對同趟的參考方位角，
+    是 cohort 才算的，所以最後一行提醒以 cohort 為準。
+    """
+    command = command or "python posture.py run-plan"
+    counts = {}
+    for row in rows:
+        counts[row.group] = counts.get(row.group, 0) + 1
+    people = "、".join(f"{g} 組 {n} 人" for g, n in sorted(counts.items())) or "沒有人"
+    lines = [f"受試者列表（計畫：{plan.name}；{people}）", ""]
+    if not rows:
+        lines.append("data 裡還沒有登記組別的受試者。")
+    columns = [t.trip_id for t in plan.trips]
+    titles = {t.trip_id: t.title.split("：")[0] for t in plan.trips}
+    header = ["代號", "組別", *[titles[c] for c in columns], "最後量測", "備註"]
+    table, todo_lines = [], []
+    for row in rows:
+        progress = trip_progress(plan_for_order(plan, row.group), row.segments)
+        by_id = {p.trip.trip_id: p for p in progress}
+        notes = []
+        for p in progress:
+            if p.started and not p.done:
+                notes.append(f"{p.trip.trip_id} 缺 {'、'.join(p.missing)}")
+            notes.extend(p.high_skip)
+        when = row.last_measured.strftime("%m-%d %H:%M") if row.last_measured else "—"
+        table.append([row.subject, row.group, *[_trip_state(by_id[c]) for c in columns],
+                      when, "；".join(notes)])
+        todo, redo, _both = next_trips(progress)
+        if todo:
+            todo_lines.append(
+                f"  {row.subject}  {command} --subject {row.subject} --trips {','.join(todo)}")
+        if redo:
+            todo_lines.append(
+                f"  {row.subject}  另有略過率偏高、建議重量的趟：{'、'.join(redo)}"
+                "（自然坐那一趟非必要不要重量）")
+    if table:
+        widths = [max(_width(r[i]) for r in [header, *table]) for i in range(len(header))]
+        for r in [header, *table]:
+            lines.append("  ".join(_pad(cell, widths[i]) for i, cell in enumerate(r)).rstrip())
+    if todo_lines:
+        lines += ["", "下一步（只補還沒做完的，照打就好）："]
+        lines += todo_lines
+    elif table:
+        lines += ["", "每位登記的受試者每一趟都做完了。"]
+    if unregistered:
+        lines += ["", "沒有登記組別的資料夾（多半是測試資料，不列入）："
+                  + "、".join(unregistered)]
+    lines += ["", "「完成」只看段落在不在與略過率，轉身作廢要看 cohort 的報告。"]
+    return "\n".join(lines)
 
 
 # ---- 順序效應：分組與登記（2026-11-24）--------------------------------------

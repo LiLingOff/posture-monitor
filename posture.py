@@ -91,11 +91,13 @@ from geometry.preflight import (FrameProbe, git_items,  # noqa: E402
 from geometry.preflight import Item as PreflightItem  # noqa: E402
 from geometry.preflight import all_clear as preflight_clear  # noqa: E402
 from geometry.run_plan import (MAX_REDO_PER_SEGMENT, ExistingSegment,  # noqa: E402
-                               assign_order, check_segment, describe_offset,
-                               discard_segment, estimated_minutes, load_plan,
-                               parse_offset, plan_for_order, read_order_groups,
+                               SubjectRow, assign_order, check_segment,
+                               describe_offset, discard_segment,
+                               estimated_minutes, load_plan, parse_offset,
+                               plan_for_order, read_order_groups,
                                register_order_group, resume_lines,
-                               select_trips, trip_argv, trip_progress)
+                               select_trips, subjects_text, trip_argv,
+                               trip_progress)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -1984,6 +1986,35 @@ def _existing_segments(folder: Path) -> list[ExistingSegment]:
     return out
 
 
+def _run_subjects(args) -> None:
+    """列出每位受試者量到哪裡。只讀檔，不開相機，實機正在量的時候也能跑。"""
+    try:
+        plan = load_plan(args.plan)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    root = Path(args.out_dir)
+    try:
+        registry = read_order_groups(_order_registry_path(args))
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    folders = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    rows, unregistered = [], []
+    for folder in folders:
+        group = registry.get(folder.name)
+        if len(plan.groups) == 1:
+            group = plan.groups[0]
+        if group not in plan.groups:
+            unregistered.append(folder.name)
+            continue
+        stamps = [p.stat().st_mtime for p in folder.glob("*.csv")]
+        last = datetime.fromtimestamp(max(stamps)) if stamps else None
+        rows.append(SubjectRow(folder.name, group, tuple(_existing_segments(folder)), last))
+    command = "python posture.py run-plan"
+    if Path(args.plan) != Path("plans/selftest.json"):
+        command = f"python posture.py run-plan {args.plan}"
+    print(subjects_text(plan, rows, unregistered, command))
+
+
 def _run_plan_body(args) -> None:
     try:
         plan = load_plan(args.plan)
@@ -2293,6 +2324,13 @@ def build_parser() -> argparse.ArgumentParser:
     kn.add_argument("--bootstrap", type=int, default=None,
                     help="相關係數信賴區間的 bootstrap 次數（受試者至少 5 位才給區間）")
 
+    sj = sub.add_parser("subjects",
+                        help="列出每位受試者的組別與每一趟做到哪裡，不需要相機")
+    sj.add_argument("plan", type=Path, nargs="?", default=Path("plans/selftest.json"),
+                    help="計畫檔（JSON）。不給就用 plans/selftest.json")
+    sj.add_argument("--out-dir", type=Path, default=Path("data/sessions"),
+                    help="受試者資料夾所在的位置，組別登記檔在它的上一層")
+
     # 正側面參考：手機的影片或圖片，要載入姿態模型但不開雙目相機。
     pr = sub.add_parser("profile-ref",
                         help="手機正側 90° 的影片或圖片，算 θ_CA 的獨立參考值，不需要雙目相機")
@@ -2562,7 +2600,7 @@ def main() -> None:
     offline = {"analyse": _run_analyse, "cohort": _run_cohort,
                "rating-pack": _run_rating_pack, "ratings": _run_ratings,
                "kinovea-pack": _run_kinovea_pack, "kinovea": _run_kinovea,
-               "profile-ref": _run_profile_ref}
+               "subjects": _run_subjects, "profile-ref": _run_profile_ref}
     if args.mode in offline:
         offline[args.mode](args)
         return
