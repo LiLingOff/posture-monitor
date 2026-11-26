@@ -2009,6 +2009,12 @@ def _run_subjects(args) -> None:
         stamps = [p.stat().st_mtime for p in folder.glob("*.csv")]
         last = datetime.fromtimestamp(max(stamps)) if stamps else None
         rows.append(SubjectRow(folder.name, group, tuple(_existing_segments(folder)), last))
+    # 分了組但一段都沒量到的人（開跑後中斷）沒有資料夾。分組平衡算得到他，
+    # 列表漏掉的話人數會對不起來。
+    listed = {f.name for f in folders}
+    rows += [SubjectRow(name, group, ()) for name, group in registry.items()
+             if name not in listed and group in plan.groups]
+    rows.sort(key=lambda r: r.subject)
     command = "python posture.py run-plan"
     if Path(args.plan) != Path("plans/selftest.json"):
         command = f"python posture.py run-plan {args.plan}"

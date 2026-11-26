@@ -137,3 +137,16 @@ def test_a_bad_plan_file_is_a_plain_message(tmp_path):
     bad.write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit):
         posture._run_subjects(SimpleNamespace(plan=bad, out_dir=tmp_path))
+
+
+def test_a_registered_subject_with_no_folder_is_still_listed(tmp_path, capsys):
+    # 2026-11-26 的 411348：分到 B 組、開跑後中斷，沒有任何量測檔。
+    sessions = tmp_path / "data" / "sessions"
+    _folder(sessions, "1123", ["natural-1.csv"])
+    (tmp_path / "data" / "order_groups.csv").write_text(
+        "subject,group\n1123,A\n411348,B\n", encoding="utf-8")
+    posture._run_subjects(SimpleNamespace(plan=Path("plans/selftest.json"), out_dir=sessions))
+    out = capsys.readouterr().out
+    assert "A 組 1 人、B 組 1 人" in out
+    assert _line_for(out, "411348").split()[:6] == ["411348", "B", "未做", "未做", "未做", "未做"]
+    assert "--subject 411348 --trips trip1,tiltB,tiltA,trip4" in out
