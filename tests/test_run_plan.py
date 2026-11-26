@@ -53,7 +53,7 @@ def test_the_shipped_plan_matches_the_selftest_manual():
     assert tilt_b.conditions == ("upright", "tilt-left", "tilt-right")
     assert tilt_b.target_angles == (10.0, 30.0)
     assert not tilt_b.optional
-    assert (plan.seconds_each, plan.countdown, plan.snapshot_raw) == (60.0, 20, True)
+    assert (plan.seconds_each, plan.countdown, plan.snapshot_raw) == (60.0, 5, True)
 
 
 def test_each_trip_becomes_a_study_command_the_real_parser_accepts():
@@ -66,7 +66,7 @@ def test_each_trip_becomes_a_study_command_the_real_parser_accepts():
     assert ns.before_baseline == "natural"
     assert ns.conditions == "upright,head-forward,forward,upright"
     assert ns.desk_level == "base" and ns.desk_offset_cm == -3.5
-    assert ns.seconds_each == 60 and ns.countdown == 20 and ns.snapshot_raw
+    assert ns.seconds_each == 60 and ns.countdown == 5 and ns.snapshot_raw
     tilt = plan.trips[2]
     ns = parser.parse_args(["study"] + trip_argv(plan, tilt, "S02", None))
     assert ns.target_angle_deg == "20,20" and ns.desk_offset_cm is None
@@ -105,11 +105,11 @@ def test_a_plan_that_is_not_json_says_which_line(tmp_path):
 def test_the_time_estimate_counts_baseline_and_protractor():
     plan = load_plan(PLAN)
     trip1, trip4, tilt, tilt_b = plan.trips
-    # 趟 1：5 段 × 90 秒 + 基準 50 秒 = 500 秒
-    assert estimated_minutes(plan, trip1) == pytest.approx(500 / 60)
-    # 側傾 A：3 段 × 90 + 50 + 2 段量角器 × 60 = 440 秒
-    assert estimated_minutes(plan, tilt) == pytest.approx(440 / 60)
-    assert estimated_minutes(plan, tilt_b) == pytest.approx(440 / 60)
+    # 趟 1：5 段 × 90 秒 + 基準 35 秒 = 485 秒
+    assert estimated_minutes(plan, trip1) == pytest.approx(485 / 60)
+    # 側傾 A：3 段 × 90 + 35 + 2 段量角器 × 60 = 425 秒
+    assert estimated_minutes(plan, tilt) == pytest.approx(425 / 60)
+    assert estimated_minutes(plan, tilt_b) == pytest.approx(425 / 60)
 
 
 # ---- 當場檢查 ----------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "name": "核心包：趟 1、趟 4、側傾 A、側傾 B",
   "seconds_each": 60,
-  "countdown": 20,
+  "countdown": 5,
   "baseline_seconds": 30,
   "snapshot_raw": true,
   "notes": [
