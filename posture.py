@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import csv
 import io
+import math
 import random
 import re
 import shutil
@@ -413,6 +414,7 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
     session = Session()
     azimuths: list[float] = []
     stuck = StuckWatcher()
+    interrupted = False
 
     try:
         # 結束旗標放在條件裡而不是迴圈裡 break：它同時涵蓋正常路徑與下面那個
@@ -510,17 +512,19 @@ def _record(engine, calib, cap, args, baseline, log, snapshots,
                 ka=ka, ka_mean=ka_window.mean,
             )
     except KeyboardInterrupt:
-        pass
+        interrupted = True
 
     if display.stopped:
         # 不記的話，總結只會看到一段莫名其妙的短記錄。
         transitions.append(f"{_elapsed(started_at)}  按鍵結束這一段")
+        interrupted = interrupted or (
+            seconds is not None and time.perf_counter() - started_at < seconds)
 
     return Recording(
         session=session, ca_window=ca_window, sym_window=sym_window,
         rejected=rejected, frames=frames_seen, transitions=transitions,
         camera_lost=lost, log_path=None if log is None else log.path,
-        azimuths=azimuths,
+        azimuths=azimuths, interrupted=interrupted,
     )
 
 
@@ -1050,6 +1054,8 @@ def _study_trip(engine, calib, cap, args, display=NO_DISPLAY, check=None,
             if reopens >= _STUDY_REOPEN_BUDGET:
                 print(f"這一趟相機已經掉了 {reopens + 1} 次，剩下的段落不量了。"
                       "這是硬體的問題，先跑 dmesg | tail -40 看核心怎麼說", flush=True)
+                cap.release()
+                cap = None
                 break
             cap.release()
             cap = _reopen_camera(args, calib=calib)
@@ -1316,7 +1322,10 @@ def _ask_tilt_angle(question: str, args) -> float | None:
             print("  量角器的數字一定要填，請量完再輸入", flush=True)
             continue
         try:
-            return abs(float(answer))
+            value = abs(float(answer))
+            if not math.isfinite(value):
+                raise ValueError(answer)
+            return value
         except ValueError:
             print(f"  {answer!r} 不是數字，請再輸入一次", flush=True)
 
@@ -1756,6 +1765,13 @@ _NO_KEYBOARD = ("讀不到鍵盤輸入，桌面減手肘或量角器沒辦法填
 _SUBJECT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
+def _check_subject(args) -> None:
+    """去掉前後空白並檢查代號。任何用代號組路徑的動作之前都要先過這一關。"""
+    args.subject = (args.subject or "").strip()
+    if not _SUBJECT_PATTERN.fullmatch(args.subject):
+        raise SystemExit("--subject 要是一個代號，例如 S02，只能用英文、數字、底線、連字號")
+
+
 def _plan_trip_args(parser, args, plan, trip, offset, order_group=None):
     """把計畫的一趟組成 study 的 args。用同一個 parser，預設值只有一處。"""
     ns = parser.parse_args(["study"] + trip_argv(plan, trip, args.subject, offset,
@@ -1823,13 +1839,17 @@ def _plan_checker(args):
         reviews = review(recordings, baseline)
         segment = reviews[-1]
         result = check_segment(segment, first_upright_after_baseline=first_upright)
-        if result.ok and first_upright:
+        problems = list(result.problems)
+        # 提早結束的段幀數不夠，略過率再好看也不能當成量完。
+        if recording.interrupted:
+            problems.insert(0, "這一段提早結束，沒有量滿時間")
+        if not problems and first_upright:
             _warn_turned_before(recordings[:-1], reviews[:-1])
-        if result.ok:
+        if not problems:
             print("  當場檢查：通過", flush=True)
             return "keep"
         print("  當場檢查：沒過", flush=True)
-        for problem in result.problems:
+        for problem in problems:
             print(f"   - {problem}", flush=True)
         # 重量時舊檔搬走，編號會沿用，所以 (條件, 編號) 認得出是同一段。
         key = (recording.condition, recording.trial)
@@ -1913,6 +1933,7 @@ def _run_plan(args) -> None:
     if args.dry_run:
         _run_plan_body(args)
         return
+    _check_subject(args)
     with _tee_stdout(Path(args.out_dir).parent / "logs" / f"{args.subject}.log"):
         _run_plan_body(args)
 
@@ -1953,6 +1974,10 @@ def _decide_order_group(args, plan, existing) -> tuple[str | None, bool]:
                              "同一個人前後用不同順序量，分組比較就不準了")
         return registered, False
     if given is not None:
+        # 全新的人由程式分派：操作者知道受試者是誰，讓人選就有偏誤。
+        if not existing and not getattr(args, "dry_run", False):
+            raise SystemExit(f"--order-group 只給已經量過、還沒登記的人補登記用；"
+                             f"{args.subject} 還沒有資料，拿掉這個參數讓程式分派")
         return given, True
     if existing:
         raise SystemExit(
@@ -1978,18 +2003,20 @@ def _existing_segments(folder: Path) -> list[ExistingSegment]:
         rate = None
         target = None
         desk = None
+        trip_id = None
         try:
             summary = analyse_session(path)
             if summary.frames:
-                rate = 1.0 - summary.usable / summary.frames
+                rate = (summary.frames - summary.usable) / summary.frames
             raw = summary.meta.get("target_angle_deg")
             target = float(raw) if raw not in (None, "") else None
             desk = summary.meta.get("desk_level") or None
+            trip_id = summary.meta.get("trip_id") or None
         except Exception:
             # 讀壞的檔一樣算「有這一段」，只是不知道略過率、目標角度與桌面條件。
             pass
         out.append(ExistingSegment(match["condition"], int(match["trial"]), rate,
-                                   target, desk))
+                                   target, desk, trip_id))
     return out
 
 
@@ -2033,9 +2060,7 @@ def _run_plan_body(args) -> None:
         plan = load_plan(args.plan)
     except ValueError as exc:
         raise SystemExit(str(exc))
-    args.subject = (args.subject or "").strip()
-    if not _SUBJECT_PATTERN.fullmatch(args.subject):
-        raise SystemExit("--subject 要是一個代號，例如 S02，只能用英文、數字、底線、連字號")
+    _check_subject(args)
     parser = build_parser()
     existing = _existing_segments(Path(args.out_dir) / args.subject)
     group, new_group = _decide_order_group(args, plan, existing)
@@ -2059,6 +2084,9 @@ def _run_plan_body(args) -> None:
         command = f"python posture.py run-plan --subject {args.subject}"
         if Path(args.plan) != Path("plans/selftest.json"):
             command = f"python posture.py run-plan {args.plan} --subject {args.subject}"
+        if new_group:
+            # 這次還沒登記，照抄的指令少了組別會停在「還沒登記」。
+            command += f" --order-group {group}"
         print()
         _print_lines(resume_lines(plan, trip_progress(plan, existing),
                                   args.subject, command))
@@ -2102,6 +2130,7 @@ def _run_plan_body(args) -> None:
     display = NO_DISPLAY
     logs = []
     done = []
+    stopped_at = None
     try:
         display = _open_display(args)
         _plan_preflight(engine, calib, cap, args)
@@ -2133,17 +2162,23 @@ def _run_plan_body(args) -> None:
             _study_summary(recordings, ns, baseline)
             logs += [r.log_path for r, seg in zip(recordings, review(recordings, baseline))
                      if seg.usable_data]
-            done.append(trip.title)
             if cap is None:
-                print("相機找不到了，今天先停在這裡。", flush=True)
+                stopped_at = trip.title
+                print("相機不能用了，今天先停在這裡。", flush=True)
                 break
+            done.append(trip.title)
     finally:
         display.close()
         if cap is not None:
             cap.release()
 
     print("\n" + "=" * 60, flush=True)
-    print(f"{args.subject} 量完了：{'、'.join(done) or '沒有完成任何一趟'}", flush=True)
+    if stopped_at is None:
+        print(f"{args.subject} 量完了：{'、'.join(done) or '沒有完成任何一趟'}", flush=True)
+    else:
+        print(f"{args.subject} 沒有量完，中斷在「{stopped_at}」。"
+              f"量完的趟：{'、'.join(done) or '沒有'}", flush=True)
+        print("補量前先跑 python posture.py subjects 看缺哪幾趟。", flush=True)
     _plan_analyse(parser, args, logs)
     print("\n接下來：", flush=True)
     print(f"  下一位受試者：python posture.py run-plan {args.plan} --subject <下一個代號>")

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import random
 import shutil
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from dataclasses import dataclass, field, replace
@@ -202,6 +204,10 @@ def _parse_orders(raw, trips: list[PlanTrip]) -> tuple[tuple[str, tuple[PlanTrip
             if unknown:
                 raise ValueError(f"{where} 的 {label} 有計畫裡沒有的趟次：{'、'.join(unknown)}")
             tables[label] = table
+        for position, base in enumerate(trips):
+            if base.before and ids[position] != base.trip_id:
+                raise ValueError(f"{where} 不能移動有自然坐的趟次 {base.trip_id}："
+                                 f"自然坐要在任何坐姿指示之前量")
         new_trips = []
         for trip_id in ids:
             base = by_id[trip_id]
@@ -426,9 +432,10 @@ def parse_offset(text: str) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        value = float(text)
     except ValueError:
         return None
+    return value if math.isfinite(value) else None
 
 
 def describe_offset(value: float) -> str:
@@ -473,6 +480,8 @@ class ExistingSegment:
     target_angle: float | None = None
     # 標頭裡的 desk_level。自然坐按桌面條件分開算。
     desk_level: str | None = None
+    # 標頭裡的 trip_id。同一趟的段共用一個，用來認 upright 是哪一趟量的。
+    trip_id: str | None = None
 
 
 def segment_key(condition: str, target: float | None) -> str:
@@ -532,6 +541,23 @@ class TripProgress:
         return bool(self.present)
 
 
+def _missing_shared(trip: PlanTrip, own, latest, segments) -> tuple[str, ...]:
+    """各趟共用的段（端正坐）有沒有少。只算和這一趟獨有段同一個 trip_id 的。
+
+    趟 1 收尾的端正坐之前中斷的話，獨有的段都在，光看它們會報「完成」。
+    自然坐重量時不再量，會留在舊的 trip_id，所以不拿它認趟次。舊檔沒有
+    trip_id 就認不出來，照原本的判法。
+    """
+    ids = {latest[k].trip_id for k in own
+           if not is_natural(k) and latest[k].trip_id}
+    if not ids:
+        return ()
+    have = Counter(segment_key(s.condition, s.target_angle)
+                   for s in segments if s.trip_id in ids)
+    need = Counter(k for k in _all_keys(trip) if k not in own)
+    return tuple(_label(k) for k in need if have[k] < need[k])
+
+
 def trip_progress(plan: Plan, segments) -> list[TripProgress]:
     """每一趟做到哪裡。同一種姿勢量過好幾次時看最新的那一次。"""
     latest: dict[str, ExistingSegment] = {}
@@ -544,6 +570,8 @@ def trip_progress(plan: Plan, segments) -> list[TripProgress]:
         own = _own_keys(plan, trip)
         present = tuple(_label(k) for k in own if k in latest)
         missing = tuple(_label(k) for k in own if k not in latest)
+        if not missing:
+            missing = _missing_shared(trip, own, latest, segments)
         high = tuple(
             f"{_label(k)} #{latest[k].trial} 略過 {latest[k].rejection_rate:.0%}"
             for k in own
@@ -674,7 +702,7 @@ def subjects_text(plan: Plan, rows: Sequence[SubjectRow],
         todo, redo, _both = next_trips(progress)
         if todo:
             todo_lines.append(
-                f"  {row.subject}  {command} --subject {row.subject} --trips {','.join(todo)}")
+                f"  {command} --subject {row.subject} --trips {','.join(todo)}")
         if redo:
             todo_lines.append(
                 f"  {row.subject}  另有略過率偏高、建議重量的趟：{'、'.join(redo)}"
@@ -738,7 +766,11 @@ def register_order_group(path: Path, subject: str, group: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.exists() and path.stat().st_size > 0
     needs_newline = False
+    columns = ["subject", "group"]
     if existing:
+        # 手寫的登記檔欄序可能相反，照它的標頭寫，否則讀回來人與組會對調。
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            columns = next(csv.reader(handle), columns)
         with path.open("rb") as handle:
             handle.seek(-1, 2)
             needs_newline = handle.read(1) not in (b"\n", b"\r")
@@ -747,5 +779,6 @@ def register_order_group(path: Path, subject: str, group: str) -> None:
             handle.write("\n")
         writer = csv.writer(handle, lineterminator="\n")
         if not existing:
-            writer.writerow(["subject", "group"])
-        writer.writerow([subject, group])
+            writer.writerow(columns)
+        row = {"subject": subject, "group": group}
+        writer.writerow([row.get(name.strip(), "") for name in columns])

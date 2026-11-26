@@ -87,6 +87,8 @@ class Recording:
     azimuths: list = field(default_factory=list)
     # study 的 --before-baseline 段落（取基準之前量、不扣基準）。
     before_baseline: bool = False
+    # 固定秒數的段落時間還沒到就被 Ctrl-C 或按鍵結束。`run-plan` 的當場檢查靠它。
+    interrupted: bool = False
 
     @property
     def rejection_rate(self) -> float:

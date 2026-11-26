@@ -330,8 +330,12 @@ def _plan_args(tmp_path, plan_path=None, **overrides):
         repo_dir=Path("r"), min_confidence=0.0, input_height=256, no_subpixel=False,
         display=False, display_width=1280, display_eyes="left", display_lang="en",
         font=None, window=30, all_keypoints=False,
-        order_group="A",              # 固定照 A 組；分派另有測試，不讓亂數影響這些
+        order_group=None,
     )
+    registry = tmp_path / "order_groups.csv"
+    if "order_group" not in overrides and not registry.exists():
+        # 固定照 A 組（先登記好）；分派另有測試，不讓亂數影響這些。
+        registry.write_text("subject,group\nS02,A\n", encoding="utf-8")
     values.update(overrides)
     return SimpleNamespace(**values)
 

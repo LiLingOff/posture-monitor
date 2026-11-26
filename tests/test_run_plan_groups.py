@@ -75,7 +75,7 @@ def test_group_a_keeps_the_order_the_plan_file_has(tmp_path, monkeypatch):
     studio = _Studio()
     _patch(monkeypatch, studio, {"桌面高減手肘高": ["0"], "對嗎": ["y"],
                                  "量角器": list(ANGLES)})
-    posture._run_plan(_plan_args(tmp_path, PLAN, order_group="A"))
+    posture._run_plan(_plan_args(tmp_path, PLAN))
     assert [r[0] for r in studio.records] == [
         "natural-1.csv", "upright-1.csv", "head-forward-1.csv", "forward-1.csv",
         "upright-2.csv", "upright-3.csv", "left-shoulder-up-1.csv",

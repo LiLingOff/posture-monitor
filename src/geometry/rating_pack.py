@@ -315,6 +315,19 @@ def default_key_path(out_dir: Path) -> Path:
     return out_dir.parent / f"{out_dir.name}-key" / "key.csv"
 
 
+def _ignore_key(key_path: Path) -> None:
+    """讓 key 不被 git 收進去。資料夾裡已有 .gitignore 就只補一行，不改寫別人的規則。"""
+    ignore = key_path.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
+        return
+    text = ignore.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if "*" not in lines and key_path.name not in lines:
+        newline = "" if not text or text.endswith("\n") else "\n"
+        ignore.write_text(f"{text}{newline}{key_path.name}\n", encoding="utf-8")
+
+
 def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
                sheet_columns: list[str] | None = None,
                seed: int | None = None, key_path: Path | None = None,
@@ -360,7 +373,7 @@ def write_pack(items: list[PackItem], out_dir: Path, raters: list[str],
     # 兩個資料夾各放一個忽略全部的 .gitignore：放到 data/ 以外也不會被 git 收進
     # 這個 public repo（盲評包有受試者的臉，key 對得回受試者）。
     key_path.parent.mkdir(parents=True, exist_ok=True)
-    (key_path.parent / ".gitignore").write_text("*\n", encoding="utf-8")
+    _ignore_key(key_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / ".gitignore").write_text("*\n", encoding="utf-8")
     with key_path.open("w", newline="", encoding="utf-8") as handle:
