@@ -97,7 +97,7 @@ from geometry.run_plan import (MAX_REDO_PER_SEGMENT, ExistingSegment,  # noqa: E
                                plan_for_order, read_order_groups,
                                register_order_group, resume_lines,
                                select_trips, subjects_text, trip_argv,
-                               trip_progress)
+                               trip_progress, without_measured_natural)
 from geometry.terminal import cell, truncate  # noqa: E402
 from pose.engine import (LightweightOpenPoseEngine,  # noqa: E402
                          LightweightOpenPoseModelPaths)
@@ -1772,7 +1772,8 @@ def _plan_trip_args(parser, args, plan, trip, offset, order_group=None):
     return ns
 
 
-def _plan_header(plan, trip, n: int, group: str | None = None) -> list[str]:
+def _plan_header(plan, trip, n: int, group: str | None = None,
+                 natural_skipped: bool = False) -> list[str]:
     bar = "=" * 60
     segments = list(trip.before) + (["取基準"] if trip.conditions else []) + list(trip.conditions)
     lines = ["", bar, f"  第 {n}/{len(plan.trips)} 趟：{trip.title}",
@@ -1784,7 +1785,12 @@ def _plan_header(plan, trip, n: int, group: str | None = None) -> list[str]:
     if trip.setup:
         lines += ["", "【操作者先做】", trip.setup]
     if trip.subject_does:
-        lines += ["", "【告訴受試者】", trip.subject_does]
+        lines += ["", "【告訴受試者】"]
+        if natural_skipped:
+            # 計畫檔的說明寫的是第一次量的情況，打字那一項這次不適用。
+            lines.append("（這位量過自然坐了，這次不打字：下面講打字的那一項跳過，"
+                         "每一段都看牆上的標記。）")
+        lines.append(trip.subject_does)
     if trip.tilts:
         lines += ["", "【側傾】每一段開始前與量完都要用量角器量，程式會問，一定要輸入數字。"]
     return lines
@@ -1847,16 +1853,15 @@ def _plan_checker(args):
 def _warn_turned_before(recordings, reviews) -> None:
     """自然坐量的當下還沒有同趟端正坐可比，量完第一段端正坐才看得出它有沒有轉身。
 
-    看出來了也不當場重量：自然坐要在「請坐正」之前量，已經念過坐正就不是
-    平常的坐法了。只能提醒操作者，要補就讓受試者休息、起身後整趟重跑
-    （GPT 審查第 3 條，只採提醒）。
+    看出來了也不重量：自然坐要在「請坐正」之前量，已經念過坐正就不是
+    平常的坐法了。只提醒操作者（GPT 審查第 3 條，只採提醒）。2026-11-26 起
+    重跑趟 1 也不再量自然坐，分析只取每人第一次。
     """
     for recording, segment in zip(recordings, reviews):
         if recording.before_baseline and segment.turned_too_far:
             print(f"  注意：{segment.condition} #{segment.trial} 的方位角和這段端正坐差 "
                   f"{segment.turned_deg:+.0f}°，分析時會被判轉身作廢。自然坐不能在"
-                  "請坐正之後補量；要補的話，這一位全部量完、起身休息後，"
-                  "再單獨重跑一次趟 1。", flush=True)
+                  "請坐正之後補量（之後再量的也不算），照常把剩下的量完就好。", flush=True)
 
 
 def _plan_discard_lost(args):
@@ -1972,17 +1977,19 @@ def _existing_segments(folder: Path) -> list[ExistingSegment]:
             continue
         rate = None
         target = None
+        desk = None
         try:
             summary = analyse_session(path)
             if summary.frames:
                 rate = 1.0 - summary.usable / summary.frames
             raw = summary.meta.get("target_angle_deg")
             target = float(raw) if raw not in (None, "") else None
+            desk = summary.meta.get("desk_level") or None
         except Exception:
-            # 讀壞的檔一樣算「有這一段」，只是不知道略過率與目標角度。
+            # 讀壞的檔一樣算「有這一段」，只是不知道略過率、目標角度與桌面條件。
             pass
         out.append(ExistingSegment(match["condition"], int(match["trial"]), rate,
-                                   target))
+                                   target, desk))
     return out
 
 
@@ -2068,6 +2075,16 @@ def _run_plan_body(args) -> None:
             note = "（預演，這次沒有登記）"
         print(f"順序：{args.subject} 是 {group} 組{note}，照 {group} 組的順序量。", flush=True)
 
+    # 量過自然坐的人重量趟 1 時不再量它。拿掉之後什麼都不剩的趟整個不跑。
+    trimmed = [without_measured_natural(t, existing) for t in selected]
+    skipped = {new.trip_id for new, old in zip(trimmed, selected) if new is not old}
+    if skipped:
+        print(f"{args.subject} 已經量過自然坐，{'、'.join(sorted(skipped))} 這次不量自然坐。",
+              flush=True)
+    selected = tuple(t for t in trimmed if t.segments)
+    if not selected:
+        raise SystemExit("要跑的趟次扣掉自然坐之後沒有段落了，不用開相機。")
+
     total = sum(estimated_minutes(plan, t) for t in selected)
     print(f"計畫：{plan.name}　受試者：{args.subject}　共 {len(selected)} 趟，"
           f"約 {total:.0f} 分鐘（不含重量與換人）", flush=True)
@@ -2094,7 +2111,8 @@ def _run_plan_body(args) -> None:
             offset = _ask_desk_offset()
         for n, trip in enumerate(selected, start=1):
             ns = _plan_trip_args(parser, args, plan, trip, offset, group)
-            _print_lines(_plan_header(plan, trip, n, group))
+            _print_lines(_plan_header(plan, trip, n, group,
+                                      natural_skipped=trip.trip_id in skipped))
             if trip.optional:
                 note = f"（{trip.optional_note}）" if trip.optional_note else ""
                 if not _ask_no(f"這一趟可以跳過{note}。要做嗎？"):

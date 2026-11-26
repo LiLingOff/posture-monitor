@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .baseline import REJECTION_LIMIT
-from .study import DESK_LEVELS, TURN_LIMIT_DEG, UPRIGHT, is_tilt
+from .study import DESK_LEVELS, TURN_LIMIT_DEG, UPRIGHT, is_natural, is_tilt
 
 # 取完基準接著量的那段端正坐，扣基準後的 θ_CA 超過這麼多度就建議重取基準。
 # 文件 09「下次量測前」與自測手冊第四節的規則（設計值，沒有實機依據）。
@@ -471,6 +471,8 @@ class ExistingSegment:
     # 側傾段標頭裡的 target_angle_deg。側傾 A（20°）與側傾 B（10°、30°）的檔名
     # 都是 tilt-left／tilt-right，只能靠它分。
     target_angle: float | None = None
+    # 標頭裡的 desk_level。自然坐按桌面條件分開算。
+    desk_level: str | None = None
 
 
 def segment_key(condition: str, target: float | None) -> str:
@@ -551,6 +553,20 @@ def trip_progress(plan: Plan, segments) -> list[TripProgress]:
     return out
 
 
+def without_measured_natural(trip: PlanTrip, segments) -> PlanTrip:
+    """這位受試者在這個桌面條件量過自然坐的話，把這一趟取基準之前的自然坐拿掉。
+
+    第一次之後受試者已經知道流程、聽過「請坐正」，再量到的不是平常的坐法
+    （2026-11-26 411363 重量趟 1 時又量了一次）。分析那邊同樣按桌面條件只取
+    第一次（`trips.repeated_naturals`）。讀不出桌面條件的舊檔當作量過。
+    """
+    if not any(is_natural(s.condition) and s.desk_level in (None, trip.desk_level)
+               for s in segments):
+        return trip
+    before = tuple(c for c in trip.before if not is_natural(c))
+    return trip if before == trip.before else replace(trip, before=before)
+
+
 def next_trips(progress: list[TripProgress]) -> tuple[list[str], list[str], list[str]]:
     """還要做的趟：(沒做完的, 做完但建議重量的, 兩者合起來照計畫順序)。"""
     todo = [p.trip.trip_id for p in progress if not p.done]
@@ -592,7 +608,7 @@ def resume_lines(plan: Plan, progress: list[TripProgress], subject: str,
         lines.append(f"  {command} --trips {plan.trips[-1].trip_id}")
     if any(p.started and any(c.startswith("natural") for c in p.trip.segments)
            for p in progress):
-        lines.append("自然坐已經量過，那一趟非必要不要重量：受試者知道流程後就不算自然坐了。")
+        lines.append("自然坐已經量過，重量那一趟時程式會自動略過它：受試者知道流程後就不算自然坐了。")
     lines.append("如果其實是另一位受試者，換一個沒用過的代號。")
     return lines
 
@@ -662,7 +678,7 @@ def subjects_text(plan: Plan, rows: Sequence[SubjectRow],
         if redo:
             todo_lines.append(
                 f"  {row.subject}  另有略過率偏高、建議重量的趟：{'、'.join(redo)}"
-                "（自然坐那一趟非必要不要重量）")
+                "（重量趟 1 時自然坐會自動略過）")
     if table:
         widths = [max(_width(r[i]) for r in [header, *table]) for i in range(len(header))]
         for r in [header, *table]:

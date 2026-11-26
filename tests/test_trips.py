@@ -119,7 +119,9 @@ def test_the_first_upright_of_the_trip_is_the_reference(tmp_path):
 def test_unpaired_natural_segments_are_listed_with_a_reason(tmp_path):
     folder = tmp_path / "s01"
     _write(folder, "natural-1.csv", condition="natural", trip="T1")
-    _write(folder, "natural-2.csv", condition="natural", trial=2, trip=None)
+    # 另一位受試者：同一人的第二次自然坐會先被判成「重量不算」。
+    _write(tmp_path / "s02", "natural-2.csv", subject="s02", condition="natural", trial=2,
+           trip=None)
     rows = paired_differences(_load(tmp_path))
     reasons = sorted(r.reason for r in rows)
     assert all(not r.paired for r in rows)

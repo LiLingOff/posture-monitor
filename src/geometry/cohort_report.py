@@ -94,6 +94,7 @@ def session_rows(cohort: Cohort) -> list[dict]:
         ca_rate = axis_rejection_rate(summary, "θ_CA")
         sym_rate = axis_rejection_rate(summary, "θ_sym")
         over = None if judgement is None else judgement.share(Posture.OVER.value)
+        repeated = summary.path in cohort.repeated
         rows.append({
             "subject": summary.subject_key,
             "condition": summary.condition_key,
@@ -118,8 +119,8 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "theta_ca_2d_azimuth_deg": None if legacy is None else legacy.azimuth_deg,
             "theta_ca_rejection_rate": ca_rate,
             "theta_sym_rejection_rate": sym_rate,
-            "theta_ca_inclusion": _inclusion(ca_rate, "θ_CA", turn),
-            "theta_sym_inclusion": _inclusion(sym_rate, "θ_sym", turn),
+            "theta_ca_inclusion": _inclusion(ca_rate, "θ_CA", turn, repeated),
+            "theta_sym_inclusion": _inclusion(sym_rate, "θ_sym", turn, repeated),
             "turned_deg": turn,
             "trip_id": summary.meta.get("trip_id"),
             "desk_level": summary.meta.get("desk_level"),
@@ -127,19 +128,26 @@ def session_rows(cohort: Cohort) -> list[dict]:
             "desk_offset_cm": summary.meta.get("desk_offset_cm"),
             "theta_ka_rejection_rate": axis_rejection_rate(summary, "θ_KA"),
             "theta_ka_inclusion": _inclusion(axis_rejection_rate(summary, "θ_KA"),
-                                             "θ_KA", turn),
+                                             "θ_KA", turn, repeated),
         })
     return rows
 
 
-def _inclusion(rate: float, axis: str, turn) -> str:
+_REPEATED = "重量不算"
+
+
+def _inclusion(rate: float, axis: str, turn, repeated: bool = False) -> str:
+    if repeated:
+        return _REPEATED
     if is_turned(turn):
         return VOID
     return NOTED if rate > AXIS_LIMITS[axis] else INCLUDED
 
 
 def _flag(r: dict) -> str:
-    """略過那一格後面的字：作廢、偏高（附註納入），沒事就空的。"""
+    """略過那一格後面的字：重量不算、作廢、偏高（附註納入），沒事就空的。"""
+    if r.get("theta_ca_inclusion") == _REPEATED:
+        return " 重量"
     if r.get("theta_ca_inclusion") == VOID:
         return " 作廢"
     if NOTED in (r.get("theta_ca_inclusion"), r.get("theta_sym_inclusion")):
@@ -184,6 +192,9 @@ def sessions_table(rows: list[dict]) -> str:
         out.append(f"  標「偏高」的是略過率超過分軸上限（θ_CA "
                    f"{AXIS_LIMITS['θ_CA'] * 100:.0f}%、θ_sym {AXIS_LIMITS['θ_sym'] * 100:.0f}%）"
                    f"的段落。照樣列入下面的統計（附註納入），另附 15% 與 20% 的敏感度分析。")
+    if "重量" in flags:
+        out.append("  標「重量」的自然坐不是那位受試者第一次量的（已經知道流程），"
+                   "不列入任何統計。")
     if "作廢" in flags:
         out.append("  標「作廢」的是方位角相對參考值漂了 10° 以上的段落（受試者轉身），"
                    "不列入統計，略過率放寬也不收。")

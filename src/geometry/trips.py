@@ -265,13 +265,40 @@ def _difference(target, reference, quantity: Quantity, turned: bool) -> Differen
     return Difference(float(a.mean() - b.mean()), error, rates, status)
 
 
+REPEATED_NATURAL = "重量的自然坐，受試者已經知道流程，不算"
+
+
+def repeated_naturals(summaries: list[SessionSummary]) -> frozenset:
+    """不算數的自然坐段落（路徑）：每位受試者每個桌面條件只取第一次量的。
+
+    之後再量的，受試者已經聽過「請坐正」，不是平常的坐法（2026-11-26 使用者
+    決定；411024、411363 都重量過趟 1）。第一次那段轉身作廢也不拿第二次頂替。
+    相機掉線的殘段不算第一次。
+    """
+    groups: dict = {}
+    for summary in summaries:
+        if is_natural(summary.condition or ""):
+            key = (summary.subject_key, summary.meta.get("desk_level", ""))
+            groups.setdefault(key, []).append(summary)
+    out = set()
+    for group in groups.values():
+        group.sort(key=_order_key)
+        complete = [s for s in group if "camera_lost" not in s.meta] or group
+        out.update(s.path for s in group if s is not complete[0])
+    return frozenset(out)
+
+
 def paired_differences(summaries: list[SessionSummary], select=is_natural,
                        quantities=NATURAL_QUANTITIES) -> list[PairedRow]:
     """select 選出的每一段減同一趟第一段端正坐的原始值。找不到的照樣回傳、寫原因。"""
     index = trips(summaries)
+    repeated = repeated_naturals(summaries)
     rows = []
     for summary in sorted(summaries, key=lambda s: (s.subject_key, _order_key(s))):
         if not select(summary.condition or ""):
+            continue
+        if summary.path in repeated:
+            rows.append(PairedRow(summary, None, reason=REPEATED_NATURAL))
             continue
         if trip_id(summary) is None:
             rows.append(PairedRow(summary, None, reason="沒有 trip_id（2026-11-18 之前的舊檔）"))

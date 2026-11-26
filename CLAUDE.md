@@ -24,7 +24,7 @@
 ## 動手之前
 
 ```bash
-python -m pytest -q          # 2026-11-26 是 1135 個
+python -m pytest -q          # 2026-11-26 是 1143 個
 python -m pyflakes posture.py src/**/*.py tests/*.py
 ```
 
@@ -82,6 +82,8 @@ run-plan 要的不同行為都經由 `_study_trip` 的 `check`、`on_camera_lost
 - 登記檔放在 `data/` 而不是 `data/sessions/`：`cohort` 會遞迴找所有 CSV。`--subject-groups` 是表4 的
   身高層，順序組別用 `--order-groups`，兩個不能混。
 - 接續判斷用「姿勢加側傾目標角度」當段落身分（`tilt-left@10`），因為側傾 A 與 B 的檔名都一樣。
+- 自然坐每人每個桌面條件只算第一次（2026-11-26）：`run-plan` 重跑趟 1 時略過它，分析用
+  `trips.repeated_naturals` 排除後面的。第一次轉身作廢也不拿第二次頂替。
 - `kinovea-pack` 沿用盲評包的匿名化，只收側傾段 `raw/` 原圖；`kinovea` 取 CSV 該幀的**原始**
   `theta_sym_deg`（Kinovea 量的是影像上的絕對角度）。Kinovea 是 2D 影像角度、受透視影響，報告不可寫成 3D 的真值。
 

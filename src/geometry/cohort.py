@@ -30,7 +30,8 @@ from .baseline import REJECTION_LIMIT
 from .judgement import Posture
 from .session_analysis import (UNLABELLED, Comparison, SessionSummary,
                                analyse_session)
-from .trips import axis_rejection_rate, is_turned, trips, turned_deg
+from .trips import (axis_rejection_rate, is_turned, repeated_naturals, trips,
+                    turned_deg)
 from .uncertainty import standard_error
 
 # UNLABELLED 與 REJECTION_LIMIT 都從別處 re-export，讓 cohort 的使用者不必
@@ -122,6 +123,11 @@ class Cohort:
         """轉身作廢的段落。"""
         return frozenset(path for path, turn in self.turned.items() if is_turned(turn))
 
+    @cached_property
+    def repeated(self) -> frozenset:
+        """重量的自然坐（見 `trips.repeated_naturals`），照列在逐段表但不進統計。"""
+        return repeated_naturals(self.sessions)
+
     def with_limit(self, limit: float | None) -> Cohort:
         """同一批資料換一個略過率門檻，給敏感度分析用。"""
         return Cohort(sessions=self.sessions, limit=limit)
@@ -137,6 +143,8 @@ class Cohort:
         """
         buckets: dict[tuple[str, str], list[SessionSummary]] = {}
         for summary in self.sessions:
+            if summary.path in self.repeated:
+                continue
             buckets.setdefault(
                 (summary.subject_key, summary.condition_key), []
             ).append(summary)
