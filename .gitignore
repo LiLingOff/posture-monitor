@@ -23,6 +23,8 @@ data/baselines/
 # run-plan 當場作廢的段落搬到 <out-dir>-discarded/，同樣有受試者的臉。
 data/sessions-discarded/
 *-discarded/
+# 改標頭之前的原始檔備份，內容同樣是受試者資料。
+data/sessions-backup/
 
 # 外部評分者盲評（rating-pack／ratings）。盲評包有受試者的臉，key 檔對得回受試者
 # 與系統判定，評分表是評分者的資料，三者都不能進這個 public repo。
